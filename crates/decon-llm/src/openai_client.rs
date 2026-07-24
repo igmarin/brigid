@@ -52,7 +52,19 @@ pub struct OpenAiClientConfig {
     pub initial_backoff: Duration,
     /// Provider name for cache keys (e.g. `openai`, `deepseek`).
     pub provider_name: String,
+    /// Hosts allowed to receive the `Authorization` header. Defaults to
+    /// known providers plus loopback for testing. Extend with
+    /// [`OpenAiClientConfig::with_allowed_host`].
+    pub allowed_hosts: Vec<String>,
 }
+
+/// Built-in host allowlist: known LLM providers plus loopback for tests.
+const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
+    "api.openai.com",
+    "api.deepseek.com",
+    "localhost",
+    "127.0.0.1",
+];
 
 impl OpenAiClientConfig {
     /// Create a new config with sensible defaults for timeout (120s),
@@ -71,6 +83,10 @@ impl OpenAiClientConfig {
             max_retries: 3,
             initial_backoff: Duration::from_secs(1),
             provider_name: "deepseek".to_string(),
+            allowed_hosts: DEFAULT_ALLOWED_HOSTS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 
@@ -81,6 +97,9 @@ impl OpenAiClientConfig {
     /// `DECON_LLM_MODEL` (default `deepseek-chat`). Blank or
     /// whitespace-only values are treated as unset, matching the `nonblank`
     /// convention used in `decon-core` config resolution.
+    ///
+    /// Optionally reads `DECON_LLM_ALLOWED_HOSTS` (comma-separated) to
+    /// extend the host allowlist beyond the built-in providers.
     ///
     /// # Errors
     ///
@@ -102,6 +121,18 @@ impl OpenAiClientConfig {
             "deepseek"
         }
         .to_string();
+        let mut allowed_hosts: Vec<String> = DEFAULT_ALLOWED_HOSTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if let Some(extra) = nonblank_env("DECON_LLM_ALLOWED_HOSTS") {
+            allowed_hosts.extend(
+                extra
+                    .split(',')
+                    .map(|h| h.trim().to_lowercase())
+                    .filter(|h| !h.is_empty()),
+            );
+        }
         Ok(Self {
             base_url,
             api_key,
@@ -110,6 +141,7 @@ impl OpenAiClientConfig {
             max_retries: 3,
             initial_backoff: Duration::from_secs(1),
             provider_name,
+            allowed_hosts,
         })
     }
 
@@ -132,6 +164,41 @@ impl OpenAiClientConfig {
     pub fn with_provider_name(mut self, name: &str) -> Self {
         self.provider_name = name.to_string();
         self
+    }
+
+    /// Add a host to the allowlist for `Authorization` header validation.
+    ///
+    /// Use this when pointing the client at a self-hosted or custom
+    /// OpenAI-compatible provider whose host is not in the built-in list
+    /// (`api.openai.com`, `api.deepseek.com`, `localhost`, `127.0.0.1`).
+    /// The host is compared case-insensitively.
+    #[must_use]
+    pub fn with_allowed_host(mut self, host: &str) -> Self {
+        self.allowed_hosts.push(host.to_lowercase());
+        self
+    }
+
+    /// Validate that the `base_url` host is in the allowlist.
+    ///
+    /// Returns `Ok(())` if the host is allowed, or a [`LlmError::Network`]
+    /// describing the rejected host. This check runs before any HTTP call
+    /// so the `Authorization` header is never sent to an unapproved host.
+    fn validate_host(&self) -> Result<(), LlmError> {
+        let host = reqwest::Url::parse(&self.base_url)
+            .map_err(|e| {
+                LlmError::network(format!("failed to parse base_url '{}': {e}", self.base_url))
+            })?
+            .host_str()
+            .unwrap_or("")
+            .to_lowercase();
+        if self.allowed_hosts.iter().any(|h| h == &host) {
+            Ok(())
+        } else {
+            Err(LlmError::network(format!(
+                "host '{host}' is not in the allowed hosts list; \
+                 refusing to send Authorization header to unapproved host"
+            )))
+        }
     }
 
     /// Redact the API key for safe inclusion in error/log messages: show only
@@ -255,6 +322,9 @@ impl LlmClient for OpenAiCompatibleClient {
                 return Ok(cached);
             }
         }
+
+        // c. Validate host before sending Authorization header.
+        self.config.validate_host()?;
 
         let url = self.completions_url();
         let body = ChatRequest {
@@ -868,6 +938,94 @@ mod tests {
         unsafe {
             env::remove_var("DECON_LLM_API_KEY");
             env::remove_var("DECON_LLM_MODEL");
+        }
+    }
+
+    #[tokio::test]
+    async fn hostile_host_rejected_before_network_call() {
+        let config =
+            OpenAiClientConfig::new("https://evil.example.com/v1", "sk-test-key-1234", "m");
+        let client = OpenAiCompatibleClient::new(config);
+        let err = client.complete("hi").await.unwrap_err();
+        assert!(
+            matches!(err, LlmError::Network { .. }),
+            "expected LlmError::Network for hostile host, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("host"),
+            "error should mention host validation: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_custom_host_proceeds() {
+        // Use a port that refuses connections — we just want to confirm
+        // the host passes validation and the request is attempted.
+        let config = OpenAiClientConfig::new("http://my-custom-llm.local:1", "sk-test", "m")
+            .with_allowed_host("my-custom-llm.local");
+        let client = OpenAiCompatibleClient::new(config);
+        let err = client.complete("hi").await.unwrap_err();
+        // Should be a network error (connection refused), NOT a host
+        // validation error.
+        assert!(matches!(err, LlmError::Network { .. }), "got: {err:?}");
+        assert!(
+            !err.to_string().contains("host"),
+            "custom host should pass validation: {err}"
+        );
+    }
+
+    #[test]
+    fn default_allowed_hosts_includes_known_providers() {
+        let config = OpenAiClientConfig::new("https://api.deepseek.com/v1", "k", "m");
+        assert!(config.allowed_hosts.contains(&"api.openai.com".to_string()));
+        assert!(
+            config
+                .allowed_hosts
+                .contains(&"api.deepseek.com".to_string())
+        );
+        assert!(config.allowed_hosts.contains(&"localhost".to_string()));
+        assert!(config.allowed_hosts.contains(&"127.0.0.1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn localhost_with_port_passes_validation() {
+        // Port is stripped by host_str(); only the host is checked.
+        let config = OpenAiClientConfig::new("http://localhost:1", "sk-test", "m");
+        let client = OpenAiCompatibleClient::new(config);
+        let err = client.complete("hi").await.unwrap_err();
+        // Should be a connection-refused network error, NOT a host
+        // validation error.
+        assert!(matches!(err, LlmError::Network { .. }), "got: {err:?}");
+        assert!(
+            !err.to_string().contains("not in the allowed"),
+            "localhost with port should pass validation: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_allowed_hosts_env_extends_list() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "sk-x");
+            env::remove_var("DECON_LLM_BASE_URL");
+            env::remove_var("DECON_LLM_MODEL");
+            env::set_var(
+                "DECON_LLM_ALLOWED_HOSTS",
+                "my-custom-llm.local, Another.Host.COM ",
+            );
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        // Defaults still present.
+        assert!(cfg.allowed_hosts.contains(&"api.deepseek.com".to_string()));
+        // Extra hosts added, trimmed and lowercased.
+        assert!(
+            cfg.allowed_hosts
+                .contains(&"my-custom-llm.local".to_string())
+        );
+        assert!(cfg.allowed_hosts.contains(&"another.host.com".to_string()));
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DECON_LLM_ALLOWED_HOSTS");
         }
     }
 
