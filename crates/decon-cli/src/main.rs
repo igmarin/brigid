@@ -25,6 +25,14 @@ const EXIT_OK: u8 = 0;
 const EXIT_FAIL: u8 = 1;
 /// Config / path / I/O input errors (best-practices exit table).
 const EXIT_CONFIG: u8 = 2;
+/// Partial success with checkpoint: the stage was cancelled (Ctrl+C / SIGTERM)
+/// mid-flight, but a partial checkpoint was written. Resume to continue.
+///
+/// This is **not** an error — it means "we made progress and saved it". The
+/// checkpoint's `completed_stages` does **not** include the cancelled stage,
+/// so a subsequent `decon resume` will re-run it with the partial work
+/// available.
+const EXIT_PARTIAL_CHECKPOINT: u8 = 5;
 
 /// Deconstruct a codebase into an AI-generated tutorial.
 #[derive(Parser, Debug)]
@@ -88,6 +96,24 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Run the identify stage with graceful Ctrl+C / SIGTERM shutdown.
+    ///
+    /// On completion: exit 0. On cancellation with a partial checkpoint:
+    /// exit 5. On error: exit 1 or 2.
+    Identify {
+        /// Repository root.
+        #[arg(long = "dir", value_name = "PATH")]
+        dir: Option<PathBuf>,
+        /// Checkpoint directory to write (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+        /// Use single-shot mode (one LLM call) instead of map+reduce.
+        #[arg(long = "single-shot", default_value_t = false)]
+        single_shot: bool,
+        /// Maximum abstractions to return.
+        #[arg(long = "max-abstractions", default_value_t = 10)]
+        max_abstractions: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -136,6 +162,19 @@ fn main() -> ExitCode {
             cmd_eval(&out, threshold, format)
         }
         Commands::Resume { checkpoint, format } => cmd_resume(&checkpoint, &cfg, format),
+        Commands::Identify {
+            dir,
+            checkpoint_dir,
+            single_shot,
+            max_abstractions,
+        } => {
+            let dir = dir
+                .or_else(|| cfg.root.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            cmd_identify(&dir, &checkpoint_dir, single_shot, max_abstractions, &cfg)
+        }
     }
 }
 
@@ -430,6 +469,194 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
         }
     }
     ExitCode::from(EXIT_OK)
+}
+
+/// Run the identify stage with cancellation support.
+///
+/// Sets up a Ctrl+C / SIGTERM handler, runs the identify stage (single-shot
+/// or map+reduce), and maps the outcome to an exit code:
+///
+/// - Completed → exit 0.
+/// - Cancelled → exit 5 (partial checkpoint saved).
+/// - Error → exit 1 (generic) or 2 (config / I/O).
+///
+/// This is a thin CLI wrapper around
+/// `decon_pipeline::identify_with_cancellation`. The LLM client is a
+/// `decon_llm::MockClient` with a canned response when no API key is
+/// present — this lets the subcommand be exercised in tests without network
+/// access. A real provider client will be wired in M4.
+fn cmd_identify(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    single_shot: bool,
+    max_abstractions: usize,
+    cfg: &RunConfig,
+) -> ExitCode {
+    // Crawl the repo to get the file inventory.
+    let crawl_result = match crawl_local(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: identify: crawl failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    if crawl_result.files.is_empty() {
+        eprintln!("error: identify: no files found in {}", dir.display());
+        return ExitCode::from(EXIT_CONFIG);
+    }
+
+    // Build file-bundle records for the checkpoint. We use empty content for
+    // now (the full file-body injection is a later ticket); the checkpoint
+    // store requires at least one record.
+    let file_entries: Vec<(&str, &[u8])> = crawl_result
+        .files
+        .iter()
+        .map(|f| (f.as_str(), b"" as &[u8]))
+        .collect();
+    // records_from_files with empty bytes still produces valid records.
+    let records = decon_pipeline::records_from_files(&file_entries);
+
+    // Build the identify run config.
+    let files = crawl_result.files.clone();
+    let sizes = crawl_result.sizes.clone();
+
+    let strategy = if single_shot {
+        decon_pipeline::IdentifyStrategy::SingleShot(decon_pipeline::IdentifySingleShotInput {
+            files: files.clone(),
+            project_name: dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string(),
+            language_instruction: String::new(),
+            lang_note: String::new(),
+            max_abstraction_num: max_abstractions,
+        })
+    } else {
+        decon_pipeline::IdentifyStrategy::MapReduce(decon_pipeline::IdentifyMapInput {
+            files: files.clone(),
+            sizes: sizes.clone(),
+            project_name: dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string(),
+            language_instruction: String::new(),
+            lang_note: String::new(),
+            max_abstraction_num: max_abstractions,
+            max_concurrency: 4,
+            budget_config: decon_core::BudgetConfig::default(),
+        })
+    };
+
+    let reduce_input = if !single_shot {
+        Some(decon_pipeline::IdentifyReduceInput {
+            candidates: Vec::new(),
+            files: files.clone(),
+            project_name: dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string(),
+            language_instruction: String::new(),
+            lang_note: String::new(),
+            max_abstraction_num: max_abstractions,
+            module_summary: String::new(),
+        })
+    } else {
+        None
+    };
+
+    let run_cfg = decon_pipeline::IdentifyRunConfig {
+        strategy,
+        reduce_input,
+        unredacted_config: cfg.clone(),
+        source_revision: dir.display().to_string(),
+        files: records,
+    };
+
+    // Set up the LLM client. Without a real API key, use a mock that returns
+    // a minimal valid YAML abstraction list. This lets the subcommand be
+    // exercised end-to-end in tests. M4 will wire the real provider client.
+    let client: Box<dyn decon_llm::LlmClient> = Box::new(decon_llm::MockClient::new(
+        "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n",
+    ));
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: identify: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let store = CheckpointStore::new(checkpoint_dir);
+    let mut progress = decon_core::ProgressTracker::new(
+        cfg.max_llm_calls
+            .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS),
+    );
+
+    // Run inside a tokio runtime with the Ctrl+C handler.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: identify: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        let cancel = match decon_pipeline::setup_ctrl_c_handler() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: identify: signal handler: {e}");
+                return ExitCode::from(EXIT_FAIL);
+            }
+        };
+
+        let outcome = decon_pipeline::identify_with_cancellation(
+            client.as_ref(),
+            &renderer,
+            &run_cfg,
+            &mut progress,
+            &cancel,
+            &store,
+        )
+        .await;
+
+        match outcome {
+            Ok(decon_pipeline::IdentifyRunOutcome::Completed(result)) => {
+                println!(
+                    "identify: completed with {} abstractions",
+                    result.abstractions.len()
+                );
+                println!("checkpoint: {}", checkpoint_dir.display());
+                ExitCode::from(EXIT_OK)
+            }
+            Ok(decon_pipeline::IdentifyRunOutcome::Cancelled {
+                batches_completed,
+                candidates_collected,
+            }) => {
+                eprintln!(
+                    "identify: cancelled (batches_completed={batches_completed}, \
+                     candidates_collected={candidates_collected})"
+                );
+                eprintln!(
+                    "partial checkpoint: {} -- resume to continue",
+                    checkpoint_dir.display()
+                );
+                ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
+            }
+            Err(e) => {
+                eprintln!("error: identify failed: {e}");
+                ExitCode::from(EXIT_FAIL)
+            }
+        }
+    })
 }
 
 fn load_tutorial_markdown(root: &Path) -> Result<Vec<TutorialFile>, String> {

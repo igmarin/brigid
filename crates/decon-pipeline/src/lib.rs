@@ -12,13 +12,16 @@
 
 #![deny(missing_docs)]
 
+pub mod cancellation;
 pub mod checkpoint_store;
 pub mod dry_run;
 pub mod identify;
 pub mod identify_checkpoint;
+pub mod identify_runner;
 pub mod prompts;
 pub mod resume;
 
+pub use cancellation::{CancelToken, setup_ctrl_c_handler};
 pub use checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
 pub use identify::{
@@ -29,6 +32,9 @@ pub use identify_checkpoint::{
     DEFAULT_MAX_ABSTRACTIONS, DEFAULT_MAX_CONCURRENCY, SINGLE_SHOT_FILE_THRESHOLD,
     SINGLE_SHOT_SIZE_THRESHOLD, identify_and_checkpoint, load_identify_result,
     save_identify_result, should_run_identify,
+};
+pub use identify_runner::{
+    IdentifyRunConfig, IdentifyRunOutcome, IdentifyStrategy, identify_with_cancellation,
 };
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{
