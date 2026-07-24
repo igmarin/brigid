@@ -623,7 +623,6 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 ## 13. Related docs
 
 - [Best practices](./best-practices.md) — quality and monorepo principles (language-agnostic)  
-- [System design](./design.md) — original Pocket Flow design  
 - Root README — current Python CLI / Make UX to preserve in spirit  
 
 ---

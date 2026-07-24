@@ -489,9 +489,8 @@ The implementation details (CLI flags, node names) may differ; the **principles*
 
 ## 18. Related docs in this project
 
-- [System Design](./design.md) — pipeline design for this repository  
 - Repository root [README.md](../README.md) — install, `make` recipes, flags, resume/eval  
-- [Move to Rust](./move-to-rust.md) — CLI product vision and migration notes  
+- [Move to Rust](./move-to-rust.md) — system/pipeline design and CLI product vision  
 - Example tutorials under `docs/*/` — samples of chapter tone and diagrams  
 
 ---
