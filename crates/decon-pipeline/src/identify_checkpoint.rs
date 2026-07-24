@@ -335,10 +335,14 @@ fn language_instruction_from_config(config: &RunConfig) -> String {
 
 /// Derive `max_abstraction_num` from the run config, defaulting to
 /// [`DEFAULT_MAX_ABSTRACTIONS`].
+///
+/// Uses [`RunConfig::max_llm_calls`] as a rough upper bound when set (a run
+/// capped at N LLM calls should not request more than N abstractions), falling
+/// back to [`DEFAULT_MAX_ABSTRACTIONS`] when unset.
 fn max_abstractions_from_config(config: &RunConfig) -> usize {
     config
         .max_llm_calls
-        .map(|_| DEFAULT_MAX_ABSTRACTIONS)
+        .map(|n| n as usize)
         .unwrap_or(DEFAULT_MAX_ABSTRACTIONS)
 }
 
@@ -364,7 +368,7 @@ fn use_single_shot(files: &[String], sizes: &[u64]) -> bool {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
-    use decon_core::{Abstraction, AbstractionKind, RunConfig, StageId, Tier};
+    use decon_core::{Abstraction, RunConfig, StageId, Tier};
     use decon_llm::MockClient;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -844,11 +848,5 @@ mod tests {
         let err = CheckpointError::UnsupportedVersion(99);
         let id_err: IdentifyError = err.into();
         assert!(matches!(id_err, IdentifyError::Checkpoint(_)));
-    }
-
-    // Silence unused-import warning for AbstractionKind in this test module.
-    #[test]
-    fn _ensure_abstraction_kind_import_used() {
-        let _ = AbstractionKind::new("module");
     }
 }
