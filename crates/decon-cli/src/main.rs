@@ -198,21 +198,32 @@ fn load_file_config(explicit: Option<&Path>) -> Result<RunConfig, String> {
     let Some(path) = path else {
         return Ok(RunConfig::empty());
     };
+    // A path with no file-name component (e.g. a trailing-slash directory
+    // path) cannot be a config file — surface a clear error instead of
+    // falling through to a confusing `read_to_string` failure.
+    if path.file_name().is_none() {
+        return Err(format!(
+            "config path {} has no file name component",
+            path.display()
+        ));
+    }
     let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let name = path
-        .file_name()
+    // Detect format from the file extension. An absent or unrecognized
+    // extension falls back to "try both parsers" so extensionless config
+    // files (and oddball names) keep working.
+    let ext = path
+        .extension()
         .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if name.ends_with(".toml") || name == "decon.toml" {
-        parse_toml_config(&text).map_err(|e| e.to_string())
-    } else if name.ends_with(".yaml") || name.ends_with(".yml") || name.starts_with(".decon") {
-        parse_yaml_config(&text).map_err(|e| e.to_string())
-    } else {
-        // try toml then yaml
-        parse_toml_config(&text)
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("toml") => parse_toml_config(&text).map_err(|e| e.to_string()),
+        Some("yaml") | Some("yml") => parse_yaml_config(&text).map_err(|e| e.to_string()),
+        // Absent or unknown extension: try TOML first, then YAML. This is the
+        // explicit fallback for extensionless files like `decon` or unknown
+        // extensions like `.json`.
+        _ => parse_toml_config(&text)
             .or_else(|_| parse_yaml_config(&text))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -412,6 +423,16 @@ fn cmd_eval(out: &Path, threshold: i32, format: OutputFormat) -> ExitCode {
 }
 
 fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) -> ExitCode {
+    // Validate the checkpoint directory exists before constructing a
+    // `CheckpointStore`, so the user gets a specific message instead of a
+    // generic "checkpoint not found" IO error from `load`.
+    if !checkpoint.is_dir() {
+        eprintln!(
+            "checkpoint directory '{}' does not exist",
+            checkpoint.display()
+        );
+        return ExitCode::from(EXIT_CONFIG);
+    }
     let store = CheckpointStore::new(checkpoint);
     let (meta, files) = match store.load() {
         Ok(v) => v,
@@ -698,4 +719,93 @@ fn walk_md(dir: &Path, root: &Path, out: &mut Vec<TutorialFile>) -> Result<(), S
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unique temp dir helper for unit tests in main.rs.
+    fn temp_dir(label: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("decon-cli-unit-{label}-{n}"))
+    }
+
+    #[test]
+    fn load_file_config_toml_extension_parses_as_toml() {
+        let dir = temp_dir("cfg-toml-ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("myconf.toml");
+        std::fs::write(&path, b"language = \"es\"\n").unwrap();
+        let cfg = load_file_config(Some(&path)).expect("toml should parse");
+        assert_eq!(cfg.language.as_deref(), Some("es"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_config_yaml_extension_parses_as_yaml() {
+        let dir = temp_dir("cfg-yaml-ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("myconf.yaml");
+        std::fs::write(&path, b"language: fr\n").unwrap();
+        let cfg = load_file_config(Some(&path)).expect("yaml should parse");
+        assert_eq!(cfg.language.as_deref(), Some("fr"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_config_yml_extension_parses_as_yaml() {
+        let dir = temp_dir("cfg-yml-ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("myconf.yml");
+        std::fs::write(&path, b"language: de\n").unwrap();
+        let cfg = load_file_config(Some(&path)).expect("yml should parse");
+        assert_eq!(cfg.language.as_deref(), Some("de"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_config_no_extension_tries_both() {
+        let dir = temp_dir("cfg-no-ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Valid TOML content with no extension — "try both" should succeed via TOML.
+        let path = dir.join("myconf");
+        std::fs::write(&path, b"language = \"it\"\n").unwrap();
+        let cfg = load_file_config(Some(&path)).expect("no-ext should try both");
+        assert_eq!(cfg.language.as_deref(), Some("it"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_config_unknown_extension_tries_both() {
+        let dir = temp_dir("cfg-json-ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A .json extension is unknown — fall back to "try both". TOML parser
+        // accepts this simple key=value-free JSON-ish content? No: JSON is not
+        // valid TOML nor YAML. Use valid YAML content under a .json name so the
+        // "try both" fallback resolves via the YAML parser.
+        let path = dir.join("myconf.json");
+        std::fs::write(&path, b"language: pt\n").unwrap();
+        let cfg = load_file_config(Some(&path)).expect("unknown ext should try both");
+        assert_eq!(cfg.language.as_deref(), Some("pt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_config_directory_path_returns_clear_error() {
+        // A path whose final component has no file name (e.g. the filesystem
+        // root `/`, or `..`) yields `file_name() == None`. The loader must
+        // surface a clear error instead of silently falling through.
+        let path = PathBuf::from("/");
+        let err = load_file_config(Some(&path)).expect_err("dir path should error");
+        // The error must mention the missing file name, not silently fall through.
+        assert!(
+            err.contains("file name") || err.contains("file_name"),
+            "expected clear error about missing file name, got: {err}"
+        );
+    }
 }

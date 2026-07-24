@@ -601,3 +601,35 @@ fn identify_missing_dir_exits_config() {
         .failure()
         .code(2);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #79: cmd_resume dir-exists check + load_file_config extension
+// detection.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resume_nonexistent_checkpoint_dir_exits_config_with_specific_message() {
+    decon()
+        .args(["resume", "--checkpoint", "/no/such/decon-resume-79-missing"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn resume_checkpoint_path_is_file_not_dir_exits_config() {
+    let file = temp_dir("resume-file-not-dir");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"not a directory").unwrap();
+
+    decon()
+        .args(["resume", "--checkpoint"])
+        .arg(&file)
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("does not exist"));
+
+    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+}
