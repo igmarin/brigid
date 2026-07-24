@@ -25,6 +25,10 @@ const EXIT_OK: u8 = 0;
 const EXIT_FAIL: u8 = 1;
 /// Config / path / I/O input errors (best-practices exit table).
 const EXIT_CONFIG: u8 = 2;
+/// LLM call budget exceeded (fail-closed on max-LLM-call ceiling).
+const EXIT_BUDGET: u8 = 3;
+/// LLM provider error (network, timeout, rate-limit, provider, parse).
+const EXIT_LLM: u8 = 4;
 /// Partial success with checkpoint: the stage was cancelled (Ctrl+C / SIGTERM)
 /// mid-flight, but a partial checkpoint was written. Resume to continue.
 ///
@@ -500,7 +504,10 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
 ///
 /// - Completed → exit 0.
 /// - Cancelled → exit 5 (partial checkpoint saved).
-/// - Error → exit 1 (generic) or 2 (config / I/O).
+/// - Budget exceeded → exit 3.
+/// - LLM error → exit 4.
+/// - Prompt / config error → exit 2.
+/// - Other errors → exit 1 (generic).
 ///
 /// This is a thin CLI wrapper around
 /// `decon_pipeline::identify_with_cancellation`. The LLM client is a
@@ -611,9 +618,32 @@ fn cmd_identify(
              Set DECON_LLM_API_KEY to use a real provider (M4)."
         );
     }
-    let client: Box<dyn decon_llm::LlmClient> = Box::new(decon_llm::MockClient::new(
-        "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n",
-    ));
+    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+    // Debug/test-only affordance: when DECON_LLM_MOCK_FAIL is set, the mock
+    // client fails on the first call with the requested LlmError variant.
+    // Guarded by cfg(debug_assertions) so it cannot affect release builds.
+    #[cfg(debug_assertions)]
+    let client: Box<dyn decon_llm::LlmClient> = if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let err = match kind.as_str() {
+            "timeout" => decon_llm::LlmError::Timeout,
+            "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+            "provider" => decon_llm::LlmError::Provider {
+                status: 502,
+                body: "mock provider error".to_string(),
+            },
+            "parse" => decon_llm::LlmError::parse("mock parse failure"),
+            _ => decon_llm::LlmError::network("mock network failure"),
+        };
+        Box::new(decon_llm::MockClient::new("").fail_on(0, err))
+    } else {
+        Box::new(decon_llm::MockClient::new(placeholder_yaml))
+    };
+    #[cfg(not(debug_assertions))]
+    let client: Box<dyn decon_llm::LlmClient> =
+        Box::new(decon_llm::MockClient::new(placeholder_yaml));
 
     let renderer = match decon_pipeline::PromptRenderer::new() {
         Ok(r) => r,
@@ -684,8 +714,15 @@ fn cmd_identify(
                 ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
             }
             Err(e) => {
+                let code = match &e {
+                    decon_pipeline::IdentifyError::Budget(_) => EXIT_BUDGET,
+                    decon_pipeline::IdentifyError::Llm(_)
+                    | decon_pipeline::IdentifyError::LlmBatch { .. } => EXIT_LLM,
+                    decon_pipeline::IdentifyError::Prompt(_) => EXIT_CONFIG,
+                    _ => EXIT_FAIL,
+                };
                 eprintln!("error: identify failed: {e}");
-                ExitCode::from(EXIT_FAIL)
+                ExitCode::from(code)
             }
         }
     })
