@@ -83,7 +83,7 @@ fn python_lib_fixture() -> PathBuf {
 /// disk cache so re-runs are free.
 fn client_from_env(with_cache: bool) -> OpenAiCompatibleClient {
     let config = OpenAiClientConfig::from_env().expect("API key present (checked by caller)");
-    let client = OpenAiCompatibleClient::new(config);
+    let client = OpenAiCompatibleClient::new(config).expect("HTTP client build failed");
     if with_cache {
         let cache_root =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/decon-llm-cache");
