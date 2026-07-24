@@ -579,6 +579,16 @@ fn cmd_identify(
     // Set up the LLM client. Without a real API key, use a mock that returns
     // a minimal valid YAML abstraction list. This lets the subcommand be
     // exercised end-to-end in tests. M4 will wire the real provider client.
+    // We warn the user so they know the output is a placeholder, not a real
+    // LLM analysis.
+    let api_key = env::var("DECON_LLM_API_KEY").ok();
+    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        eprintln!(
+            "warning: identify: no DECON_LLM_API_KEY set — using a mock client. \
+             The output will be a placeholder, not a real LLM analysis. \
+             Set DECON_LLM_API_KEY to use a real provider (M4)."
+        );
+    }
     let client: Box<dyn decon_llm::LlmClient> = Box::new(decon_llm::MockClient::new(
         "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n",
     ));

@@ -533,6 +533,8 @@ fn eval_walks_nested_tutorial_subdirectories() {
         .stdout(predicate::str::contains("\"has_path_citations\":true"));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn help_lists_identify_subcommand() {
     decon()
