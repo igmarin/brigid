@@ -629,7 +629,7 @@ fn resume_checkpoint_path_is_file_not_dir_exits_config() {
         .assert()
         .failure()
         .code(2)
-        .stderr(predicate::str::contains("does not exist"));
+        .stderr(predicate::str::contains("not a directory"));
 
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }

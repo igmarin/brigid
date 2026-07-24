@@ -423,12 +423,13 @@ fn cmd_eval(out: &Path, threshold: i32, format: OutputFormat) -> ExitCode {
 }
 
 fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) -> ExitCode {
-    // Validate the checkpoint directory exists before constructing a
-    // `CheckpointStore`, so the user gets a specific message instead of a
-    // generic "checkpoint not found" IO error from `load`.
+    // Validate the checkpoint path is an existing directory before
+    // constructing a `CheckpointStore`, so the user gets a specific message
+    // instead of a generic "checkpoint not found" IO error from `load`.
+    // This covers both "path does not exist" and "path is a file, not a dir".
     if !checkpoint.is_dir() {
         eprintln!(
-            "checkpoint directory '{}' does not exist",
+            "checkpoint directory '{}' does not exist or is not a directory",
             checkpoint.display()
         );
         return ExitCode::from(EXIT_CONFIG);
