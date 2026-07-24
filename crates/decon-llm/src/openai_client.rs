@@ -23,6 +23,17 @@ use std::time::Duration;
 /// Maximum backoff between retries, regardless of the exponential growth.
 const BACKOFF_CAP: Duration = Duration::from_secs(60);
 
+/// Read an environment variable, treating blank/whitespace-only values as
+/// unset. This mirrors the `nonblank` helper in `decon-core/src/config.rs`
+/// and prevents the historical Make bug where `VAR=""` is accepted as a
+/// valid value (see `docs/move-to-rust.md` §4.3).
+fn nonblank_env(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Configuration for an OpenAI-compatible LLM client.
 #[derive(Clone, Debug)]
 pub struct OpenAiClientConfig {
@@ -67,22 +78,24 @@ impl OpenAiClientConfig {
     ///
     /// Reads `DECON_LLM_API_KEY` (falling back to `DEEPSEEK_API_KEY`),
     /// `DECON_LLM_BASE_URL` (default `https://api.deepseek.com/v1`), and
-    /// `DECON_LLM_MODEL` (default `deepseek-chat`).
+    /// `DECON_LLM_MODEL` (default `deepseek-chat`). Blank or
+    /// whitespace-only values are treated as unset, matching the `nonblank`
+    /// convention used in `decon-core` config resolution.
     ///
     /// # Errors
     ///
     /// Returns [`LlmError::Provider`] if no API key is present in the
     /// environment.
     pub fn from_env() -> Result<Self, LlmError> {
-        let api_key = env::var("DECON_LLM_API_KEY")
-            .or_else(|_| env::var("DEEPSEEK_API_KEY"))
-            .map_err(|_| LlmError::Provider {
+        let api_key = nonblank_env("DECON_LLM_API_KEY")
+            .or_else(|| nonblank_env("DEEPSEEK_API_KEY"))
+            .ok_or_else(|| LlmError::Provider {
                 status: 0,
                 body: "DECON_LLM_API_KEY (or DEEPSEEK_API_KEY) not set".to_string(),
             })?;
-        let base_url = env::var("DECON_LLM_BASE_URL")
-            .unwrap_or_else(|_| "https://api.deepseek.com/v1".to_string());
-        let model = env::var("DECON_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
+        let base_url = nonblank_env("DECON_LLM_BASE_URL")
+            .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+        let model = nonblank_env("DECON_LLM_MODEL").unwrap_or_else(|| "deepseek-chat".to_string());
         let provider_name = if base_url.contains("openai") {
             "openai"
         } else {
@@ -779,6 +792,83 @@ mod tests {
         }
         let err = OpenAiClientConfig::from_env().unwrap_err();
         assert!(matches!(err, LlmError::Provider { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_errors_when_api_key_blank() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "");
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+        let err = OpenAiClientConfig::from_env().unwrap_err();
+        assert!(matches!(err, LlmError::Provider { .. }), "got: {err:?}");
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_errors_when_api_key_whitespace_only() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "   \t  ");
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+        let err = OpenAiClientConfig::from_env().unwrap_err();
+        assert!(matches!(err, LlmError::Provider { .. }), "got: {err:?}");
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_falls_back_to_deepseek_when_primary_blank() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "");
+            env::set_var("DEEPSEEK_API_KEY", "sk-fallback");
+            env::remove_var("DECON_LLM_BASE_URL");
+            env::remove_var("DECON_LLM_MODEL");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.api_key, "sk-fallback");
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_blank_base_url_uses_default() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "sk-x");
+            env::set_var("DECON_LLM_BASE_URL", "   ");
+            env::remove_var("DECON_LLM_MODEL");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.base_url, "https://api.deepseek.com/v1");
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DECON_LLM_BASE_URL");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_blank_model_uses_default() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "sk-x");
+            env::remove_var("DECON_LLM_BASE_URL");
+            env::set_var("DECON_LLM_MODEL", "");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.model, "deepseek-chat");
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DECON_LLM_MODEL");
+        }
     }
 
     #[test]
