@@ -19,3 +19,6 @@ serde_yaml = "0.9"
 thiserror = "2.0"
 sha2 = "0.10"
 hex = "0.4"
+
+[dev-dependencies]
+proptest = { workspace = true }

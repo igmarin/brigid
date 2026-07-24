@@ -582,6 +582,7 @@ fn sanitize_diagram_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn sanitize_label_strips_forbidden_and_truncates() {
@@ -758,5 +759,42 @@ mod tests {
     #[test]
     fn sanitize_label_only_non_ascii_punctuation() {
         assert_eq!(sanitize_label("——…"), "");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_sanitize_label_no_forbidden_chars(
+            label in "[\\x00-\\x7f]{0,128}",
+        ) {
+            let sanitized = sanitize_label(&label);
+            for forbidden in FORBIDDEN_IN_LABEL {
+                prop_assert!(
+                    !sanitized.contains(*forbidden),
+                    "sanitized label {:?} contains forbidden char {:?} (input {:?})",
+                    sanitized,
+                    *forbidden,
+                    label,
+                );
+            }
+        }
+
+        #[test]
+        fn prop_sanitize_label_le_max_chars(
+            label in "[\\x00-\\x7f]{0,200}",
+        ) {
+            let sanitized = sanitize_label(&label);
+            prop_assert!(
+                sanitized.chars().count() <= MAX_LABEL_CHARS,
+                "sanitized label len {} exceeds MAX_LABEL_CHARS {} (input {:?})",
+                sanitized.chars().count(),
+                MAX_LABEL_CHARS,
+                label,
+            );
+        }
     }
 }

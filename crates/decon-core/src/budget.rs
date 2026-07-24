@@ -332,7 +332,8 @@ pub fn estimate_budget(files: &[FileSize], config: &BudgetConfig) -> BudgetEstim
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::module::ModuleKey;
+    use crate::module::{ModuleKey, module_key};
+    use proptest::prelude::*;
 
     fn file(path: &str, chars: usize, module: &str) -> FileSize {
         FileSize {
@@ -485,5 +486,54 @@ mod tests {
             d.max_full_files_per_module,
             DEFAULT_MAX_FULL_FILES_PER_MODULE
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_truncate_content_output_le_max_chars(
+            content in proptest::collection::vec("[\\x20-\\x7e]{1,512}", 0..8),
+            max_chars in 0usize..512,
+        ) {
+            let input = content.join("\n");
+            let result = truncate_content(&input, max_chars);
+            prop_assert!(
+                result.text.chars().count() <= max_chars,
+                "text len {} exceeds max_chars {} for input len {}",
+                result.text.chars().count(),
+                max_chars,
+                input.chars().count(),
+            );
+        }
+
+        #[test]
+        fn prop_truncate_content_original_chars_matches_input(
+            content in proptest::collection::vec("[\\x20-\\x7e]{1,256}", 0..8),
+            max_chars in 0usize..512,
+        ) {
+            let input = content.join("\n");
+            let result = truncate_content(&input, max_chars);
+            prop_assert_eq!(result.original_chars, input.chars().count());
+        }
+
+        #[test]
+        fn prop_estimate_budget_file_count_matches_input(
+            files in proptest::collection::vec(
+                ("(src|apps/alpha|apps/beta|config|lib)/[a-z]{1,8}\\.(rs|ex|ts)", 1usize..5000),
+                0..32,
+            ),
+        ) {
+            let file_sizes: Vec<FileSize> = files
+                .iter()
+                .map(|(path, chars)| file(path, *chars, module_key(path).as_str()))
+                .collect();
+            let est = estimate_budget(&file_sizes, &BudgetConfig::default());
+            prop_assert_eq!(est.file_count, file_sizes.len());
+            prop_assert_eq!(est.raw_chars, file_sizes.iter().map(|f| f.chars).sum::<usize>());
+        }
     }
 }
