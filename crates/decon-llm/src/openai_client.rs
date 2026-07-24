@@ -5,6 +5,10 @@
 //! It implements [`crate::LlmClient`] with retry/backoff/timeout and optional
 //! [`crate::DiskCache`] response caching.
 //!
+//! Construction via [`OpenAiCompatibleClient::new`] returns a [`Result`];
+//! builder errors (e.g. invalid TLS configuration) are propagated as
+//! [`LlmError::Network`] rather than silently swallowed.
+//!
 //! # Data leaves the machine
 //!
 //! Calling [`OpenAiCompatibleClient::complete`] sends the full prompt text and
@@ -228,16 +232,16 @@ impl OpenAiCompatibleClient {
     ///
     /// Returns [`LlmError::Network`] if the underlying `reqwest::Client`
     /// cannot be built (e.g. invalid TLS configuration).
-    pub fn new(config: OpenAiClientConfig) -> Self {
+    pub fn new(config: OpenAiClientConfig) -> Result<Self, LlmError> {
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        Self {
+            .map_err(|e| LlmError::network(format!("failed to build HTTP client: {e}")))?;
+        Ok(Self {
             config,
             http,
             cache: None,
-        }
+        })
     }
 
     /// Attach a [`DiskCache`] for response caching.
@@ -494,7 +498,7 @@ mod tests {
         // constructing then mutating is not possible (fields pub). Use pub.
         let mut config = config;
         config.initial_backoff = Duration::from_millis(1);
-        OpenAiCompatibleClient::new(config)
+        OpenAiCompatibleClient::new(config).unwrap()
     }
 
     fn ok_response(content: &str) -> ResponseTemplate {
@@ -664,7 +668,7 @@ mod tests {
         let config = OpenAiClientConfig::new(server.uri(), "sk-test-key-1234", "deepseek-chat")
             .with_max_retries(0)
             .with_timeout(Duration::from_millis(100));
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         assert!(matches!(err, LlmError::Timeout), "got: {err:?}");
     }
@@ -684,7 +688,7 @@ mod tests {
             .await;
         let config = OpenAiClientConfig::new(server.uri(), "sk-test-key-1234", "deepseek-chat")
             .with_max_retries(0);
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         match err {
             LlmError::RateLimit { retry_after } => {
@@ -746,7 +750,9 @@ mod tests {
 
         let config = OpenAiClientConfig::new(server.uri(), "sk-test-key-1234", "deepseek-chat")
             .with_provider_name("deepseek");
-        let client = OpenAiCompatibleClient::new(config).with_cache(cache);
+        let client = OpenAiCompatibleClient::new(config)
+            .unwrap()
+            .with_cache(cache);
         let out = client.complete("cached prompt").await.unwrap();
         assert_eq!(out, "cached response");
         let _ = fs::remove_dir_all(&root);
@@ -765,7 +771,9 @@ mod tests {
             .await;
         let config = OpenAiClientConfig::new(server.uri(), "sk-test-key-1234", "deepseek-chat")
             .with_provider_name("deepseek");
-        let client = OpenAiCompatibleClient::new(config).with_cache(cache.clone());
+        let client = OpenAiCompatibleClient::new(config)
+            .unwrap()
+            .with_cache(cache.clone());
         let out = client.complete("store me").await.unwrap();
         assert_eq!(out, "fresh response");
 
@@ -791,7 +799,7 @@ mod tests {
                 .with_max_retries(1);
         let mut config = config;
         config.initial_backoff = Duration::from_millis(1);
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         assert!(matches!(err, LlmError::Network { .. }), "got: {err:?}");
     }
@@ -945,7 +953,7 @@ mod tests {
     async fn hostile_host_rejected_before_network_call() {
         let config =
             OpenAiClientConfig::new("https://evil.example.com/v1", "sk-test-key-1234", "m");
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         assert!(
             matches!(err, LlmError::Network { .. }),
@@ -963,7 +971,7 @@ mod tests {
         // the host passes validation and the request is attempted.
         let config = OpenAiClientConfig::new("http://my-custom-llm.local:1", "sk-test", "m")
             .with_allowed_host("my-custom-llm.local");
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         // Should be a network error (connection refused), NOT a host
         // validation error.
@@ -991,7 +999,7 @@ mod tests {
     async fn localhost_with_port_passes_validation() {
         // Port is stripped by host_str(); only the host is checked.
         let config = OpenAiClientConfig::new("http://localhost:1", "sk-test", "m");
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         let err = client.complete("hi").await.unwrap_err();
         // Should be a connection-refused network error, NOT a host
         // validation error.
@@ -1032,11 +1040,21 @@ mod tests {
     #[test]
     fn backoff_doubles_and_caps() {
         let config = OpenAiClientConfig::new("https://x", "k", "m").with_max_retries(5);
-        let client = OpenAiCompatibleClient::new(config);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
         assert_eq!(client.backoff_for(0), Duration::from_secs(1));
         assert_eq!(client.backoff_for(1), Duration::from_secs(2));
         assert_eq!(client.backoff_for(2), Duration::from_secs(4));
         assert_eq!(client.backoff_for(6), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn new_returns_result_and_ok_variant_works() {
+        // Verify new() returns Result (not Self) and the Ok variant
+        // produces a usable client. This is the compile-time guarantee
+        // that builder errors are propagated, not silently swallowed.
+        let config = OpenAiClientConfig::new("https://api.deepseek.com/v1", "sk-test", "m");
+        let result = OpenAiCompatibleClient::new(config);
+        assert!(result.is_ok(), "new() should return Ok on valid config");
     }
 
     #[test]
