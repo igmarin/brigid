@@ -81,6 +81,14 @@ pub enum IdentifyError {
         /// The underlying LLM error.
         error: LlmError,
     },
+    /// A checkpoint save/load failed during the identify stage.
+    ///
+    /// Wraps [`crate::CheckpointStoreError`] (and core
+    /// `decon_core::CheckpointError`) so the orchestration in
+    /// [`crate::identify_checkpoint`] can propagate persistence failures
+    /// without inventing a separate error enum.
+    #[error("checkpoint error during identify: {0}")]
+    Checkpoint(String),
 }
 
 /// Input to the single-shot identify stage.

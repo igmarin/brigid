@@ -15,6 +15,7 @@
 pub mod checkpoint_store;
 pub mod dry_run;
 pub mod identify;
+pub mod identify_checkpoint;
 pub mod prompts;
 pub mod resume;
 
@@ -23,6 +24,11 @@ pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,
     IdentifySingleShotInput, identify_map, identify_reduce, identify_single_shot,
+};
+pub use identify_checkpoint::{
+    DEFAULT_MAX_ABSTRACTIONS, DEFAULT_MAX_CONCURRENCY, SINGLE_SHOT_FILE_THRESHOLD,
+    SINGLE_SHOT_SIZE_THRESHOLD, identify_and_checkpoint, load_identify_result,
+    save_identify_result, should_run_identify,
 };
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{
