@@ -253,14 +253,19 @@ fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), Check
 mod tests {
     use super::*;
     use decon_core::{RunConfig, StageId};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Monotonic counter to guarantee unique temp dirs across parallel tests.
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> PathBuf {
         let n = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("decon-checkpoint-store-{n}"));
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("decon-checkpoint-store-{n}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -203,14 +203,19 @@ fn estimate_budget_for_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Monotonic counter to guarantee unique temp dirs across parallel tests.
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn unique_temp_dir() -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("decon-pipeline-dry-run-{nanos}"));
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("decon-pipeline-dry-run-{nanos}-{seq}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }
