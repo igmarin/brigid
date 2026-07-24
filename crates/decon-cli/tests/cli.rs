@@ -633,3 +633,61 @@ fn resume_checkpoint_path_is_file_not_dir_exits_config() {
 
     let _ = std::fs::remove_dir_all(file.parent().unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #103: exit codes 3 (budget) and 4 (LLM).
+//
+// Budget overrun → exit 3; LLM errors (network/timeout/rate-limit/provider/
+// parse) → exit 4. Previously both collapsed into exit 1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn identify_budget_exceeded_exits_budget_code_3() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-budget-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_MAX_LLM_CALLS", "0")
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("budget"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn identify_llm_error_exits_llm_code_4() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-llm-err-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_LLM_MOCK_FAIL", "network")
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("LLM"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
