@@ -185,6 +185,7 @@ fn sort_module_keys(keys: &mut [ModuleKey]) {
 mod tests {
     use super::*;
     use crate::module::discover_modules;
+    use proptest::prelude::*;
 
     const UMBRELLA_FILES: &[&str] = &[
         ".env.example",
@@ -417,5 +418,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["apps/alpha", "apps/gamma", "_root", "config"]
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_scoped_filter_subset_of_unscoped(
+            files in proptest::collection::vec(
+                "(apps/alpha|apps/beta|apps/gamma|src|config|lib)/[a-z]{1,8}\\.(rs|ex|ts)",
+                1..40,
+            ),
+            scope_keys in proptest::collection::vec(
+                "(apps/alpha|apps/beta|apps/gamma|src|lib)",
+                0..4,
+            ),
+        ) {
+            let unscoped: std::collections::HashSet<String> =
+                files.iter().cloned().collect();
+
+            let scope: Vec<ModuleKey> =
+                scope_keys.iter().map(ModuleKey::new).collect();
+            let result = filter_files_by_scope(files.iter().cloned(), &scope);
+
+            for kept in &result.files {
+                prop_assert!(
+                    unscoped.contains(kept),
+                    "scoped result contains {:?} not in the unscoped inventory",
+                    kept,
+                );
+            }
+            prop_assert!(result.stats.after <= result.stats.before);
+        }
     }
 }
