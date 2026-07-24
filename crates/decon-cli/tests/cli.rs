@@ -534,3 +534,70 @@ fn eval_walks_nested_tutorial_subdirectories() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn help_lists_identify_subcommand() {
+    decon()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("identify"));
+}
+
+#[test]
+fn identify_single_shot_completes_and_writes_checkpoint() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-ok-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("identify: completed"));
+
+    // The checkpoint directory should exist with checkpoint.json.
+    assert!(
+        ckpt_dir.join("checkpoint.json").is_file(),
+        "checkpoint.json should exist"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn identify_empty_dir_exits_config() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let empty = std::env::temp_dir().join(format!("decon-cli-identify-empty-{n}"));
+    std::fs::create_dir_all(&empty).unwrap();
+
+    decon()
+        .args(["identify", "--dir"])
+        .arg(&empty)
+        .assert()
+        .failure()
+        .code(2);
+
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn identify_missing_dir_exits_config() {
+    decon()
+        .args(["identify", "--dir", "/no/such/dir/decon-identify-test"])
+        .assert()
+        .failure()
+        .code(2);
+}

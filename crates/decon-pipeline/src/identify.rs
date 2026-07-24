@@ -371,6 +371,63 @@ pub async fn identify_map(
     Ok(candidate_batches)
 }
 
+/// Run a **single** map batch: render the prompt for one batch, call the LLM,
+/// and parse the candidates. This is the per-batch building block used by
+/// [`crate::identify_runner::identify_with_cancellation`] to check
+/// cancellation between batches.
+///
+/// `batch_indices` are global file indices into `input.files`. `batch_idx`
+/// is the 0-based batch index (for candidate tagging). `batch_total` is the
+/// total number of batches (for prompt display).
+///
+/// # Errors
+///
+/// Returns [`IdentifyError`] for prompt render, LLM call, extraction, parse,
+/// or out-of-range file index failures.
+pub(crate) async fn run_single_map_batch(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    input: &IdentifyMapInput,
+    batch_indices: &[usize],
+    batch_idx: usize,
+    batch_total: usize,
+    progress: Option<&mut ProgressTracker>,
+) -> Result<CandidateBatch, IdentifyError> {
+    let prompt = render_map_prompt(renderer, input, batch_indices, batch_idx, batch_total)?;
+
+    if let Some(tracker) = progress {
+        tracker
+            .reserve_llm_calls(1)
+            .map_err(|e: BudgetExceeded| IdentifyError::Budget(e.to_string()))?;
+        tracker.set_stage("identify_map");
+    }
+
+    let response = client.complete(&prompt).await?;
+    let yaml_text = extract_yaml_block(&response)?;
+    let candidates = parse_candidates(&yaml_text, batch_idx)?;
+
+    let total_files = input.files.len();
+    for cand in &candidates {
+        for &idx in &cand.file_indices {
+            if idx >= total_files {
+                return Err(IdentifyError::FileIndexOutOfRange {
+                    index: idx,
+                    total: total_files,
+                });
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return Err(IdentifyError::NoAbstractions);
+    }
+
+    Ok(CandidateBatch {
+        batch_idx,
+        candidates,
+    })
+}
+
 /// Pack files greedily into batches by capped size.
 ///
 /// Each file's size is capped at `config.max_file_chars` (matching the budget
@@ -380,7 +437,11 @@ pub async fn identify_map(
 /// budget still gets its own batch (an "oversized batch").
 ///
 /// Returns a vector of batches, each a vector of global file indices.
-fn batch_files_by_size(files: &[String], sizes: &[u64], config: &BudgetConfig) -> Vec<Vec<usize>> {
+pub(crate) fn batch_files_by_size(
+    files: &[String],
+    sizes: &[u64],
+    config: &BudgetConfig,
+) -> Vec<Vec<usize>> {
     if files.is_empty() {
         return Vec::new();
     }
@@ -420,7 +481,7 @@ fn batch_files_by_size(files: &[String], sizes: &[u64], config: &BudgetConfig) -
 /// `module_note`, `context`, `language_instruction`, `per_batch`,
 /// `name_lang_hint`, `desc_lang_hint`, `file_listing`. Free-text variables are
 /// sanitized to prevent Jinja injection.
-fn render_map_prompt(
+pub(crate) fn render_map_prompt(
     renderer: &PromptRenderer,
     input: &IdentifyMapInput,
     batch_indices: &[usize],
@@ -482,7 +543,7 @@ struct RawCandidate {
 
 /// Parse a YAML string into a list of [`CandidateAbstraction`]s with the
 /// given `batch_idx` injected.
-fn parse_candidates(
+pub(crate) fn parse_candidates(
     yaml_text: &str,
     batch_idx: usize,
 ) -> Result<Vec<CandidateAbstraction>, IdentifyError> {

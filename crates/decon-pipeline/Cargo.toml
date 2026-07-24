@@ -24,10 +24,14 @@ serde_yaml = "0.9"
 # Pinned because prompt syntax is sensitive to minijinja/Jinja2 behavior and
 # golden/snapshot tests depend on exact render output.
 minijinja = "=2.20.0"
+# CancellationToken for graceful Ctrl+C / SIGTERM shutdown (issue #68).
+tokio-util = { version = "0.7", features = ["rt"] }
+# Signal handling (ctrl_c) for the cancellation setup helper (issue #68).
+tokio = { version = "1", features = ["macros", "rt", "sync", "signal"] }
 
 [dev-dependencies]
 serde_json = "1.0"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
 async-trait = "0.1"
 
 [features]
