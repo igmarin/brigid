@@ -295,14 +295,19 @@ mod tests {
     use decon_llm::{LlmClient, MockClient};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Monotonic counter to guarantee unique temp dirs across parallel tests.
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> PathBuf {
         let n = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("decon-cancel-identify-{n}"));
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("decon-cancel-identify-{n}-{seq}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

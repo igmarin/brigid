@@ -386,6 +386,7 @@ fn truncate_body(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -719,6 +720,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_defaults_when_set() {
         unsafe {
             env::set_var("DECON_LLM_API_KEY", "sk-env-test");
@@ -739,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_uses_deepseek_fallback() {
         unsafe {
             env::remove_var("DECON_LLM_API_KEY");
@@ -753,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_openai_provider_name() {
         unsafe {
             env::set_var("DECON_LLM_API_KEY", "sk-x");
@@ -767,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_errors_when_no_key() {
         unsafe {
             env::remove_var("DECON_LLM_API_KEY");
