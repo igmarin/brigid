@@ -201,28 +201,19 @@ fn resume_valid_checkpoint_json() {
 /// Build a unique temporary directory path (no `tempfile` dev-dep required).
 ///
 /// Prefers `CARGO_TARGET_TMPDIR` (inside the cargo target directory, same
-/// drive as the test binary) over `temp_base()` to avoid Windows
-/// 8.3 short-name resolution issues (e.g. `RUNNER~1`) and macOS symlink
-/// resolution issues (e.g. `/var` → `/private/var`).  The base directory
-/// is canonicalised so subprocesses receive a fully-resolved path.
+/// drive as the test binary on Windows) over `std::env::temp_dir()` to
+/// avoid Windows 8.3 short-name resolution issues (e.g. `RUNNER~1`).
 fn temp_base() -> PathBuf {
-    let base = std::env::var("CARGO_TARGET_TMPDIR")
+    // Prefer CARGO_TARGET_TMPDIR (inside the cargo target directory, same
+    // drive as the test binary on Windows) over std::env::temp_dir() to
+    // avoid Windows 8.3 short-name resolution issues (e.g. RUNNER~1).
+    // Do NOT canonicalize: on Windows, canonicalize adds the \\?\ prefix
+    // which causes "Access is denied" (error 5) on file creation, and on
+    // macOS it resolves /var -> /private/var which the subprocess may not
+    // find depending on sandbox state.
+    std::env::var("CARGO_TARGET_TMPDIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    // Canonicalize to resolve Windows 8.3 short names (e.g. RUNNER~1)
-    // and macOS symlinks (e.g. /var -> /private/var), then strip the
-    // Windows \\?\ prefix which causes "Access is denied" (error 5)
-    // when passed to CreateDirectory.
-    let canon = std::fs::canonicalize(&base).unwrap_or(base);
-    #[cfg(windows)]
-    {
-        use std::ffi::OsString;
-        let s = canon.to_string_lossy().into_owned();
-        if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(OsString::from(stripped));
-        }
-    }
-    canon
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 fn temp_dir(label: &str) -> PathBuf {
