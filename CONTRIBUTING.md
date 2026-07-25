@@ -21,6 +21,10 @@ cargo run -p decon-cli -- --help
 cargo run -p decon-cli -- crawl --dir tests/fixtures/python-lib
 cargo run -p decon-cli -- dry-run --dir tests/fixtures/umbrella --format json
 cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini
+
+# Full generate pipeline (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY)
+cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
+  --output-dir /tmp/tutorial --language en
 ```
 
 ## Development workflow
@@ -65,6 +69,9 @@ cargo deny check
 # Fixture baseline check (verify baseline.json matches tests/fixtures/)
 rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
   /tmp/regen_baseline tests/fixtures/ --check
+
+# Eval regression gate (good-mini passes at threshold 80)
+cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
 ```
 
 
@@ -102,7 +109,7 @@ Address Critical / Security / Important findings (or document why not), then
 commit. PRs also receive an automated rs-guard review from GitHub Actions.
 
 
-## Domain modules (M1)
+## Domain modules (M1–M4)
 
 | Area | Crate / path | Notes |
 |------|----------------|-------|
@@ -114,16 +121,30 @@ commit. PRs also receive an automated rs-guard review from GitHub Actions.
 | Index diagrams | `decon-core::diagrams` | Always sanitize/validate |
 | Structural eval | `decon-core::eval` | Fixtures under `tests/fixtures/tutorials/` |
 | RunConfig | `decon-core::config` | CLI > file > env > defaults |
-| Checkpoint types | `decon-core::checkpoint` | ADR 0001 metadata |
+| Checkpoint types | `decon-core::checkpoint` | ADR 0001 metadata; ADR 0006 stage outputs |
 | Progress / LLM budget | `decon-core::progress` | Fail-closed max calls |
 | Secrets redaction | `decon-core::secrets` | Paths + content heuristics |
+| i18n chrome | `decon-core::i18n` | `Locale` + `ChromeStrings` (en/es); ADR 0007 |
+| Chapter domain types | `decon-core::chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` |
+| M4 domain types | `decon-core::generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
+| M4 domain types | `decon-core::abstraction` | `RelationshipsResult`, `Relationship` |
 | LLM disk cache | `decon-llm::cache` | Hash-keyed response cache |
 | LLM provider client | `decon-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff |
 | Bounded concurrency | `decon-llm::concurrency` | Semaphore-gated map batches |
-| Checkpoint store | `decon-pipeline::checkpoint_store` | save/load bundle |
+| Checkpoint store | `decon-pipeline::checkpoint_store` | save/load bundle; file-based stage outputs (ADR 0006) |
 | Resume helpers | `decon-pipeline::resume` | stage-skip / invalidate |
 | Local crawl | `decon-crawl::local` | FS I/O |
 | Dry-run plan | `decon-pipeline::dry_run` | Orchestration |
+| Identify stage | `decon-pipeline::identify` | Map/reduce + single-shot |
+| Relationships stage | `decon-pipeline::relationships` | Budgeted evidence selection |
+| Order stage | `decon-pipeline::order` | Chapter ordering + validation |
+| Chapters stage | `decon-pipeline::chapters` | Bounded-concurrent chapter writing |
+| Setup guide stage | `decon-pipeline::setup_guide` | Score-triggered generation |
+| Overview stage | `decon-pipeline::overview` | Multi-app architecture overview |
+| Combine stage | `decon-pipeline::combine` | Index + diagrams + i18n chrome + sanitize |
+| Generate orchestration | `decon-pipeline::generate` | Full pipeline + `--each-app` fan-out |
+| Chapter review | `decon-pipeline::review` | `--review-chapters` second LLM pass |
+| Prompt rendering | `decon-pipeline::prompts` | minijinja templates |
 | CLI | `decon-cli` | Thin wrappers + `assert_cmd` tests |
 
 ## Coverage gate
@@ -150,9 +171,9 @@ cargo llvm-cov --workspace --lcov --output-path target/lcov.info
 cargo llvm-cov report --summary-only
 ```
 
-Coverage is report-only in Milestone 0. The hard gate becomes active in
-Milestone 2, when the core domain layer has enough logic to make the number
-meaningful.
+The hard coverage gate (≥85% workspace lines) has been active since
+Milestone 2 and runs on every PR via `cargo llvm-cov --workspace
+--fail-under-lines 85`.
 
 ## Code conventions
 
@@ -195,8 +216,9 @@ workspace `members` list.
    `feature/3-contributing-guide`).
 2. Make focused, incremental commits.
 3. Ensure `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
-   `cargo llvm-cov --fail-under-lines 85`, `cargo audit`, and `cargo deny check`
-   pass locally.
+   `cargo llvm-cov --fail-under-lines 85`, `cargo audit`, `cargo deny check`,
+   and the eval regression gate (`cargo run -p decon-cli -- eval --out
+   tests/fixtures/tutorials/good-mini --threshold 80`) pass locally.
 4. Open a PR that references the issue number (e.g. `Closes #3`).
 5. Wait for CI and any automated `rs-guard` review.
 6. Merge only when CI is green.

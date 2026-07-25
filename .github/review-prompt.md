@@ -119,7 +119,7 @@ them):**
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
-- `cargo llvm-cov` coverage gate (≥85%, once enabled in CI per Milestone 2)
+- `cargo llvm-cov` coverage gate (≥85%, active in CI since Milestone 2)
 
 ---
 
