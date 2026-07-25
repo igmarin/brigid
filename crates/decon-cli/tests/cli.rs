@@ -817,3 +817,353 @@ fn generate_completes_and_writes_output() {
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #147: per-stage subcommands for debugging individual pipeline stages.
+//
+// Each subcommand runs exactly one stage, reads inputs from checkpoint, and
+// writes outputs to checkpoint. These tests cover --help flags, missing --dir
+// (exit 2), missing checkpoint (prerequisite error), and a successful run of
+// the combine stage with a pre-populated checkpoint.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn relationships_subcommand_help_shows_flags() {
+    decon()
+        .args(["relationships", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn relationships_without_dir_exits_config() {
+    decon().args(["relationships"]).assert().failure().code(2);
+}
+
+#[test]
+fn relationships_missing_checkpoint_exits_config() {
+    decon()
+        .args(["relationships", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-rel-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+#[test]
+fn order_subcommand_help_shows_flags() {
+    decon()
+        .args(["order", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn order_without_dir_exits_config() {
+    decon().args(["order"]).assert().failure().code(2);
+}
+
+#[test]
+fn order_missing_checkpoint_exits_config() {
+    decon()
+        .args(["order", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-order-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+#[test]
+fn chapters_subcommand_help_shows_flags() {
+    decon()
+        .args(["chapters", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--language"))
+        .stdout(predicate::str::contains("--diagram-level"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn chapters_without_dir_exits_config() {
+    decon().args(["chapters"]).assert().failure().code(2);
+}
+
+#[test]
+fn chapters_missing_checkpoint_exits_config() {
+    decon()
+        .args(["chapters", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-chapters-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+#[test]
+fn setup_subcommand_help_shows_flags() {
+    decon()
+        .args(["setup", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn setup_without_dir_exits_config() {
+    decon().args(["setup"]).assert().failure().code(2);
+}
+
+#[test]
+fn setup_missing_checkpoint_exits_config() {
+    decon()
+        .args(["setup", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-setup-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+#[test]
+fn overview_subcommand_help_shows_flags() {
+    decon()
+        .args(["overview", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn overview_without_dir_exits_config() {
+    decon().args(["overview"]).assert().failure().code(2);
+}
+
+#[test]
+fn overview_missing_checkpoint_exits_config() {
+    decon()
+        .args(["overview", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-overview-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+#[test]
+fn combine_subcommand_help_shows_flags() {
+    decon()
+        .args(["combine", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--language"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn combine_without_dir_exits_config() {
+    decon().args(["combine"]).assert().failure().code(2);
+}
+
+#[test]
+fn combine_missing_checkpoint_exits_config() {
+    decon()
+        .args(["combine", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-combine-stage-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("checkpoint"));
+}
+
+fn seed_full_checkpoint(ckpt_dir: &std::path::Path) {
+    use decon_core::{
+        Abstraction, AbstractionKind, Chapter, ChapterOrder, ChapterResult, CheckpointV1,
+        IdentifyResult, Relationship, RelationshipsResult, RunConfig, StageId, Tier,
+    };
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
+    meta.mark_stage_complete(StageId::DryRun, "2026-07-24T00:02:00Z");
+
+    let abstractions = vec![
+        Abstraction {
+            name: "Router".into(),
+            description: "Routes requests".into(),
+            file_indices: vec![0],
+            tier: Tier::S,
+            kind: AbstractionKind::new("module"),
+            apps: vec!["web".into()],
+            entry_files: vec!["src/router.rs".into()],
+        },
+        Abstraction {
+            name: "Store".into(),
+            description: "Persistence layer".into(),
+            file_indices: vec![1],
+            tier: Tier::S,
+            kind: AbstractionKind::new("module"),
+            apps: vec!["web".into()],
+            entry_files: vec!["src/store.rs".into()],
+        },
+        Abstraction {
+            name: "Worker".into(),
+            description: "Background jobs".into(),
+            file_indices: vec![2],
+            tier: Tier::S,
+            kind: AbstractionKind::new("module"),
+            apps: vec!["api".into()],
+            entry_files: vec!["src/worker.rs".into()],
+        },
+    ];
+    let identify = IdentifyResult::new(abstractions);
+    meta.abstractions = Some(identify.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Identify, "t3");
+
+    let rels = RelationshipsResult::new(
+        "A web framework with routing and persistence.".to_string(),
+        vec![Relationship::new(
+            0,
+            1,
+            "calls".to_string(),
+            "calls".to_string(),
+        )],
+    );
+    meta.relationships = Some(rels.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Relationships, "t4");
+
+    let order = ChapterOrder::new(vec![0, 1, 2]);
+    meta.order = Some(order.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Order, "t5");
+
+    let store = CheckpointStore::new(ckpt_dir);
+    let files = records_from_files(&[
+        ("src/router.rs", b"fn route() {}" as &[u8]),
+        ("src/store.rs", b"fn store() {}" as &[u8]),
+        ("src/worker.rs", b"fn work() {}" as &[u8]),
+    ]);
+    store.save(meta.clone(), &files).unwrap();
+
+    let chapters = ChapterResult::new(vec![
+        Chapter::new(0, 1, "Router", "# Router\n", Tier::S, "module", "f0"),
+        Chapter::new(1, 2, "Store", "# Store\n", Tier::S, "module", "f1"),
+        Chapter::new(2, 3, "Worker", "# Worker\n", Tier::S, "module", "f2"),
+    ]);
+    let entries = store.write_chapters(&store.dir, &chapters).unwrap();
+    let (mut meta2, files2) = store.load().unwrap();
+    meta2.mark_stage_complete(StageId::Chapters, "t6");
+    store
+        .record_stage_outputs(&mut meta2, StageId::Chapters, entries)
+        .unwrap();
+    store.save(meta2.clone(), &files2).unwrap();
+}
+
+#[test]
+fn combine_with_prepopulated_checkpoint_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-ok-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_full_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["combine", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("combine: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn combine_with_incomplete_checkpoint_errors_about_prerequisites() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-incomplete-{n}"));
+    let output_dir =
+        std::env::temp_dir().join(format!("decon-cli-combine-stage-incomplete-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "t1");
+    meta.mark_stage_complete(StageId::DryRun, "t2");
+    meta.mark_stage_complete(StageId::Identify, "t3");
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+
+    decon()
+        .args(["combine", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("chapters"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
