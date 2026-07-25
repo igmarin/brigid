@@ -450,6 +450,34 @@ mod tests {
         assert_eq!(report.checks.links_resolved, 1);
     }
 
+    #[test]
+    fn tutorial_markdown_secrets_are_redacted_on_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "decon-core-eval-redact-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = "# Tutorial\n\nDB_KEY=dummyvalue\n";
+        std::fs::write(dir.join("index.md"), content).unwrap();
+
+        let files = load_dir(&dir);
+        assert_eq!(files.len(), 1);
+        assert!(
+            files[0].content.contains("DB_KEY=****"),
+            "secret should be redacted: {}",
+            files[0].content
+        );
+        assert!(
+            !files[0].content.contains("dummyvalue"),
+            "raw secret must not survive redaction"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn load_dir(root: &std::path::Path) -> Vec<TutorialFile> {
         let mut out = Vec::new();
         if !root.is_dir() {
@@ -465,6 +493,7 @@ mod tests {
                     walk(&p, root, out);
                 } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
                     if let Ok(content) = std::fs::read_to_string(&p) {
+                        let content = crate::redact_content(&content);
                         let rel = p
                             .strip_prefix(root)
                             .map(|r| r.to_string_lossy().replace('\\', "/"))
