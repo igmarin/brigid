@@ -21,6 +21,7 @@ decon-crawl = { path = "../decon-crawl" }
 decon-llm = { path = "../decon-llm" }
 decon-pipeline = { path = "../decon-pipeline" }
 clap = { version = "4.6", features = ["derive"] }
+clap_complete = "4.6"
 serde_json = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 dirs = "6"
