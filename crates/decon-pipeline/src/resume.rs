@@ -124,12 +124,33 @@ pub fn invalidate_from(checkpoint: &mut CheckpointV1, from: StageId) {
     if drop.contains(&StageId::Relationships) {
         checkpoint.relationships = None;
     }
+    if drop.iter().any(|s| {
+        matches!(
+            s,
+            StageId::Chapters | StageId::Setup | StageId::Overview | StageId::Combine
+        )
+    }) {
+        if let Some(so) = checkpoint.stage_outputs.as_mut() {
+            for s in &drop {
+                if matches!(
+                    s,
+                    StageId::Chapters | StageId::Setup | StageId::Overview | StageId::Combine
+                ) {
+                    so.remove(s.as_str());
+                }
+            }
+            if so.entries.is_empty() {
+                checkpoint.stage_outputs = None;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use decon_core::config::RunConfig;
+    use decon_core::{StageId, StageOutputs};
 
     fn empty_cp() -> CheckpointV1 {
         let cfg = RunConfig::default();
@@ -215,6 +236,81 @@ mod tests {
         assert!(cp.abstractions.is_none());
         assert!(cp.relationships.is_none());
         assert_eq!(next_stage(&cp), Some(StageId::Identify));
+    }
+
+    #[test]
+    fn invalidate_from_clears_stage_outputs_for_m4_stages() {
+        let mut cp = empty_cp();
+        for s in [
+            StageId::Fetch,
+            StageId::DryRun,
+            StageId::Identify,
+            StageId::Relationships,
+            StageId::Order,
+            StageId::Chapters,
+            StageId::Setup,
+            StageId::Overview,
+        ] {
+            cp.mark_stage_complete(s, "t");
+        }
+        let mut so = StageOutputs::new();
+        so.set(
+            StageId::Chapters.as_str(),
+            vec![decon_core::StageOutputEntry {
+                path: "chapters/01_intro.md".into(),
+                sha256: "sha256:abc".into(),
+                size: 10,
+            }],
+        );
+        so.set(
+            StageId::Setup.as_str(),
+            vec![decon_core::StageOutputEntry {
+                path: "00_setup.md".into(),
+                sha256: "sha256:def".into(),
+                size: 5,
+            }],
+        );
+        so.set(
+            StageId::Overview.as_str(),
+            vec![decon_core::StageOutputEntry {
+                path: "00_architecture_overview.md".into(),
+                sha256: "sha256:ghi".into(),
+                size: 7,
+            }],
+        );
+        cp.stage_outputs = Some(so);
+
+        invalidate_from(&mut cp, StageId::Chapters);
+        assert!(!cp.is_stage_complete(StageId::Chapters));
+        assert!(!cp.is_stage_complete(StageId::Setup));
+        assert!(!cp.is_stage_complete(StageId::Overview));
+        assert!(cp.stage_outputs.is_none());
+    }
+
+    #[test]
+    fn invalidate_from_clears_all_stage_outputs_when_empty() {
+        let mut cp = empty_cp();
+        for s in [
+            StageId::Fetch,
+            StageId::DryRun,
+            StageId::Chapters,
+            StageId::Setup,
+        ] {
+            cp.mark_stage_complete(s, "t");
+        }
+        let mut so = StageOutputs::new();
+        so.set(
+            StageId::Chapters.as_str(),
+            vec![decon_core::StageOutputEntry {
+                path: "chapters/01.md".into(),
+                sha256: "sha256:x".into(),
+                size: 1,
+            }],
+        );
+        cp.stage_outputs = Some(so);
+
+        invalidate_from(&mut cp, StageId::Chapters);
+        assert!(cp.stage_outputs.is_none());
     }
 
     #[test]

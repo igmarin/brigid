@@ -44,7 +44,7 @@ pub use chapter::{Chapter, ChapterOrder, ChapterOrderError, ChapterResult};
 pub use checkpoint::{
     CHECKPOINT_SCHEMA_VERSION, CheckpointError, CheckpointMeta, CheckpointV1,
     DEFAULT_MANIFEST_REL_PATH, ENCODING_BASE64, FileBundleRecord, ManifestPointer, StageId,
-    config_hash, sha256_hex_prefixed,
+    StageOutputEntry, StageOutputs, config_hash, sha256_hex_prefixed,
 };
 pub use config::{
     ConfigError, DEFAULT_CONFIG_CHARS_PER_TOKEN, DEFAULT_MAX_LLM_CALLS, RunConfig,
