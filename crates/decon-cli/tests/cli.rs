@@ -141,6 +141,7 @@ fn init_writes_decon_toml() {
     decon()
         .args(["init", "--dir"])
         .arg(&dir)
+        .args(["--non-interactive"])
         .assert()
         .success()
         .stdout(predicate::str::contains("wrote"));
@@ -351,6 +352,7 @@ fn init_refuses_to_overwrite_existing_config() {
     decon()
         .args(["init", "--dir"])
         .arg(&dir)
+        .args(["--non-interactive"])
         .assert()
         .failure()
         .code(2)
@@ -515,7 +517,9 @@ fn init_subcommand_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("starter"))
-        .stdout(predicate::str::contains("--dir"));
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--non-interactive"))
+        .stdout(predicate::str::contains("--check"));
 }
 
 #[test]
@@ -1452,4 +1456,238 @@ fn generate_error_includes_actionable_hint() {
         .stderr(predicate::str::contains("--max-llm-calls"));
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #185: decon init wizard, --non-interactive, --check
+// ---------------------------------------------------------------------------
+
+#[test]
+fn init_non_interactive_writes_valid_config() {
+    let dir = temp_dir("init-non-interactive");
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--non-interactive"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    assert!(dir.join("decon.toml").is_file());
+    let content = std::fs::read_to_string(dir.join("decon.toml")).unwrap();
+    // Should contain all M5 options as comments.
+    for option in &[
+        "language",
+        "diagram_level",
+        "max_abstractions",
+        "concurrency",
+        "max_llm_calls",
+        "cache_dir",
+        "cache_size_limit_mb",
+        "allowed_hosts",
+    ] {
+        assert!(content.contains(option), "config should mention {option}");
+    }
+    // Should contain the API key warning.
+    assert!(
+        content.contains("DECON_LLM_API_KEY") || content.contains("API keys"),
+        "config should warn about API keys"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_non_interactive_config_is_loadable() {
+    let dir = temp_dir("init-loadable");
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--non-interactive"])
+        .assert()
+        .success();
+
+    // The generated config should be loadable by the CLI (via --config).
+    decon()
+        .args(["--config"])
+        .arg(dir.join("decon.toml"))
+        .args(["crawl", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("files: 6"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_valid_config_exits_zero() {
+    let dir = temp_dir("init-check-valid");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("decon.toml"),
+        b"language = \"en\"\nconcurrency = 4\n",
+    )
+    .unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_invalid_concurrency_exits_two() {
+    let dir = temp_dir("init-check-concurrency");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("decon.toml"), b"concurrency = 0\n").unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(predicate::str::contains("concurrency"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_invalid_diagram_level_exits_two() {
+    let dir = temp_dir("init-check-diagram");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("decon.toml"), b"diagram_level = \"ultra\"\n").unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(predicate::str::contains("diagram_level"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_secret_field_exits_two() {
+    let dir = temp_dir("init-check-secret");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("decon.toml"), b"api_key = \"xxx\"\n").unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .failure()
+        .code(2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_missing_file_exits_two() {
+    let dir = temp_dir("init-check-missing");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("does not exist"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_check_invalid_toml_exits_two() {
+    let dir = temp_dir("init-check-bad-toml");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("decon.toml"), b"this is = not = valid =\n").unwrap();
+
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .args(["--check"])
+        .assert()
+        .failure()
+        .code(2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_help_shows_new_flags() {
+    decon()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--non-interactive"))
+        .stdout(predicate::str::contains("--check"));
+}
+
+#[test]
+fn init_wizard_with_piped_input_writes_config() {
+    let dir = temp_dir("init-wizard-piped");
+    // Pipe input to the wizard: language, diagram level, max abstractions,
+    // concurrency, cache dir (blank), cache size.
+    let input = "es\nrich\n15\n8\n\n200\n";
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    assert!(dir.join("decon.toml").is_file());
+    let content = std::fs::read_to_string(dir.join("decon.toml")).unwrap();
+    // The wizard answers should be reflected in the config.
+    assert!(content.contains("language = \"es\""));
+    assert!(content.contains("diagram_level = \"rich\""));
+    assert!(content.contains("max_abstractions = 15"));
+    assert!(content.contains("concurrency = 8"));
+    assert!(content.contains("cache_size_limit_mb = 200"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn init_wizard_with_eof_uses_defaults() {
+    let dir = temp_dir("init-wizard-eof");
+    // Empty stdin (immediate EOF) — wizard should fall back to defaults.
+    decon()
+        .args(["init", "--dir"])
+        .arg(&dir)
+        .write_stdin("")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    assert!(dir.join("decon.toml").is_file());
+    let content = std::fs::read_to_string(dir.join("decon.toml")).unwrap();
+    // All lines should be comments (defaults).
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            assert!(
+                trimmed.starts_with('#'),
+                "expected all lines to be comments with default answers, got: {trimmed}"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
