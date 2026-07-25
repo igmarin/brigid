@@ -42,8 +42,9 @@ pub use combine::{
 };
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
 pub use generate::{
-    GenerateConfig, GenerateError, GenerateOutcome, run_chapters_stage, run_combine_stage,
-    run_generate, run_order_stage, run_overview_stage, run_relationships_stage, run_setup_stage,
+    EachAppOutcome, EachAppSummary, GenerateConfig, GenerateError, GenerateOutcome,
+    run_chapters_stage, run_combine_stage, run_generate, run_generate_each_app, run_order_stage,
+    run_overview_stage, run_relationships_stage, run_setup_stage,
 };
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,

@@ -724,7 +724,8 @@ fn generate_subcommand_help_shows_all_flags() {
         .stdout(predicate::str::contains("--checkpoint-dir"))
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--max-abstractions"))
-        .stdout(predicate::str::contains("--single-shot"));
+        .stdout(predicate::str::contains("--single-shot"))
+        .stdout(predicate::str::contains("--each-app"));
 }
 
 #[test]
@@ -816,6 +817,57 @@ fn generate_completes_and_writes_output() {
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #148: `decon generate --each-app` flag for per-app generation.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generate_each_app_help_shows_flag() {
+    decon()
+        .args(["generate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--each-app"));
+}
+
+#[test]
+fn generate_each_app_completes_and_writes_per_app_output() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-each-app-out-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--each-app", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("each-app completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "summary index.md should exist"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let alpha_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-alpha"));
+    let beta_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-beta"));
+    let gamma_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-gamma"));
+    let _ = std::fs::remove_dir_all(&alpha_ckpt);
+    let _ = std::fs::remove_dir_all(&beta_ckpt);
+    let _ = std::fs::remove_dir_all(&gamma_ckpt);
 }
 
 // ---------------------------------------------------------------------------
