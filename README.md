@@ -10,8 +10,10 @@ where "read the source" is not a realistic onboarding path.
 
 This is a **Rust rewrite** of a Python/PocketFlow reference implementation. The
 product value lives in the pipeline stages, prompt catalog, and quality
-heuristics — not the runtime. See [`docs/move-to-rust.md`](docs/move-to-rust.md)
-for the full migration design.
+heuristics — not the runtime. The Python entrypoint is now **deprecated**; see
+[`docs/migrating-from-python.md`](docs/migrating-from-python.md) for the
+migration guide. See [`docs/move-to-rust.md`](docs/move-to-rust.md) for the
+full migration design.
 
 ---
 
@@ -31,7 +33,7 @@ is next.
 | **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `decon.toml`; ≥85% coverage gate | ✅ Done |
 | **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
 | **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app`; `--review-chapters`; eval regression gate | ✅ Done |
-| **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX, Python deprecation | 🔜 Next |
+| **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX, Python deprecation | 🔜 In progress |
 
 ### What works today
 
@@ -118,10 +120,12 @@ cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
 
 ### What does not work yet
 
-Remaining M5 items: concurrency limits, improved error UX, and deprecation of
-the Python entrypoint. Native installers (Homebrew, `cargo install`, GitHub
-Releases), the man page, and shell completions are now available — see
-[Installation](#installation) below.
+Remaining M5 items: concurrency limits and improved error UX. Native
+installers (Homebrew, `cargo install`, GitHub Releases), the man page, and
+shell completions are now available — see
+[Installation](#installation) below. The Python entrypoint has been deprecated
+— see [`docs/migrating-from-python.md`](docs/migrating-from-python.md) for the
+migration guide.
 
 ---
 
@@ -561,6 +565,7 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate structure, pipeline data flow, key types, checkpoint/resume design, ADR index |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history per milestone (Keep a Changelog format) |
 | [`docs/move-to-rust.md`](docs/move-to-rust.md) | Migration design, pipeline model, domain objects, phase plan, engineering bar |
+| [`docs/migrating-from-python.md`](docs/migrating-from-python.md) | Migration guide for Python `decon` users: command mapping, env vars, feature parity, FAQ |
 | [`docs/best-practices.md`](docs/best-practices.md) | Language-agnostic product rules: scope, budget, abstraction quality, mermaid, setup docs |
 | [`docs/adr/0001-checkpoint-schema-v1.md`](docs/adr/0001-checkpoint-schema-v1.md) | Content-addressed checkpoint format for resume |
 | [`docs/adr/0002-async-trait-llm-client.md`](docs/adr/0002-async-trait-llm-client.md) | Why `async-trait` for `LlmClient` (object-safety tradeoff) |
