@@ -160,7 +160,9 @@ pub fn build_index_markdown(
 /// Write the final output directory: `index.md`, optional setup/overview, and
 /// chapter files.
 ///
-/// Creates the output directory if it doesn't exist.
+/// Creates the output directory if it doesn't exist.  All files are written
+/// first, then the output directory is `fsync`'d **once** for the entire
+/// batch (instead of one fsync per file).
 ///
 /// # Errors
 ///
@@ -177,22 +179,31 @@ pub fn write_output_directory(
         source,
     })?;
 
-    write_file(output_dir, "index.md", combined.index_markdown.as_bytes())?;
-
+    // Collect all (filename, bytes) pairs for a single batch write.
+    let mut files: Vec<(String, &[u8])> = Vec::new();
+    files.push(("index.md".to_owned(), combined.index_markdown.as_bytes()));
     if let Some(guide) = setup {
-        write_file(output_dir, "00_setup.md", guide.markdown.as_bytes())?;
+        files.push(("00_setup.md".to_owned(), guide.markdown.as_bytes()));
     }
     if let Some(ov) = overview {
-        write_file(
-            output_dir,
-            "00_architecture_overview.md",
+        files.push((
+            "00_architecture_overview.md".to_owned(),
             ov.markdown.as_bytes(),
-        )?;
+        ));
     }
-
     for ch in &chapters.chapters {
         let filename = slugify_chapter_filename(ch.chapter_num, &ch.title);
-        write_file(output_dir, &filename, ch.markdown.as_bytes())?;
+        files.push((filename, ch.markdown.as_bytes()));
+    }
+
+    // Phase 1: write all files.
+    for (name, bytes) in &files {
+        write_file(output_dir, name, bytes)?;
+    }
+
+    // Phase 2: fsync the output directory once for the entire batch.
+    if let Ok(dir) = std::fs::File::open(output_dir) {
+        let _ = dir.sync_all();
     }
 
     Ok(())
@@ -899,6 +910,86 @@ mod tests {
             .expect("should create nested dirs");
 
         assert!(output.join("index.md").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_output_directory_batch_integrity() {
+        let dir = temp_dir();
+        let output = dir.join("output");
+        let abs = three_abstractions();
+        let rels = three_relationships();
+        let order = ChapterOrder::new(vec![0, 1, 2]);
+        let chapters = three_chapters();
+        let setup = sample_setup();
+        let overview = sample_overview();
+        let modules = three_module_inventory();
+        let chrome = ChromeStrings::for_locale(Locale::En);
+
+        let md = build_index_markdown(
+            &abs,
+            &rels,
+            &order,
+            &chapters,
+            Some(&setup),
+            Some(&overview),
+            &modules,
+            &chrome,
+        );
+        let combined = CombinedTutorial::new(&md, 3, true, true, "en");
+
+        write_output_directory(&output, &combined, &chapters, Some(&setup), Some(&overview))
+            .expect("write should succeed");
+
+        // All expected files present and non-empty.
+        let expected_files = [
+            "index.md",
+            "00_setup.md",
+            "00_architecture_overview.md",
+            "01_authentication.md",
+            "02_query-engine.md",
+            "03_response-builder.md",
+        ];
+        for name in &expected_files {
+            let path = output.join(name);
+            assert!(path.is_file(), "file {name} should exist");
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(!content.is_empty(), "file {name} should not be empty");
+        }
+
+        // Verify content integrity of each file.
+        let index_content = fs::read_to_string(output.join("index.md")).unwrap();
+        assert!(index_content.contains(chrome.how_to_use_heading));
+
+        let setup_content = fs::read_to_string(output.join("00_setup.md")).unwrap();
+        assert!(setup_content.contains("# Setup Guide"));
+
+        let overview_content =
+            fs::read_to_string(output.join("00_architecture_overview.md")).unwrap();
+        assert!(overview_content.contains("# Architecture Overview"));
+
+        let ch1 = fs::read_to_string(output.join("01_authentication.md")).unwrap();
+        assert!(ch1.contains("# Authentication"));
+
+        let ch2 = fs::read_to_string(output.join("02_query-engine.md")).unwrap();
+        assert!(ch2.contains("# Query Engine"));
+
+        let ch3 = fs::read_to_string(output.join("03_response-builder.md")).unwrap();
+        assert!(ch3.contains("# Response Builder"));
+
+        // No leftover temp files.
+        let all_files: Vec<_> = fs::read_dir(&output)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        for name in &all_files {
+            assert!(
+                !name.ends_with(".tmp"),
+                "temp file {name} should not remain after batch write"
+            );
+        }
+
         let _ = fs::remove_dir_all(&dir);
     }
 
