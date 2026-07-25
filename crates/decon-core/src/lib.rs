@@ -19,6 +19,7 @@ pub mod config;
 pub mod diagrams;
 pub mod eval;
 pub mod extract;
+pub mod i18n;
 pub mod mermaid;
 pub mod module;
 pub mod progress;
@@ -57,6 +58,7 @@ pub use eval::{
     WEIGHT_PATH_CITATIONS, WEIGHT_SETUP_OR_OVERVIEW, evaluate_tutorial,
 };
 pub use extract::{ExtractError, extract_json_block, extract_yaml_block};
+pub use i18n::{ChromeStrings, Locale};
 pub use mermaid::{
     MAX_LABEL_CHARS, MAX_SEQUENCE_PARTICIPANTS, ValidateResult, participant_line, sanitize_label,
     sanitize_markdown_mermaid_blocks, sanitize_mermaid, sequence_participant_lines, stable_node_id,
