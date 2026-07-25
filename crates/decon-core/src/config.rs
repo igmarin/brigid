@@ -204,7 +204,7 @@ pub fn parse_toml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// or [`ConfigError::SecretFieldRejected`] when a secret-bearing key is found.
 pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
     let value: serde_json::Value =
-        serde_yaml::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+        serde_yaml_ng::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
     check_for_secret_fields(&value)?;
     serde_json::from_value(value).map_err(|e| ConfigError::Yaml(e.to_string()))
 }

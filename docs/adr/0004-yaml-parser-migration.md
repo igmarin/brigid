@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0005](0005-yaml-parser-serde-yaml-ng.md) — `serde_yaml` 0.9 is
+deprecated upstream; the workspace migrated to the maintained `serde_yaml_ng`
+fork in issue #114.
 
 ## Date
 
