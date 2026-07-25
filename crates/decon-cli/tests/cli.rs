@@ -5,7 +5,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn decon() -> Command {
     let mut cmd = Command::cargo_bin("decon").expect("decon binary should build");
@@ -213,6 +213,14 @@ fn temp_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("decon-cli-{label}-{n}"))
 }
 
+/// Escape a filesystem path for embedding in a TOML or YAML double-quoted
+/// string.  On Windows, `Path::display()` produces paths with backslashes
+/// (e.g. `C:\Users\...`), which are invalid escape sequences in TOML and YAML.
+/// This replaces `\` with `\\` so the path round-trips correctly.
+fn path_for_config(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 #[test]
 fn crawl_missing_dir_exits_config() {
     decon()
@@ -371,7 +379,7 @@ fn config_explicit_toml_is_loaded() {
     let cfg_dir = temp_dir("cfg-toml");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let toml_path = cfg_dir.join("decon.toml");
-    let toml_text = format!("root = \"{}\"\n", dir.display());
+    let toml_text = format!("root = \"{}\"\n", path_for_config(&dir));
     std::fs::write(&toml_path, toml_text).unwrap();
 
     decon()
@@ -393,7 +401,7 @@ fn config_explicit_yaml_is_loaded() {
     let cfg_dir = temp_dir("cfg-yaml");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     let yaml_path = cfg_dir.join(".decon.yaml");
-    let yaml_text = format!("root: \"{}\"\n", dir.display());
+    let yaml_text = format!("root: \"{}\"\n", path_for_config(&dir));
     std::fs::write(&yaml_path, yaml_text).unwrap();
 
     decon()
@@ -414,7 +422,7 @@ fn config_discovered_from_cwd_drives_crawl() {
     let repo = fixtures_dir().join("python-lib");
     let cwd = temp_dir("cfg-discover");
     std::fs::create_dir_all(&cwd).unwrap();
-    let toml_text = format!("root = \"{}\"\n", repo.display());
+    let toml_text = format!("root = \"{}\"\n", path_for_config(&repo));
     std::fs::write(cwd.join("decon.toml"), toml_text).unwrap();
 
     decon()
@@ -2187,12 +2195,21 @@ fn eval_broken_mini_text_format_contains_reasons() {
 
 #[test]
 fn init_nonexistent_parent_dir_exits_config() {
+    // Create a file and try to init inside it — a file cannot be a parent
+    // directory on any platform, so `create_dir_all` must fail.
+    let blocker = temp_dir("init-blocker");
+    std::fs::write(&blocker, b"blocker").unwrap();
+    let dir = blocker.join("sub");
+
     decon()
-        .args(["init", "--dir", "/no/such/parent/decon-init-test/sub"])
+        .args(["init", "--dir"])
+        .arg(&dir)
         .assert()
         .failure()
         .code(2)
         .stderr(predicate::str::contains("error: create"));
+
+    let _ = std::fs::remove_file(&blocker);
 }
 
 // --- Generate with --each-app verbose mode ---
