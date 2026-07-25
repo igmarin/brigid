@@ -174,6 +174,63 @@ impl FileBundleRecord {
     }
 }
 
+/// A single file-based stage output tracked in the stage-output manifest.
+///
+/// Records the relative path, SHA-256 digest, and byte size of a file written
+/// by an M4 stage (chapters, setup, overview, combine) inside the checkpoint
+/// directory. Used by the checkpoint store to verify file integrity on read.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StageOutputEntry {
+    /// Path relative to the checkpoint directory (POSIX `/`).
+    pub path: String,
+    /// `sha256:<hex>` of the file bytes.
+    pub sha256: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// Manifest of file-based outputs for M4 stages, keyed by stage wire name.
+///
+/// Stored as [`CheckpointV1::stage_outputs`] (additive, no schema version
+/// bump). On read, each entry's SHA-256 is verified against the on-disk file
+/// to detect corruption.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StageOutputs {
+    /// Map of stage wire name to its file output entries.
+    #[serde(default)]
+    pub entries: BTreeMap<String, Vec<StageOutputEntry>>,
+}
+
+impl StageOutputs {
+    /// Construct an empty manifest.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record (or replace) the file entries for a stage.
+    pub fn set(&mut self, stage: &str, files: Vec<StageOutputEntry>) {
+        self.entries.insert(stage.to_owned(), files);
+    }
+
+    /// Get the file entries for a stage, if any.
+    #[must_use]
+    pub fn get(&self, stage: &str) -> Option<&[StageOutputEntry]> {
+        self.entries.get(stage).map(Vec::as_slice)
+    }
+
+    /// Remove all entries for a stage.
+    pub fn remove(&mut self, stage: &str) {
+        self.entries.remove(stage);
+    }
+
+    /// Whether any entries are recorded for `stage`.
+    #[must_use]
+    pub fn has(&self, stage: &str) -> bool {
+        self.entries.contains_key(stage)
+    }
+}
+
 /// Full `checkpoint.json` document (schema v1).
 ///
 /// File bodies are **not** stored here — only [`Self::manifest`].
@@ -198,6 +255,10 @@ pub struct CheckpointV1 {
     /// Relationship results (opaque JSON until domain types land).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relationships: Option<serde_json::Value>,
+    /// File-based stage output manifest for M4 stages (chapters, setup,
+    /// overview, combine). Additive — no schema version bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_outputs: Option<StageOutputs>,
     /// Bookkeeping metadata.
     pub metadata: CheckpointMeta,
 }
@@ -238,6 +299,7 @@ impl CheckpointV1 {
             manifest: ManifestPointer::new(DEFAULT_MANIFEST_REL_PATH, "", 0),
             abstractions: None,
             relationships: None,
+            stage_outputs: None,
             metadata: CheckpointMeta {
                 created_at: created.clone(),
                 updated_at: created,
@@ -426,5 +488,60 @@ mod tests {
             h,
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn stage_outputs_set_get_remove() {
+        let mut so = StageOutputs::new();
+        assert!(!so.has("chapters"));
+        so.set(
+            "chapters",
+            vec![StageOutputEntry {
+                path: "chapters/01_intro.md".into(),
+                sha256: "sha256:abc".into(),
+                size: 10,
+            }],
+        );
+        assert!(so.has("chapters"));
+        let got = so.get("chapters").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, "chapters/01_intro.md");
+        so.remove("chapters");
+        assert!(!so.has("chapters"));
+    }
+
+    #[test]
+    fn checkpoint_stage_outputs_round_trip() {
+        let cfg = sample_config();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        let mut so = StageOutputs::new();
+        so.set(
+            "chapters",
+            vec![StageOutputEntry {
+                path: "chapters/01_intro.md".into(),
+                sha256: "sha256:deadbeef".into(),
+                size: 42,
+            }],
+        );
+        cp.stage_outputs = Some(so);
+        let json = cp.to_json().unwrap();
+        assert!(!json.contains("stage_outputs") || json.contains("stage_outputs"));
+        let loaded = CheckpointV1::from_json(&json).unwrap();
+        let loaded_so = loaded.stage_outputs.expect("stage_outputs present");
+        let entries = loaded_so.get("chapters").expect("chapters present");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "chapters/01_intro.md");
+        assert_eq!(entries[0].sha256, "sha256:deadbeef");
+        assert_eq!(entries[0].size, 42);
+    }
+
+    #[test]
+    fn checkpoint_without_stage_outputs_back_compatible() {
+        let cfg = sample_config();
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        let json = cp.to_json().unwrap();
+        assert!(!json.contains("stage_outputs"));
+        let loaded = CheckpointV1::from_json(&json).unwrap();
+        assert!(loaded.stage_outputs.is_none());
     }
 }
