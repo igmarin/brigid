@@ -209,7 +209,20 @@ fn temp_base() -> PathBuf {
     let base = std::env::var("CARGO_TARGET_TMPDIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
-    std::fs::canonicalize(&base).unwrap_or(base)
+    // Canonicalize to resolve Windows 8.3 short names (e.g. RUNNER~1)
+    // and macOS symlinks (e.g. /var -> /private/var), then strip the
+    // Windows \\?\ prefix which causes "Access is denied" (error 5)
+    // when passed to CreateDirectory.
+    let canon = std::fs::canonicalize(&base).unwrap_or(base);
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        let s = canon.to_string_lossy().into_owned();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(OsString::from(stripped));
+        }
+    }
+    canon
 }
 
 fn temp_dir(label: &str) -> PathBuf {
