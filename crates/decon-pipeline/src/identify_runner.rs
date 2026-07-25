@@ -14,7 +14,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use decon_core::{
-    CheckpointV1, FileBundleRecord, IdentifyResult, ProgressTracker, RunConfig, StageId,
+    CheckpointError, CheckpointV1, FileBundleRecord, IdentifyResult, ProgressTracker, RunConfig,
+    StageId,
 };
 
 use crate::cancellation::CancelToken;
@@ -104,8 +105,7 @@ fn write_partial_checkpoint(
         run_cfg.unredacted_config.redacted_for_checkpoint(),
         &run_cfg.source_revision,
         now_iso(),
-    )
-    .map_err(|e| IdentifyError::Parse(format!("checkpoint create failed: {e}")))?;
+    )?;
 
     // Mark any earlier stages that are implied to be done (fetch/dry-run) so
     // the checkpoint is in a sensible state. We do NOT mark Identify.
@@ -118,9 +118,8 @@ fn write_partial_checkpoint(
     });
     meta.abstractions = Some(candidates_json);
 
-    store
-        .save(meta, &run_cfg.files)
-        .map_err(|e| IdentifyError::Parse(format!("checkpoint save failed: {e}")))
+    store.save(meta, &run_cfg.files)?;
+    Ok(())
 }
 
 /// Write a **completed** checkpoint with the final [`IdentifyResult`],
@@ -135,21 +134,19 @@ fn write_completed_checkpoint(
         run_cfg.unredacted_config.redacted_for_checkpoint(),
         &run_cfg.source_revision,
         now_iso(),
-    )
-    .map_err(|e| IdentifyError::Parse(format!("checkpoint create failed: {e}")))?;
+    )?;
 
     meta.mark_stage_complete(StageId::Fetch, now_iso());
     meta.mark_stage_complete(StageId::DryRun, now_iso());
     meta.abstractions = Some(
         result
             .to_checkpoint_value()
-            .map_err(|e| IdentifyError::Parse(format!("identify result serialize: {e}")))?,
+            .map_err(CheckpointError::from)?,
     );
     meta.mark_stage_complete(StageId::Identify, now_iso());
 
-    store
-        .save(meta, &run_cfg.files)
-        .map_err(|e| IdentifyError::Parse(format!("checkpoint save failed: {e}")))
+    store.save(meta, &run_cfg.files)?;
+    Ok(())
 }
 
 /// Flatten candidate batches into a single candidate vector.

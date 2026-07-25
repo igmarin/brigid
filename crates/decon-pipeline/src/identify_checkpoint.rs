@@ -64,15 +64,9 @@ pub const DEFAULT_MAX_CONCURRENCY: usize = 4;
 // Error conversions
 // ---------------------------------------------------------------------------
 
-impl From<CheckpointStoreError> for IdentifyError {
-    fn from(e: CheckpointStoreError) -> Self {
-        Self::Checkpoint(e.to_string())
-    }
-}
-
 impl From<CheckpointError> for IdentifyError {
     fn from(e: CheckpointError) -> Self {
-        Self::Checkpoint(e.to_string())
+        Self::Checkpoint(e.into())
     }
 }
 
@@ -104,9 +98,7 @@ pub fn save_identify_result(
     result: &IdentifyResult,
 ) -> Result<(), CheckpointStoreError> {
     // 1. Populate abstractions with the typed IdentifyResult.
-    let value = result
-        .to_checkpoint_value()
-        .map_err(|e| CheckpointStoreError::Checkpoint(CheckpointError::Json(e.to_string())))?;
+    let value = result.to_checkpoint_value()?;
     checkpoint.abstractions = Some(value);
 
     // 2. Mark the Identify stage complete with an ISO 8601 UTC timestamp.
