@@ -547,54 +547,47 @@ fn cmd_identify(
     let records = decon_pipeline::records_from_files(&file_entries);
 
     // Build the identify run config.
-    let files = crawl_result.files.clone();
-    let sizes = crawl_result.sizes.clone();
+    let project_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
 
-    let strategy = if single_shot {
-        decon_pipeline::IdentifyStrategy::SingleShot(decon_pipeline::IdentifySingleShotInput {
-            files: files.clone(),
-            project_name: dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string(),
-            language_instruction: String::new(),
-            lang_note: String::new(),
-            max_abstraction_num: max_abstractions,
-        })
+    let (strategy, reduce_input) = if single_shot {
+        (
+            decon_pipeline::IdentifyStrategy::SingleShot(decon_pipeline::IdentifySingleShotInput {
+                files: crawl_result.files,
+                project_name,
+                language_instruction: String::new(),
+                lang_note: String::new(),
+                max_abstraction_num: max_abstractions,
+            }),
+            None,
+        )
     } else {
-        decon_pipeline::IdentifyStrategy::MapReduce(decon_pipeline::IdentifyMapInput {
-            files: files.clone(),
-            sizes: sizes.clone(),
-            project_name: dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string(),
-            language_instruction: String::new(),
-            lang_note: String::new(),
-            max_abstraction_num: max_abstractions,
-            max_concurrency: 4,
-            budget_config: decon_core::BudgetConfig::default(),
-        })
-    };
-
-    let reduce_input = if !single_shot {
-        Some(decon_pipeline::IdentifyReduceInput {
-            candidates: Vec::new(),
-            files: files.clone(),
-            project_name: dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string(),
-            language_instruction: String::new(),
-            lang_note: String::new(),
-            max_abstraction_num: max_abstractions,
-            module_summary: String::new(),
-        })
-    } else {
-        None
+        let map_files = crawl_result.files;
+        let reduce_files = map_files.clone();
+        (
+            decon_pipeline::IdentifyStrategy::MapReduce(decon_pipeline::IdentifyMapInput {
+                files: map_files,
+                sizes: crawl_result.sizes,
+                project_name: project_name.clone(),
+                language_instruction: String::new(),
+                lang_note: String::new(),
+                max_abstraction_num: max_abstractions,
+                max_concurrency: 4,
+                budget_config: decon_core::BudgetConfig::default(),
+            }),
+            Some(decon_pipeline::IdentifyReduceInput {
+                candidates: Vec::new(),
+                files: reduce_files,
+                project_name,
+                language_instruction: String::new(),
+                lang_note: String::new(),
+                max_abstraction_num: max_abstractions,
+                module_summary: String::new(),
+            }),
+        )
     };
 
     let run_cfg = decon_pipeline::IdentifyRunConfig {
