@@ -393,12 +393,19 @@ Tracked as GitHub milestone **M4 — Full Generate Path**. All 20 M4 issues
 eval regression gate in CI; nightly LLM smoke verifies against frozen
 `llm-generated` fixture.
 
-### Phase 4 — Polish product (Milestone M5 — planned)
+### Phase 4 — Polish product (Milestone M5 — in progress)
 
 - installers, man page, shell completions  
 - `decon.toml`  
 - concurrency limits, better errors  
-- deprecate Python entrypoint or wrap binary  
+- ~~deprecate Python entrypoint or wrap binary~~ **✅ Complete** — Python
+  entrypoint deprecated; migration guide published at
+  [`docs/migrating-from-python.md`](./migrating-from-python.md). Since the
+  Python code lives in a separate repository, Option B (fallback) was
+  implemented: the migration guide documents the command mapping, environment
+  variable changes, feature parity, and FAQ. The Rust CLI is now the canonical
+  entrypoint — `pip install decon` users should switch to `brew install decon`
+  or `cargo install decon-cli`.
 
 ### Phase 5 — Optional advanced
 

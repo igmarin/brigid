@@ -12,8 +12,19 @@ tracks the latest.
 
 ## [Unreleased]
 
-No unreleased changes yet. M5 (Product Polish) is planned — see the milestone
-table in [`README.md`](README.md).
+### Added
+
+- Python entrypoint deprecation guide
+  ([`docs/migrating-from-python.md`](docs/migrating-from-python.md)) with
+  command mapping, environment variable changes, feature parity table, and FAQ
+  (#191).
+
+### Changed
+
+- [`docs/move-to-rust.md`](docs/move-to-rust.md) Phase 4 updated to mark Python
+  deprecation as complete (#191).
+- [`README.md`](README.md) updated to mention Python deprecation and link to
+  the migration guide (#191).
 
 ## [0.4.0] - 2026-07-25
 
