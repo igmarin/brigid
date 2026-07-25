@@ -572,6 +572,16 @@ fn decode_file_bundle(compressed: &[u8]) -> Result<Vec<FileBundleRecord>, Checkp
 }
 
 fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), CheckpointStoreError> {
+    // Ensure the parent directory exists.  `save()` already calls
+    // `create_dir_all`, but on Windows the directory may not be immediately
+    // visible to `File::create` due to filesystem caching delays or antivirus
+    // interference.  This is idempotent (no-op if the directory exists).
+    if let Some(parent) = tmp.parent() {
+        fs::create_dir_all(parent).map_err(|source| CheckpointStoreError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
     {
         let mut f = File::create(tmp).map_err(|source| CheckpointStoreError::Io {
             path: tmp.to_path_buf(),
@@ -587,6 +597,10 @@ fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), Check
             source,
         })?;
     }
+    // On Windows, `fs::rename` uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`,
+    // which atomically replaces an existing destination.  If the rename fails
+    // (e.g. the source tmp file was already renamed by a concurrent writer),
+    // propagate the error — concurrent writers are expected to tolerate this.
     fs::rename(tmp, final_path).map_err(|source| CheckpointStoreError::Io {
         path: final_path.to_path_buf(),
         source,

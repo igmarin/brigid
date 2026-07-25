@@ -753,12 +753,13 @@ mod tests {
         if let Err(e) = &create_result {
             // OS rejected the long name — verify it's a clear I/O error
             // (not a silent success or panic).  The exact error kind varies
-            // by platform (InvalidFilename on macOS, InvalidInput on Linux).
-            let msg = e.to_string();
+            // by platform (InvalidFilename on macOS, InvalidInput on Linux,
+            // InvalidFilename with OS error 123 on Windows).
+            let msg = e.to_string().to_lowercase();
             assert!(
                 msg.contains("too long")
-                    || msg.contains("file name")
-                    || e.raw_os_error() == Some(36), // ENAMETOOLONG
+                    || msg.contains("filename")
+                    || e.raw_os_error() == Some(36), // ENAMETOOLONG (Unix)
                 "expected a filename-length error, got: {e} (kind={:?})",
                 e.kind()
             );

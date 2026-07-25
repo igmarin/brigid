@@ -104,8 +104,12 @@ where
     S: AsRef<str>,
 {
     let files: Vec<String> = files.into_iter().map(|f| f.as_ref().to_owned()).collect();
-    let readme_lower = readme.to_lowercase();
-    let readme_length = readme.len();
+    // Normalize CRLF to LF so that README length is consistent across
+    // platforms (Windows git may check out files with CRLF line endings,
+    // which would inflate `readme.len()` and break baseline assertions).
+    let readme_normalized = readme.replace("\r\n", "\n").replace('\r', "\n");
+    let readme_lower = readme_normalized.to_lowercase();
+    let readme_length = readme_normalized.len();
     let has_readme = readme_length > 0;
 
     let has_install_commands = readme_lower.contains("install")
