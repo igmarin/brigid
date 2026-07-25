@@ -205,7 +205,7 @@ pub async fn identify_and_checkpoint(
     let result = if use_single_shot(&files, &sizes) {
         // Single-shot: one LLM call for the whole repo.
         let input = IdentifySingleShotInput {
-            files: files.clone(),
+            files,
             project_name: project_name_from_config(config),
             language_instruction: language_instruction_from_config(config),
             lang_note: String::new(),
@@ -214,9 +214,11 @@ pub async fn identify_and_checkpoint(
         identify_single_shot(client, renderer, &input, Some(progress)).await?
     } else {
         // Map + reduce: batch files, call LLM per batch, then reduce.
+        let module_summary = module_summary_from_files(&files);
+        let reduce_files = files.clone();
         let map_input = IdentifyMapInput {
-            files: files.clone(),
-            sizes: sizes.clone(),
+            files,
+            sizes,
             project_name: project_name_from_config(config),
             language_instruction: language_instruction_from_config(config),
             lang_note: String::new(),
@@ -234,12 +236,12 @@ pub async fn identify_and_checkpoint(
 
         let reduce_input = IdentifyReduceInput {
             candidates,
-            files: files.clone(),
+            files: reduce_files,
             project_name: project_name_from_config(config),
             language_instruction: language_instruction_from_config(config),
             lang_note: String::new(),
             max_abstraction_num: max_abstractions_from_config(config),
-            module_summary: module_summary_from_files(&files),
+            module_summary,
         };
         identify_reduce(client, renderer, &reduce_input, Some(progress)).await?
     };
