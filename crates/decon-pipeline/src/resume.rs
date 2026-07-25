@@ -124,6 +124,9 @@ pub fn invalidate_from(checkpoint: &mut CheckpointV1, from: StageId) {
     if drop.contains(&StageId::Relationships) {
         checkpoint.relationships = None;
     }
+    if drop.contains(&StageId::Order) {
+        checkpoint.order = None;
+    }
     if drop.iter().any(|s| {
         matches!(
             s,

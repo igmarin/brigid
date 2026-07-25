@@ -18,6 +18,7 @@ pub mod dry_run;
 pub mod identify;
 pub mod identify_checkpoint;
 pub mod identify_runner;
+pub mod order;
 pub mod overview;
 pub mod prompts;
 pub mod relationships;
