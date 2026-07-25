@@ -31,6 +31,10 @@ allow = [
     # Permissive data license used by `webpki-roots` (Mozilla CA bundle for
     # rustls-tls). Not OSI-approved but permissive — no copyleft restrictions.
     "CDLA-Permissive-2.0",
+    # MPL-2.0 is a weak copyleft license used by `option-ext` (a transitive
+    # dependency of `dirs`). It is OSI-approved and file-level copyleft, which
+    # does not infect the larger work.
+    "MPL-2.0",
 ]
 exceptions = []
 

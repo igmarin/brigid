@@ -53,13 +53,75 @@ fn default_max_llm_calls(max_abstractions: usize, review_chapters: bool) -> u32 
     }
 }
 
+/// Default cache size limit in megabytes.
+const DEFAULT_CACHE_SIZE_LIMIT_MB: usize = 100;
+
+/// Check whether the `DECON_NO_CACHE` env var disables the cache.
+fn cache_is_disabled(vars: &BTreeMap<String, String>) -> bool {
+    vars.get("DECON_NO_CACHE")
+        .map(|s| {
+            let trimmed = s.trim();
+            trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+/// Resolve the cache root directory from env, config, or the platform default.
+///
+/// Precedence: `DECON_LLM_CACHE_DIR` env var > `cache_dir` from config >
+/// platform default (`<cache_dir>/decon/llm-cache`).
+fn resolve_cache_root(
+    vars: &BTreeMap<String, String>,
+    cfg_cache_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(v) = vars.get("DECON_LLM_CACHE_DIR") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    if let Some(dir) = cfg_cache_dir {
+        return Some(dir.to_path_buf());
+    }
+    let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
+    Some(base.join("decon").join("llm-cache"))
+}
+
+/// Build a [`decon_llm::DiskCache`] from the environment and run config, or
+/// `None` when the cache is disabled via `DECON_NO_CACHE=1`.
+fn build_llm_cache(cfg: &RunConfig) -> Option<decon_llm::DiskCache> {
+    let env_map: BTreeMap<String, String> = env::vars().collect();
+    if cache_is_disabled(&env_map) {
+        return None;
+    }
+    let root = resolve_cache_root(&env_map, cfg.cache_dir.as_deref())?;
+    let limit_mb = cfg
+        .cache_size_limit_mb
+        .unwrap_or(DEFAULT_CACHE_SIZE_LIMIT_MB);
+    Some(decon_llm::DiskCache::with_size_limit(root, limit_mb))
+}
+
+/// Print cache statistics to stderr.
+fn print_cache_stats(cache: Option<&decon_llm::DiskCache>) {
+    if let Some(cache) = cache {
+        let stats = cache.stats();
+        eprintln!(
+            "cache: hits={} misses={} evictions={} size={}B",
+            stats.hits, stats.misses, stats.evictions, stats.current_size_bytes
+        );
+    }
+}
+
 /// Build a live [`decon_llm::LlmClient`] from the environment when an API key
-/// is present, optionally with a disk cache (`DECON_LLM_CACHE_DIR`).
+/// is present, optionally with a disk cache.
 ///
 /// Returns `None` when no non-empty `DECON_LLM_API_KEY` / `DEEPSEEK_API_KEY`
 /// is set or the client cannot be constructed, so callers can fall back to a
 /// mock client for offline/test runs.
-fn build_real_llm_client(custom_hosts: &[String]) -> Option<Box<dyn decon_llm::LlmClient>> {
+fn build_real_llm_client(
+    cache: Option<decon_llm::DiskCache>,
+    custom_hosts: &[String],
+) -> Option<Box<dyn decon_llm::LlmClient>> {
     if env::var("DECON_FORCE_MOCK")
         .ok()
         .filter(|s| !s.is_empty())
@@ -79,11 +141,8 @@ fn build_real_llm_client(custom_hosts: &[String]) -> Option<Box<dyn decon_llm::L
         .iter()
         .fold(config, |acc, h| acc.with_allowed_host(h));
     let client = decon_llm::OpenAiCompatibleClient::new(config).ok()?;
-    let client = if let Some(cache_dir) = env::var("DECON_LLM_CACHE_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        client.with_cache(decon_llm::DiskCache::new(PathBuf::from(cache_dir)))
+    let client = if let Some(cache) = cache {
+        client.with_cache(cache)
     } else {
         client
     };
@@ -1133,7 +1192,9 @@ fn cmd_generate(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
+    let cache = build_llm_cache(&run_config);
     let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        cache.clone(),
         run_config.allowed_hosts.as_deref().unwrap_or(&[]),
     ) {
         Some(c) => {
@@ -1270,7 +1331,7 @@ fn cmd_generate(
         }
     };
 
-    rt.block_on(async {
+    let exit_code = rt.block_on(async {
         let cancel = match decon_pipeline::setup_ctrl_c_handler() {
             Ok(t) => t,
             Err(e) => {
@@ -1380,7 +1441,9 @@ fn cmd_generate(
                 ExitCode::from(code)
             }
         }
-    })
+    });
+    print_cache_stats(cache.as_ref());
+    exit_code
 }
 
 /// Run the full generate pipeline once per discovered app/module.
@@ -1418,7 +1481,9 @@ fn cmd_generate_each_app(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
+    let cache = build_llm_cache(&run_config);
     let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        cache.clone(),
         run_config.allowed_hosts.as_deref().unwrap_or(&[]),
     ) {
         Some(c) => {
@@ -1534,7 +1599,7 @@ fn cmd_generate_each_app(
         }
     };
 
-    rt.block_on(async {
+    let exit_code = rt.block_on(async {
         let cancel = match decon_pipeline::setup_ctrl_c_handler() {
             Ok(t) => t,
             Err(e) => {
@@ -1594,7 +1659,9 @@ fn cmd_generate_each_app(
                 ExitCode::from(code)
             }
         }
-    })
+    });
+    print_cache_stats(cache.as_ref());
+    exit_code
 }
 
 fn load_stage_checkpoint(
@@ -2265,5 +2332,77 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_cache_root_uses_env_override() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_LLM_CACHE_DIR".into(), "/custom/cache".into());
+        let root = resolve_cache_root(&vars, None);
+        assert_eq!(root, Some(PathBuf::from("/custom/cache")));
+    }
+
+    #[test]
+    fn resolve_cache_root_uses_config_cache_dir_when_no_env() {
+        let vars = BTreeMap::new();
+        let cfg_dir = PathBuf::from("/from/config");
+        let root = resolve_cache_root(&vars, Some(&cfg_dir));
+        assert_eq!(root, Some(PathBuf::from("/from/config")));
+    }
+
+    #[test]
+    fn resolve_cache_root_env_overrides_config() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_LLM_CACHE_DIR".into(), "/env/wins".into());
+        let cfg_dir = PathBuf::from("/from/config");
+        let root = resolve_cache_root(&vars, Some(&cfg_dir));
+        assert_eq!(root, Some(PathBuf::from("/env/wins")));
+    }
+
+    #[test]
+    fn resolve_cache_root_default_when_nothing_set() {
+        let vars = BTreeMap::new();
+        let root = resolve_cache_root(&vars, None);
+        assert!(root.is_some(), "cache should be enabled by default");
+        let root = root.unwrap();
+        assert!(
+            root.ends_with("decon/llm-cache") || root.ends_with("decon\\llm-cache"),
+            "default cache root should end with decon/llm-cache, got: {}",
+            root.display()
+        );
+    }
+
+    #[test]
+    fn cache_disabled_when_no_cache_env_set() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_NO_CACHE".into(), "1".into());
+        assert!(cache_is_disabled(&vars));
+    }
+
+    #[test]
+    fn cache_not_disabled_when_no_cache_unset() {
+        let vars = BTreeMap::new();
+        assert!(!cache_is_disabled(&vars));
+    }
+
+    #[test]
+    fn cache_not_disabled_when_no_cache_other_value() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_NO_CACHE".into(), "0".into());
+        assert!(!cache_is_disabled(&vars));
+    }
+
+    #[test]
+    fn cache_disabled_when_no_cache_true() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_NO_CACHE".into(), "true".into());
+        assert!(cache_is_disabled(&vars));
+    }
+
+    #[test]
+    fn cache_disabled_blank_env_not_disabled() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_NO_CACHE".into(), "".into());
+        assert!(!cache_is_disabled(&vars));
     }
 }
