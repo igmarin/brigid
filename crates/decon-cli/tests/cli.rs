@@ -691,3 +691,129 @@ fn identify_llm_error_exits_llm_code_4() {
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #146: `decon generate` subcommand (full pipeline).
+//
+// CLI-level tests for argument parsing, help text, and exit codes.
+// Pipeline orchestration logic is tested in decon-pipeline::generate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn help_lists_generate_subcommand() {
+    decon()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("generate"));
+}
+
+#[test]
+fn generate_subcommand_help_shows_all_flags() {
+    decon()
+        .args(["generate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dir"))
+        .stdout(predicate::str::contains("--apps"))
+        .stdout(predicate::str::contains("--language"))
+        .stdout(predicate::str::contains("--diagram-level"))
+        .stdout(predicate::str::contains("--force-setup"))
+        .stdout(predicate::str::contains("--no-setup"))
+        .stdout(predicate::str::contains("--no-overview"))
+        .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--max-abstractions"))
+        .stdout(predicate::str::contains("--single-shot"));
+}
+
+#[test]
+fn generate_without_dir_exits_config() {
+    decon().args(["generate"]).assert().failure().code(2);
+}
+
+#[test]
+fn generate_missing_dir_exits_config() {
+    decon()
+        .args(["generate", "--dir", "/no/such/decon-generate-test-dir"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn generate_empty_dir_exits_config() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let empty = std::env::temp_dir().join(format!("decon-cli-generate-empty-{n}"));
+    std::fs::create_dir_all(&empty).unwrap();
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&empty)
+        .assert()
+        .failure()
+        .code(2);
+
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn generate_budget_exceeded_exits_budget_code_3() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-generate-budget-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_MAX_LLM_CALLS", "0")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("budget"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn generate_completes_and_writes_output() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-generate-ok-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-generate-ok-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}

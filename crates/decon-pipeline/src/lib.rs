@@ -17,6 +17,7 @@ pub mod chapters;
 pub mod checkpoint_store;
 pub mod combine;
 pub mod dry_run;
+pub mod generate;
 pub mod identify;
 pub mod identify_checkpoint;
 pub mod identify_runner;
@@ -40,6 +41,7 @@ pub use combine::{
     slugify_chapter_filename, write_output_directory,
 };
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
+pub use generate::{GenerateConfig, GenerateError, GenerateOutcome, run_generate};
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,
     IdentifySingleShotInput, identify_map, identify_reduce, identify_single_shot,

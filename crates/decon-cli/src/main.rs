@@ -118,6 +118,52 @@ enum Commands {
         #[arg(long = "max-abstractions", default_value_t = 10)]
         max_abstractions: usize,
     },
+    /// Run the full generate pipeline: identify -> relationships -> order ->
+    /// chapters -> setup -> overview -> combine.
+    ///
+    /// Supports stage skip/resume from checkpoint, all quality flags, and
+    /// proper exit codes. On completion: exit 0. On cancellation: exit 5.
+    /// On budget exhaustion: exit 3. On LLM error: exit 4. On config error:
+    /// exit 2.
+    Generate {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Optional app/module scope keys (repeatable), e.g. `apps/alpha`.
+        #[arg(long = "apps", value_name = "MODULE")]
+        apps: Vec<String>,
+        /// Output language (default: `en`).
+        #[arg(long = "language", value_name = "LANG", default_value = "en")]
+        language: String,
+        /// Diagram richness level: minimal, standard, or rich (default: standard).
+        #[arg(
+            long = "diagram-level",
+            value_name = "LEVEL",
+            default_value = "standard"
+        )]
+        diagram_level: String,
+        /// Force setup guide generation regardless of score.
+        #[arg(long = "force-setup", default_value_t = false)]
+        force_setup: bool,
+        /// Skip setup guide generation.
+        #[arg(long = "no-setup", default_value_t = false)]
+        no_setup: bool,
+        /// Skip architecture overview generation.
+        #[arg(long = "no-overview", default_value_t = false)]
+        no_overview: bool,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+        /// Output directory (default: `output`).
+        #[arg(long = "output-dir", value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+        /// Maximum abstractions to identify (default: 10).
+        #[arg(long = "max-abstractions", default_value_t = 10)]
+        max_abstractions: usize,
+        /// Use single-shot identify instead of map+reduce.
+        #[arg(long = "single-shot", default_value_t = false)]
+        single_shot: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -178,6 +224,44 @@ fn main() -> ExitCode {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
             cmd_identify(&dir, &checkpoint_dir, single_shot, max_abstractions, &cfg)
+        }
+        Commands::Generate {
+            dir,
+            apps,
+            language,
+            diagram_level,
+            force_setup,
+            no_setup,
+            no_overview,
+            checkpoint_dir,
+            output_dir,
+            max_abstractions,
+            single_shot,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            let output_dir = output_dir
+                .or_else(|| cfg.output.clone())
+                .unwrap_or_else(|| PathBuf::from("output"));
+            let apps = if apps.is_empty() {
+                cfg.apps.clone().unwrap_or_default()
+            } else {
+                apps
+            };
+            cmd_generate(
+                &dir,
+                &apps,
+                &language,
+                &diagram_level,
+                force_setup,
+                no_setup,
+                no_overview,
+                &checkpoint_dir,
+                &output_dir,
+                max_abstractions,
+                single_shot,
+                &cfg,
+            )
         }
     }
 }
@@ -715,6 +799,331 @@ fn cmd_identify(
                     _ => EXIT_FAIL,
                 };
                 eprintln!("error: identify failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+/// Run the full generate pipeline with cancellation support.
+///
+/// Sets up a Ctrl+C / SIGTERM handler, runs all pipeline stages
+/// (identify -> relationships -> order -> chapters -> setup -> overview ->
+/// combine), and maps the outcome to an exit code:
+///
+/// - Completed -> exit 0.
+/// - Cancelled -> exit 5 (partial checkpoint saved).
+/// - Budget exceeded -> exit 3.
+/// - LLM error -> exit 4.
+/// - Config / prompt error -> exit 2.
+/// - Other errors -> exit 1 (generic).
+///
+/// The LLM client is a `MockClient` with canned responses when no API key is
+/// present, mirroring the `identify` subcommand pattern. A real provider client
+/// will be wired in M4-SMK-2.
+#[allow(clippy::too_many_arguments)]
+fn cmd_generate(
+    dir: &Path,
+    apps: &[String],
+    language: &str,
+    diagram_level: &str,
+    force_setup: bool,
+    no_setup: bool,
+    no_overview: bool,
+    checkpoint_dir: &Path,
+    output_dir: &Path,
+    max_abstractions: usize,
+    single_shot: bool,
+    cfg: &RunConfig,
+) -> ExitCode {
+    let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
+        Some(dl) => dl,
+        None => {
+            eprintln!(
+                "error: generate: invalid diagram level '{diagram_level}' \
+                 (expected: minimal, standard, or rich)"
+            );
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let crawl_result = match crawl_local(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: generate: crawl failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    if crawl_result.files.is_empty() {
+        eprintln!("error: generate: no files found in {}", dir.display());
+        return ExitCode::from(EXIT_CONFIG);
+    }
+
+    let dry_run_plan = match decon_pipeline::dry_run(dir, None) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: generate: dry-run failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let file_entries: Vec<(&str, &[u8])> = crawl_result
+        .files
+        .iter()
+        .map(|f| (f.as_str(), b"" as &[u8]))
+        .collect();
+    let records = decon_pipeline::records_from_files(&file_entries);
+
+    let file_contents: Vec<(String, String)> = crawl_result
+        .files
+        .iter()
+        .map(|f| (f.clone(), String::new()))
+        .collect();
+
+    let modules: Vec<decon_core::ModuleKey> = dry_run_plan
+        .modules
+        .iter()
+        .map(|m| decon_core::ModuleKey::new(m.key.as_str()))
+        .collect();
+
+    let setup_context = dry_run_plan
+        .setup
+        .config_files
+        .iter()
+        .map(|f| format!("# File: {f}\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut run_config = cfg.clone();
+    if run_config.language.is_none() {
+        run_config.language = Some(language.to_string());
+    }
+    run_config.max_llm_calls = run_config
+        .max_llm_calls
+        .or(Some(10 + max_abstractions as u32));
+
+    let api_key = env::var("DECON_LLM_API_KEY").ok();
+    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        eprintln!(
+            "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
+             The output will be a placeholder, not a real LLM analysis. \
+             Set DECON_LLM_API_KEY to use a real provider (M4)."
+        );
+    }
+
+    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+    let placeholder_rel =
+        "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+    let placeholder_order = "```yaml\n- 0\n```\n";
+    let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+    let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+    let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
+
+    let mut responses: Vec<String> = Vec::new();
+    if single_shot {
+        responses.push(placeholder_yaml.to_string());
+    } else {
+        responses.push(placeholder_yaml.to_string());
+        responses.push(placeholder_yaml.to_string());
+    }
+    responses.push(placeholder_rel.to_string());
+    responses.push(placeholder_order.to_string());
+    for _ in 0..max_abstractions {
+        responses.push(placeholder_chapter.to_string());
+    }
+    if !no_setup {
+        let do_setup =
+            force_setup || dry_run_plan.setup.score < 50 || dry_run_plan.setup.gaps.len() >= 3;
+        if do_setup {
+            responses.push(placeholder_setup.to_string());
+        }
+    }
+    if !no_overview && modules.len() > 1 {
+        responses.push(placeholder_overview.to_string());
+    }
+
+    #[cfg(debug_assertions)]
+    let client: Box<dyn decon_llm::LlmClient> = if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let err = match kind.as_str() {
+            "timeout" => decon_llm::LlmError::Timeout,
+            "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+            "provider" => decon_llm::LlmError::Provider {
+                status: 502,
+                body: "mock provider error".to_string(),
+            },
+            "parse" => decon_llm::LlmError::parse("mock parse failure"),
+            _ => decon_llm::LlmError::network("mock network failure"),
+        };
+        Box::new(decon_llm::MockClient::new("").fail_on(0, err))
+    } else {
+        Box::new(
+            decon_llm::MockClient::with_responses(responses)
+                .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+        )
+    };
+    #[cfg(not(debug_assertions))]
+    let client: Box<dyn decon_llm::LlmClient> = Box::new(
+        decon_llm::MockClient::with_responses(responses)
+            .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+    );
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: generate: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let (mut checkpoint, existing_files) = match store.load() {
+        Ok((meta, files)) => (meta, files),
+        Err(_) => {
+            let mut meta = decon_core::CheckpointV1::new(
+                &run_config,
+                run_config.redacted_for_checkpoint(),
+                dir.display().to_string(),
+                "0Z",
+            )
+            .map_err(|e| {
+                eprintln!("error: generate: checkpoint init: {e}");
+                ExitCode::from(EXIT_CONFIG)
+            })
+            .unwrap();
+            meta.mark_stage_complete(decon_core::StageId::Fetch, "0Z");
+            meta.mark_stage_complete(decon_core::StageId::DryRun, "0Z");
+            (meta, records.clone())
+        }
+    };
+    if !checkpoint.is_stage_complete(decon_core::StageId::Fetch) {
+        checkpoint.mark_stage_complete(decon_core::StageId::Fetch, "0Z");
+    }
+    if !checkpoint.is_stage_complete(decon_core::StageId::DryRun) {
+        checkpoint.mark_stage_complete(decon_core::StageId::DryRun, "0Z");
+    }
+    let _ = store.save(checkpoint.clone(), &existing_files);
+
+    let mut progress = decon_core::ProgressTracker::new(
+        run_config
+            .max_llm_calls
+            .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS),
+    );
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: generate: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        let cancel = match decon_pipeline::setup_ctrl_c_handler() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: generate: signal handler: {e}");
+                return ExitCode::from(EXIT_FAIL);
+            }
+        };
+
+        let gen_config = decon_pipeline::GenerateConfig {
+            dir: dir.to_path_buf(),
+            apps: apps.to_vec(),
+            language: language.to_string(),
+            diagram_level: diagram_level_parsed,
+            force_setup,
+            no_setup,
+            no_overview,
+            checkpoint_dir: checkpoint_dir.to_path_buf(),
+            output_dir: output_dir.to_path_buf(),
+            max_abstractions,
+            single_shot,
+            run_config: run_config.clone(),
+            chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+        };
+
+        let outcome = decon_pipeline::run_generate(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            &mut progress,
+            &cancel,
+            &gen_config,
+            &file_contents,
+            crawl_result.files.clone(),
+            crawl_result.sizes.clone(),
+            dry_run_plan.setup.score,
+            &dry_run_plan.setup.gaps,
+            &setup_context,
+            &modules,
+        )
+        .await;
+
+        match outcome {
+            Ok(decon_pipeline::GenerateOutcome::Completed(combined)) => {
+                eprintln!(
+                    "generate: completed with {} chapters (locale={})",
+                    combined.chapter_count, combined.locale
+                );
+                eprintln!("output: {}", output_dir.display());
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                ExitCode::from(EXIT_OK)
+            }
+            Ok(decon_pipeline::GenerateOutcome::Cancelled { checkpoint_path }) => {
+                eprintln!("generate: cancelled");
+                eprintln!(
+                    "partial checkpoint: {} -- resume to continue",
+                    checkpoint_path.display()
+                );
+                ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
+            }
+            Err(e) => {
+                let code = match &e {
+                    decon_pipeline::GenerateError::Budget(_)
+                    | decon_pipeline::GenerateError::Identify(
+                        decon_pipeline::identify::IdentifyError::Budget(_),
+                    )
+                    | decon_pipeline::GenerateError::Relationships(
+                        decon_pipeline::relationships::RelationshipsError::Budget(_),
+                    )
+                    | decon_pipeline::GenerateError::Order(
+                        decon_pipeline::order::OrderError::Budget(_),
+                    )
+                    | decon_pipeline::GenerateError::Chapters(
+                        decon_pipeline::chapters::ChaptersError::Budget(_),
+                    ) => EXIT_BUDGET,
+                    decon_pipeline::GenerateError::Identify(
+                        decon_pipeline::identify::IdentifyError::Llm(_)
+                        | decon_pipeline::identify::IdentifyError::LlmBatch { .. },
+                    )
+                    | decon_pipeline::GenerateError::Relationships(
+                        decon_pipeline::relationships::RelationshipsError::Llm(_),
+                    )
+                    | decon_pipeline::GenerateError::Order(
+                        decon_pipeline::order::OrderError::Llm(_),
+                    )
+                    | decon_pipeline::GenerateError::Chapters(
+                        decon_pipeline::chapters::ChaptersError::Llm(_),
+                    )
+                    | decon_pipeline::GenerateError::Setup(
+                        decon_pipeline::setup_guide::SetupGuideError::Llm(_),
+                    )
+                    | decon_pipeline::GenerateError::Overview(
+                        decon_pipeline::overview::OverviewError::Llm(_),
+                    ) => EXIT_LLM,
+                    decon_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
+                    _ => EXIT_FAIL,
+                };
+                eprintln!("error: generate failed: {e}");
                 ExitCode::from(code)
             }
         }
