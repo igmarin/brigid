@@ -92,6 +92,9 @@ pub struct RunConfig {
     /// Chars-per-token heuristic for token estimates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chars_per_token: Option<usize>,
+    /// Disk cache size limit in megabytes (default 100 when resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_size_limit_mb: Option<usize>,
 }
 
 impl Default for RunConfig {
@@ -108,6 +111,7 @@ impl Default for RunConfig {
             checkpoint_dir: None,
             batch_char_budget: None,
             chars_per_token: Some(DEFAULT_CONFIG_CHARS_PER_TOKEN),
+            cache_size_limit_mb: None,
         }
     }
 }
@@ -128,6 +132,7 @@ impl RunConfig {
             checkpoint_dir: None,
             batch_char_budget: None,
             chars_per_token: None,
+            cache_size_limit_mb: None,
         }
     }
 
@@ -149,6 +154,7 @@ impl RunConfig {
                 .or_else(|| self.checkpoint_dir.clone()),
             batch_char_budget: overlay.batch_char_budget.or(self.batch_char_budget),
             chars_per_token: overlay.chars_per_token.or(self.chars_per_token),
+            cache_size_limit_mb: overlay.cache_size_limit_mb.or(self.cache_size_limit_mb),
         }
     }
 
@@ -215,7 +221,8 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// - `DECON_ROOT`, `DECON_OUTPUT`, `DECON_APPS` (comma-separated),
 /// - `DECON_LANGUAGE`, `DECON_MAX_LLM_CALLS`, `DECON_PROVIDER`, `DECON_MODEL`,
 /// - `DECON_CACHE_DIR`, `DECON_CHECKPOINT_DIR`,
-/// - `DECON_BATCH_CHAR_BUDGET`, `DECON_CHARS_PER_TOKEN`
+/// - `DECON_BATCH_CHAR_BUDGET`, `DECON_CHARS_PER_TOKEN`,
+/// - `DECON_CACHE_SIZE_LIMIT_MB`
 ///
 /// **Blank values are ignored** (treated as unset). Non-blank values that fail
 /// numeric parse return [`ConfigError::InvalidEnvValue`].
@@ -264,6 +271,9 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
     }
     if let Some(v) = nonblank(vars.get("DECON_CHARS_PER_TOKEN")) {
         cfg.chars_per_token = Some(parse_env_usize("DECON_CHARS_PER_TOKEN", v)?);
+    }
+    if let Some(v) = nonblank(vars.get("DECON_CACHE_SIZE_LIMIT_MB")) {
+        cfg.cache_size_limit_mb = Some(parse_env_usize("DECON_CACHE_SIZE_LIMIT_MB", v)?);
     }
     Ok(cfg)
 }
@@ -718,5 +728,53 @@ api_key = "xxx"
     fn toml_authorization_rejected() {
         let err = parse_toml_config(r#"authorization = "Bearer xxx""#).unwrap_err();
         assert_secret_rejected(err, "authorization");
+    }
+
+    #[test]
+    fn cache_size_limit_mb_from_toml() {
+        let cfg = parse_toml_config("cache_size_limit_mb = 50\n").expect("toml");
+        assert_eq!(cfg.cache_size_limit_mb, Some(50));
+    }
+
+    #[test]
+    fn cache_size_limit_mb_from_yaml() {
+        let cfg = parse_yaml_config("cache_size_limit_mb: 200\n").expect("yaml");
+        assert_eq!(cfg.cache_size_limit_mb, Some(200));
+    }
+
+    #[test]
+    fn cache_size_limit_mb_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CACHE_SIZE_LIMIT_MB".into(), "42".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.cache_size_limit_mb, Some(42));
+    }
+
+    #[test]
+    fn cache_size_limit_mb_default_is_none() {
+        let d = RunConfig::default();
+        assert_eq!(d.cache_size_limit_mb, None);
+    }
+
+    #[test]
+    fn cache_size_limit_mb_merge_layer() {
+        let env = RunConfig {
+            cache_size_limit_mb: Some(42),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            cache_size_limit_mb: Some(100),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &RunConfig::empty());
+        assert_eq!(resolved.cache_size_limit_mb, Some(100));
+    }
+
+    #[test]
+    fn cache_size_limit_mb_blank_env_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CACHE_SIZE_LIMIT_MB".into(), "".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.cache_size_limit_mb, None);
     }
 }

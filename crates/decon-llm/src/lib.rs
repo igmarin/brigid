@@ -20,7 +20,7 @@ pub mod error;
 pub mod mock;
 pub mod openai_client;
 
-pub use cache::{CacheError, CacheKeyInput, DiskCache, cache_key};
+pub use cache::{CacheError, CacheKeyInput, CacheStats, DiskCache, cache_key};
 pub use client::LlmClient;
 pub use concurrency::{bounded_complete, bounded_complete_with_budget};
 pub use error::LlmError;
