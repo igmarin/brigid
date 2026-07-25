@@ -1233,3 +1233,223 @@ fn combine_with_incomplete_checkpoint_errors_about_prerequisites() {
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #183: Configurable concurrency limits + better error UX.
+//
+// --concurrency, --max-llm-calls, --verbose, --quiet flags on `decon generate`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generate_help_shows_new_flags() {
+    decon()
+        .args(["generate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--max-llm-calls"))
+        .stdout(predicate::str::contains("--verbose"))
+        .stdout(predicate::str::contains("--quiet"));
+}
+
+#[test]
+fn generate_verbose_and_quiet_are_mutually_exclusive() {
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--verbose", "--quiet"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("mutually exclusive"));
+}
+
+#[test]
+fn generate_concurrency_zero_exits_config() {
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--concurrency", "0"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("positive integer"));
+}
+
+#[test]
+fn generate_max_llm_calls_zero_exits_config() {
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--max-llm-calls", "0"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("positive integer"));
+}
+
+#[test]
+fn generate_budget_flag_respected_exits_budget_code_3() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-budget-flag-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    // --max-llm-calls 1 should exhaust the budget quickly (identify alone
+    // needs at least 1 call, then relationships/order/chapters need more).
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot", "--max-llm-calls", "1"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("budget"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn generate_concurrency_flag_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-concurrency-ok-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-concurrency-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--concurrency", "2"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_verbose_output_contains_detail_lines() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verbose-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verbose-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--verbose"])
+        .assert()
+        .success()
+        // Verbose mode prints "verbose:" prefixed lines to stderr.
+        .stderr(predicate::str::contains("verbose: concurrency="))
+        .stderr(predicate::str::contains("verbose: llm-calls:"))
+        .stderr(predicate::str::contains("verbose: checkpoint:"))
+        // Stage timing lines mention a stage name and elapsed time.
+        .stderr(predicate::str::contains("verbose: stage "));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_quiet_mode_suppresses_progress_output() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let result = decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--quiet"])
+        .assert()
+        .success();
+
+    let stderr = &result.get_output().stderr;
+    let stderr_str = String::from_utf8_lossy(stderr);
+
+    // In quiet mode, no progress messages should appear.
+    assert!(
+        !stderr_str.contains("generate: completed"),
+        "quiet mode should suppress 'generate: completed', got: {stderr_str}"
+    );
+    assert!(
+        !stderr_str.contains("warning: generate:"),
+        "quiet mode should suppress warnings, got: {stderr_str}"
+    );
+
+    // But the output file should still be created.
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir even in quiet mode"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_error_includes_actionable_hint() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-hint-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    // Budget exhaustion should produce a "hint:" line with an actionable
+    // suggestion mentioning --max-llm-calls or resume.
+    decon()
+        .env("DECON_MAX_LLM_CALLS", "0")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("hint:"))
+        .stderr(predicate::str::contains("--max-llm-calls"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}

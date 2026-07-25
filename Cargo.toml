@@ -22,7 +22,17 @@ proptest = "1.11.0"
 [workspace.lints.rust]
 missing_docs = "warn"
 
+[profile.dev]
+# Mild optimization speeds up test execution and dev-run binaries without
+# noticeably slowing compilation.  This is the sweet spot recommended by the
+# Rust performance book for development workflows.
+opt-level = 1
+
 [profile.release]
 # Small, predictable binaries for a CLI distributed as a single artifact.
 strip = true
+# LTO produces smaller, faster release binaries but slows linking.  For local
+# dev builds that still need `--release` (e.g. benchmarking), disable LTO by
+# creating a `.cargo/config.toml` override or running with:
+#   CARGO_PROFILE_RELEASE_LTO=false cargo build --release
 lto = true

@@ -30,7 +30,7 @@ use decon_core::{
 use decon_llm::{LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -577,7 +577,7 @@ async fn generate_chapters_internal(
 
     let max_concurrency = config.max_concurrency.max(1);
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let completed: Arc<Mutex<Vec<Chapter>>> = Arc::new(Mutex::new(
+    let completed: Arc<RwLock<Vec<Chapter>>> = Arc::new(RwLock::new(
         existing
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default(),
@@ -599,7 +599,7 @@ async fn generate_chapters_internal(
                 .map_err(|_| LlmError::network("chapter semaphore closed unexpectedly"))?;
 
             let summary = {
-                let guard = completed.lock().await;
+                let guard = completed.read().await;
                 guard
                     .iter()
                     .filter(|c| c.chapter_num < meta.chapter_num)
@@ -630,7 +630,7 @@ async fn generate_chapters_internal(
             .await?;
 
             {
-                let mut guard = completed.lock().await;
+                let mut guard = completed.write().await;
                 guard.push(chapter.clone());
             }
 
@@ -646,8 +646,8 @@ async fn generate_chapters_internal(
     }
 
     let mut all_chapters: Vec<Chapter> = match Arc::try_unwrap(completed) {
-        Ok(mutex) => mutex.into_inner(),
-        Err(arc) => arc.lock().await.clone(),
+        Ok(rwlock) => rwlock.into_inner(),
+        Err(arc) => arc.read().await.clone(),
     };
     all_chapters.sort_by_key(|c| c.chapter_num);
 
@@ -1569,6 +1569,7 @@ We learned routing.\n";
     struct ConcurrencyTracker {
         current: Arc<AtomicUsize>,
         max_seen: Arc<AtomicUsize>,
+        calls: Arc<AtomicUsize>,
         delay: Duration,
     }
 
@@ -1577,6 +1578,7 @@ We learned routing.\n";
             Self {
                 current: Arc::new(AtomicUsize::new(0)),
                 max_seen: Arc::new(AtomicUsize::new(0)),
+                calls: Arc::new(AtomicUsize::new(0)),
                 delay,
             }
         }
@@ -1584,11 +1586,16 @@ We learned routing.\n";
         fn max_concurrent(&self) -> usize {
             self.max_seen.load(Ordering::SeqCst)
         }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait::async_trait]
     impl LlmClient for ConcurrencyTracker {
         async fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_seen.fetch_max(current, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
@@ -1617,6 +1624,31 @@ We learned routing.\n";
             2,
             "max concurrent calls should not exceed the limit"
         );
+    }
+
+    #[tokio::test]
+    async fn twenty_chapters_concurrent_no_deadlock() {
+        // Regression test for M5-PERF-4: 20-chapter concurrent generation must
+        // complete without deadlock or excessive contention when using RwLock
+        // for the shared completed-chapters vector.
+        let tracker = ConcurrencyTracker::new(Duration::from_millis(10));
+        let renderer = PromptRenderer::new().unwrap();
+        let abstractions: Vec<Abstraction> = (0..20)
+            .map(|i| Abstraction::new(format!("Abs{i}"), "desc", Tier::S, "module"))
+            .collect();
+        let identify = IdentifyResult::new(abstractions);
+        let order = ChapterOrder::new((0..20).collect());
+        let mut config = sample_config();
+        config.max_concurrency = 8;
+        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
+            .await
+            .expect("20-chapter concurrent generation should succeed without deadlock");
+        assert_eq!(result.chapters.len(), 20);
+        // Chapters should be sorted by chapter_num.
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(ch.chapter_num, i + 1, "chapters should be in order");
+        }
+        assert_eq!(tracker.call_count(), 20);
     }
 
     // --- checkpoint integration ---

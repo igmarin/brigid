@@ -249,6 +249,12 @@ impl CheckpointStore {
     /// Each chapter is written as `chapters/NN_<slug>.md`. The manifest
     /// entries are stored in `checkpoint.stage_outputs["chapters"]`.
     ///
+    /// All files are written as a **batch**: every temp file is written and
+    /// fsync'd first, then all are renamed to their final paths, and finally
+    /// the parent directory is fsync'd **once** for the entire batch.  This
+    /// reduces fsync count from *N+1* (one per file plus one per dir entry) to
+    /// *N+1* file fsyncs plus a **single** directory fsync.
+    ///
     /// # Errors
     ///
     /// Returns I/O or serialization errors.
@@ -257,14 +263,13 @@ impl CheckpointStore {
         checkpoint_dir: &Path,
         chapters: &ChapterResult,
     ) -> Result<Vec<StageOutputEntry>, CheckpointStoreError> {
-        let mut entries = Vec::with_capacity(chapters.chapters.len());
+        let mut files = Vec::with_capacity(chapters.chapters.len());
         for ch in &chapters.chapters {
             let rel = Self::chapter_rel_path(ch);
             let bytes = chapter_to_bytes(ch);
-            let entry = Self::write_stage_file(&rel, &bytes, checkpoint_dir)?;
-            entries.push(entry);
+            files.push((rel, bytes));
         }
-        Ok(entries)
+        write_stage_files_batch(&files, checkpoint_dir)
     }
 
     /// Write a single chapter file, overwriting any existing file for the
@@ -593,6 +598,93 @@ fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), Check
         }
     }
     Ok(())
+}
+
+/// Write multiple stage-output files as a **batch** with a single directory
+/// fsync at the end.
+///
+/// # Phases
+///
+/// 1. **Write** — each file is written to a `.tmp` sibling and `fsync`'d
+///    (data durability).
+/// 2. **Rename** — all temp files are atomically renamed to their final paths.
+/// 3. **Fsync dirs** — every unique parent directory is fsync'd **once**.
+///
+/// This reduces directory fsyncs from *N* (one per file in
+/// [`write_atomic`]) to *1* per unique parent directory.
+///
+/// # Errors
+///
+/// Returns I/O errors at any phase.
+fn write_stage_files_batch(
+    files: &[(String, Vec<u8>)],
+    checkpoint_dir: &Path,
+) -> Result<Vec<StageOutputEntry>, CheckpointStoreError> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Phase 1: write all temp files and fsync each.
+    let mut pending: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(files.len());
+    for (rel_path, bytes) in files {
+        let full = checkpoint_dir.join(rel_path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|source| CheckpointStoreError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let tmp = full.with_extension("md.tmp");
+        {
+            let mut f = File::create(&tmp).map_err(|source| CheckpointStoreError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+            f.write_all(bytes)
+                .map_err(|source| CheckpointStoreError::Io {
+                    path: tmp.clone(),
+                    source,
+                })?;
+            f.sync_all().map_err(|source| CheckpointStoreError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+        }
+        pending.push((tmp, full));
+    }
+
+    // Phase 2: rename all temp files to final paths.
+    for (tmp, final_path) in &pending {
+        fs::rename(tmp, final_path).map_err(|source| CheckpointStoreError::Io {
+            path: final_path.clone(),
+            source,
+        })?;
+    }
+
+    // Phase 3: fsync each unique parent directory once (best-effort).
+    let mut synced_dirs: Vec<PathBuf> = Vec::new();
+    for (_, final_path) in &pending {
+        if let Some(parent) = final_path.parent() {
+            if !synced_dirs.contains(&parent.to_path_buf()) {
+                if let Ok(dir) = File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+                synced_dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    // Build manifest entries from the in-memory bytes (no re-read needed).
+    let mut entries = Vec::with_capacity(files.len());
+    for (rel_path, bytes) in files {
+        let digest = sha256_hex_prefixed(bytes);
+        entries.push(StageOutputEntry {
+            path: rel_path.clone(),
+            sha256: digest,
+            size: bytes.len() as u64,
+        });
+    }
+    Ok(entries)
 }
 
 fn slugify(input: &str) -> String {
@@ -1385,6 +1477,70 @@ mod tests {
 
         // Restore permissions for cleanup.
         fs::set_permissions(&dir, perms).unwrap();
+    }
+
+    #[test]
+    fn batch_write_chapters_integrity() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_checkpoint(&store);
+        let chapters = sample_chapters();
+        let entries = store.write_chapters(&dir, &chapters).unwrap();
+
+        // All files present with correct entry count.
+        assert_eq!(entries.len(), 3);
+        for entry in &entries {
+            let path = dir.join(&entry.path);
+            assert!(path.is_file(), "file {} should exist", entry.path);
+        }
+
+        // No leftover .tmp files after batch rename.
+        let chapter_files: Vec<_> = fs::read_dir(dir.join("chapters"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        for name in &chapter_files {
+            assert!(
+                !name.ends_with(".tmp"),
+                "temp file {name} should not remain after batch write"
+            );
+        }
+
+        // Record + mark complete, then reload and verify content integrity.
+        store
+            .record_stage_outputs(&mut cp, StageId::Chapters, entries)
+            .unwrap();
+        cp.mark_stage_complete(StageId::Chapters, "t2");
+        let entries_clone = cp
+            .stage_outputs
+            .as_ref()
+            .unwrap()
+            .get(StageId::Chapters.as_str())
+            .unwrap()
+            .to_vec();
+        store
+            .record_stage_outputs(&mut cp, StageId::Chapters, entries_clone)
+            .unwrap();
+
+        let (loaded_cp, _) = store.load().unwrap();
+        let loaded = store.read_chapters(&dir, &loaded_cp).unwrap();
+        assert_eq!(loaded.chapters.len(), 3);
+        assert_eq!(loaded.chapters[0].markdown, "# Intro\n\nHello");
+        assert_eq!(loaded.chapters[1].markdown, "# Core API\n\nWorld");
+        assert_eq!(loaded.chapters[2].markdown, "# Advanced\n\nDone");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_write_empty_chapters_no_files() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let empty = ChapterResult::new(Vec::new());
+        let entries = store.write_chapters(&dir, &empty).unwrap();
+        assert!(entries.is_empty());
+        assert!(!dir.join("chapters").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }
