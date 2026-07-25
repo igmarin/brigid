@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use decon_core::{
     DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
-    evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content, resolve_config,
+    custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
+    resolve_config,
 };
 use decon_crawl::crawl_local;
 use decon_pipeline::{
@@ -58,7 +59,7 @@ fn default_max_llm_calls(max_abstractions: usize, review_chapters: bool) -> u32 
 /// Returns `None` when no non-empty `DECON_LLM_API_KEY` / `DEEPSEEK_API_KEY`
 /// is set or the client cannot be constructed, so callers can fall back to a
 /// mock client for offline/test runs.
-fn build_real_llm_client() -> Option<Box<dyn decon_llm::LlmClient>> {
+fn build_real_llm_client(custom_hosts: &[String]) -> Option<Box<dyn decon_llm::LlmClient>> {
     if env::var("DECON_FORCE_MOCK")
         .ok()
         .filter(|s| !s.is_empty())
@@ -70,7 +71,13 @@ fn build_real_llm_client() -> Option<Box<dyn decon_llm::LlmClient>> {
     if !key_ok("DECON_LLM_API_KEY") && !key_ok("DEEPSEEK_API_KEY") {
         return None;
     }
+    if let Some(msg) = custom_host_warning(custom_hosts) {
+        eprintln!("{msg}");
+    }
     let config = decon_llm::OpenAiClientConfig::from_env().ok()?;
+    let config = custom_hosts
+        .iter()
+        .fold(config, |acc, h| acc.with_allowed_host(h));
     let client = decon_llm::OpenAiCompatibleClient::new(config).ok()?;
     let client = if let Some(cache_dir) = env::var("DECON_LLM_CACHE_DIR")
         .ok()
@@ -540,6 +547,12 @@ fn cmd_init(dir: &Path) -> ExitCode {
 # max_llm_calls = 200
 # apps = []
 # API keys are read from DECON_LLM_API_KEY env var only — never put them here.
+#
+# Additional LLM provider hosts allowed to receive the Authorization header.
+# Defaults: api.openai.com, api.deepseek.com, localhost, 127.0.0.1.
+# Also extendable via the DECON_ALLOWED_HOSTS env var (comma-separated).
+# [[allowed_hosts]]
+# host = "my-proxy.internal"
 "#;
     match fs::write(&path, sample) {
         Ok(()) => {
@@ -1120,7 +1133,9 @@ fn cmd_generate(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
-    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client() {
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+    ) {
         Some(c) => {
             eprintln!("generate: using live LLM provider");
             c
@@ -1403,7 +1418,9 @@ fn cmd_generate_each_app(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
-    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client() {
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+    ) {
         Some(c) => {
             eprintln!("generate: using live LLM provider");
             c
