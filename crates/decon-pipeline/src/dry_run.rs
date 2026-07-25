@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use decon_core::{
     BudgetConfig, BudgetEstimate, FileSize, FilterStats, ModuleCount, ModuleKey, SetupAssessment,
     assess_setup, discover_modules, estimate_budget, filter_files_by_scope, module_key,
-    unscoped_filter_stats,
+    redact_content, unscoped_filter_stats,
 };
 use decon_crawl::{CrawlError, crawl_local};
 use thiserror::Error;
@@ -124,7 +124,7 @@ pub fn dry_run_with_budget(
     // Tolerate a missing README only; other I/O errors (permissions, EISDIR, ...)
     // must surface as DryRunError::Io so setup is not silently wrong.
     let readme = match fs::read_to_string(&readme_path) {
-        Ok(content) => content,
+        Ok(content) => redact_content(&content),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(source) => {
             return Err(DryRunError::Io {
@@ -254,6 +254,31 @@ mod tests {
         assert_eq!(plan.budget.budgeted_chars, 0);
         assert_eq!(plan.budget.token_estimate, 0);
         assert!(!plan.budget.oversized_batch);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn readme_secrets_are_redacted_before_assess_setup() {
+        let dir = unique_temp_dir();
+        let readme = "# Project\n\n## Prerequisites\nRequires Rust.\n## Install\ncargo install.\n## Run\ncargo run.\n\nDB_KEY=dummyvalue\n";
+        fs::write(dir.join("README.md"), readme).expect("write README");
+
+        let plan = dry_run(&dir, None).expect("dry-run with secret in README");
+
+        // If redaction was applied, readme_length reflects the redacted content
+        // (the secret value replaced with ****), not the raw file length.
+        let redacted = decon_core::redact_content(readme);
+        assert_ne!(
+            redacted.len(),
+            readme.len(),
+            "test precondition: redaction must change length"
+        );
+        assert_eq!(
+            plan.setup.signals.readme_length,
+            redacted.len(),
+            "README content should be redacted before reaching assess_setup"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 

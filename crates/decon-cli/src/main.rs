@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use decon_core::{
     DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
-    evaluate_tutorial, parse_toml_config, parse_yaml_config, resolve_config,
+    evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content, resolve_config,
 };
 use decon_crawl::crawl_local;
 use decon_pipeline::{
@@ -748,6 +748,7 @@ fn walk_md(dir: &Path, root: &Path, out: &mut Vec<TutorialFile>) -> Result<(), S
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             let content =
                 fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            let content = redact_content(&content);
             let rel = path
                 .strip_prefix(root)
                 .map_err(|_| format!("strip prefix for {}", path.display()))?
@@ -845,5 +846,27 @@ mod tests {
             err.contains("file name") || err.contains("file_name"),
             "expected clear error about missing file name, got: {err}"
         );
+    }
+
+    #[test]
+    fn load_tutorial_markdown_redacts_secrets() {
+        let dir = temp_dir("eval-redact");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = "# Tutorial\n\nDB_KEY=dummyvalue\n";
+        std::fs::write(dir.join("index.md"), content).unwrap();
+
+        let files = load_tutorial_markdown(&dir).expect("load tutorial");
+        assert_eq!(files.len(), 1);
+        assert!(
+            files[0].content.contains("DB_KEY=****"),
+            "secret should be redacted: {}",
+            files[0].content
+        );
+        assert!(
+            !files[0].content.contains("dummyvalue"),
+            "raw secret must not survive redaction"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
