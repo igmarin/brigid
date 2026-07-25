@@ -44,6 +44,14 @@ pub enum ConfigError {
         /// Suggested environment variable for this secret.
         env_var: String,
     },
+    /// An allowed-host entry is not a valid hostname (wildcards, paths, empty, etc.).
+    #[error("invalid allowed host {host:?}: {reason}")]
+    InvalidAllowedHost {
+        /// The rejected host string.
+        host: String,
+        /// Why it was rejected.
+        reason: String,
+    },
 }
 
 /// Default max LLM calls before the budget tracker fails closed.
@@ -92,6 +100,16 @@ pub struct RunConfig {
     /// Chars-per-token heuristic for token estimates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chars_per_token: Option<usize>,
+    /// Additional LLM provider hosts allowed to receive the `Authorization`
+    /// header, beyond the built-in allowlist. Sourced from
+    /// `DECON_ALLOWED_HOSTS` (comma-separated) and `[[allowed_hosts]]` config
+    /// file sections. Layers accumulate (env + file) and are deduplicated.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_allowed_hosts"
+    )]
+    pub allowed_hosts: Option<Vec<String>>,
 }
 
 impl Default for RunConfig {
@@ -108,6 +126,7 @@ impl Default for RunConfig {
             checkpoint_dir: None,
             batch_char_budget: None,
             chars_per_token: Some(DEFAULT_CONFIG_CHARS_PER_TOKEN),
+            allowed_hosts: None,
         }
     }
 }
@@ -128,6 +147,7 @@ impl RunConfig {
             checkpoint_dir: None,
             batch_char_budget: None,
             chars_per_token: None,
+            allowed_hosts: None,
         }
     }
 
@@ -149,6 +169,7 @@ impl RunConfig {
                 .or_else(|| self.checkpoint_dir.clone()),
             batch_char_budget: overlay.batch_char_budget.or(self.batch_char_budget),
             chars_per_token: overlay.chars_per_token.or(self.chars_per_token),
+            allowed_hosts: merge_host_layers(&self.allowed_hosts, &overlay.allowed_hosts),
         }
     }
 
@@ -190,7 +211,10 @@ pub fn parse_toml_config(text: &str) -> Result<RunConfig, ConfigError> {
     let value: toml::Value = toml::from_str(text).map_err(|e| ConfigError::Toml(e.to_string()))?;
     let json_value = serde_json::to_value(&value).map_err(|e| ConfigError::Toml(e.to_string()))?;
     check_for_secret_fields(&json_value)?;
-    serde_json::from_value(json_value).map_err(|e| ConfigError::Toml(e.to_string()))
+    let cfg: RunConfig =
+        serde_json::from_value(json_value).map_err(|e| ConfigError::Toml(e.to_string()))?;
+    validate_config_hosts(&cfg)?;
+    Ok(cfg)
 }
 
 /// Parse a YAML document into a config layer (`.decon.yaml` body).
@@ -206,7 +230,10 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
     let value: serde_json::Value =
         serde_yaml_ng::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
     check_for_secret_fields(&value)?;
-    serde_json::from_value(value).map_err(|e| ConfigError::Yaml(e.to_string()))
+    let cfg: RunConfig =
+        serde_json::from_value(value).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    validate_config_hosts(&cfg)?;
+    Ok(cfg)
 }
 
 /// Load a config layer from environment-style key/value pairs.
@@ -265,6 +292,22 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
     if let Some(v) = nonblank(vars.get("DECON_CHARS_PER_TOKEN")) {
         cfg.chars_per_token = Some(parse_env_usize("DECON_CHARS_PER_TOKEN", v)?);
     }
+    if let Some(v) = nonblank(vars.get("DECON_ALLOWED_HOSTS")) {
+        let hosts: Vec<String> = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        if hosts.is_empty() {
+            cfg.allowed_hosts = None;
+        } else {
+            for h in &hosts {
+                validate_hostname(h)?;
+            }
+            cfg.allowed_hosts = Some(hosts);
+        }
+    }
     Ok(cfg)
 }
 
@@ -284,6 +327,175 @@ fn parse_env_usize(key: &str, value: &str) -> Result<usize, ConfigError> {
             key: key.to_owned(),
             value: value.to_owned(),
         })
+}
+
+/// Validate a single hostname for the LLM host allowlist.
+///
+/// A valid host is non-empty, contains no wildcards (`*`), no path separators
+/// (`/`), no whitespace, no port (`:`), and only ASCII letters, digits, dots,
+/// and hyphens. This prevents injection of path or glob fragments into the
+/// allowlist that decides where the `Authorization` header may be sent.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::InvalidAllowedHost`] when the host is not acceptable.
+pub fn validate_hostname(host: &str) -> Result<(), ConfigError> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "host is empty".to_owned(),
+        });
+    }
+    if trimmed.contains('*') {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "wildcards are not allowed".to_owned(),
+        });
+    }
+    if trimmed.contains('/') {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "path separators are not allowed".to_owned(),
+        });
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "whitespace is not allowed".to_owned(),
+        });
+    }
+    if trimmed.contains(':') {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "port separators are not allowed; specify the host only".to_owned(),
+        });
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return Err(ConfigError::InvalidAllowedHost {
+            host: host.to_owned(),
+            reason: "only ASCII letters, digits, dots, and hyphens are allowed".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate every host in a parsed config layer.
+fn validate_config_hosts(cfg: &RunConfig) -> Result<(), ConfigError> {
+    if let Some(hosts) = &cfg.allowed_hosts {
+        for h in hosts {
+            validate_hostname(h)?;
+        }
+    }
+    Ok(())
+}
+
+/// Combine two optional host layers (self + overlay), deduplicating
+/// case-insensitively while preserving first-seen order. Used by
+/// [`RunConfig::merge_layer`] so env and file hosts accumulate rather than
+/// one layer shadowing the other.
+fn merge_host_layers(a: &Option<Vec<String>>, b: &Option<Vec<String>>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(dedup_lowercased(x)),
+        (Some(x), Some(y)) => {
+            let mut out = dedup_lowercased(x);
+            for h in y {
+                let lower = h.to_ascii_lowercase();
+                if !out.iter().any(|e| e == &lower) {
+                    out.push(lower);
+                }
+            }
+            Some(out)
+        }
+    }
+}
+
+/// Deduplicate a host list case-insensitively, preserving first-seen order
+/// and lowercasing every entry.
+fn dedup_lowercased(hosts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(hosts.len());
+    for h in hosts {
+        let lower = h.to_ascii_lowercase();
+        if !out.iter().any(|e| e == &lower) {
+            out.push(lower);
+        }
+    }
+    out
+}
+
+/// Merge the built-in default hosts with env-layer and file-layer hosts,
+/// deduplicating case-insensitively and preserving first-seen order
+/// (defaults first, then env, then file).
+#[must_use]
+pub fn merge_allowed_hosts(default: &[&str], env: &[String], file: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(default.len() + env.len() + file.len());
+    for h in default {
+        let lower = h.to_ascii_lowercase();
+        if !out.iter().any(|e| e == &lower) {
+            out.push(lower);
+        }
+    }
+    for h in env.iter().chain(file.iter()) {
+        let lower = h.to_ascii_lowercase();
+        if !out.iter().any(|e| e == &lower) {
+            out.push(lower);
+        }
+    }
+    out
+}
+
+/// Build a security-awareness warning message for stderr when custom
+/// (non-default) hosts are added to the LLM allowlist. Returns `None` when
+/// no custom hosts are present.
+#[must_use]
+pub fn custom_host_warning(hosts: &[String]) -> Option<String> {
+    if hosts.is_empty() {
+        return None;
+    }
+    let list = hosts.join(", ");
+    Some(format!(
+        "warning: custom LLM host allowlist entries added: [{list}]. \
+         The Authorization header may be sent to these hosts; \
+         only allow providers you trust."
+    ))
+}
+
+/// Custom deserializer for `RunConfig.allowed_hosts` that accepts either an
+/// array of strings (`["a.com", "b.com"]`) or an array of tables
+/// (`[[allowed_hosts]] host = "a.com"` → `[{host: "a.com"}]`).
+fn deserialize_allowed_hosts<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<Vec<serde_json::Value>> = Option::deserialize(deserializer)?;
+    let Some(arr) = opt else {
+        return Ok(None);
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for v in arr {
+        let host = match v {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Object(map) => {
+                let Some(h) = map.get("host").and_then(|x| x.as_str()) else {
+                    return Err(serde::de::Error::custom(
+                        "allowed_hosts entry must have a string 'host' field",
+                    ));
+                };
+                h.to_string()
+            }
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "allowed_hosts entry must be a string or object with 'host', got {other}"
+                )));
+            }
+        };
+        out.push(host);
+    }
+    Ok(Some(out))
 }
 
 /// Canonical JSON for hashing (sorted keys, no insignificant whitespace).
@@ -718,5 +930,181 @@ api_key = "xxx"
     fn toml_authorization_rejected() {
         let err = parse_toml_config(r#"authorization = "Bearer xxx""#).unwrap_err();
         assert_secret_rejected(err, "authorization");
+    }
+
+    // --- Configurable host allowlist (issue #175) ---
+
+    #[test]
+    fn toml_allowed_hosts_array_of_tables() {
+        let cfg = parse_toml_config(
+            r#"
+language = "en"
+
+[[allowed_hosts]]
+host = "my-proxy.internal"
+
+[[allowed_hosts]]
+host = "llm-gateway.corp.example"
+"#,
+        )
+        .expect("toml");
+        assert_eq!(
+            cfg.allowed_hosts.as_deref(),
+            Some(
+                [
+                    "my-proxy.internal".to_owned(),
+                    "llm-gateway.corp.example".to_owned()
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn yaml_allowed_hosts_array_of_tables() {
+        let cfg = parse_yaml_config(
+            "language: en\nallowed_hosts:\n  - host: my-proxy.internal\n  - host: llm-gateway.corp.example\n",
+        )
+        .expect("yaml");
+        assert_eq!(
+            cfg.allowed_hosts.as_deref(),
+            Some(
+                [
+                    "my-proxy.internal".to_owned(),
+                    "llm-gateway.corp.example".to_owned()
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn env_allowed_hosts_comma_separated_and_trimmed() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "DECON_ALLOWED_HOSTS".into(),
+            " my-proxy.internal , Another.Host.COM ".into(),
+        );
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(
+            env.allowed_hosts.as_deref(),
+            Some(
+                [
+                    "my-proxy.internal".to_owned(),
+                    "another.host.com".to_owned()
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
+    fn env_allowed_hosts_blank_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_ALLOWED_HOSTS".into(), "  ,  ".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.allowed_hosts, None);
+    }
+
+    #[test]
+    fn env_allowed_hosts_unset_is_none() {
+        let vars = BTreeMap::new();
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.allowed_hosts, None);
+    }
+
+    #[test]
+    fn invalid_host_wildcard_rejected() {
+        let err = validate_hostname("*.example.com").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAllowedHost { .. }));
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_ALLOWED_HOSTS".into(), "*.example.com".into());
+        let err = config_from_env_map(&vars).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAllowedHost { .. }));
+    }
+
+    #[test]
+    fn invalid_host_path_rejected() {
+        let err = validate_hostname("evil.com/path").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAllowedHost { .. }));
+    }
+
+    #[test]
+    fn invalid_host_empty_rejected() {
+        let err = validate_hostname("").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAllowedHost { .. }));
+    }
+
+    #[test]
+    fn invalid_host_whitespace_rejected() {
+        let err = validate_hostname("evil host.com").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAllowedHost { .. }));
+    }
+
+    #[test]
+    fn validate_hostname_accepts_known_hosts() {
+        validate_hostname("api.openai.com").expect("openai");
+        validate_hostname("api.deepseek.com").expect("deepseek");
+        validate_hostname("localhost").expect("localhost");
+        validate_hostname("127.0.0.1").expect("loopback");
+        validate_hostname("my-proxy.internal").expect("custom");
+    }
+
+    #[test]
+    fn merge_allowed_hosts_dedups_preserving_order() {
+        let defaults = [
+            "api.openai.com",
+            "api.deepseek.com",
+            "localhost",
+            "127.0.0.1",
+        ];
+        let env = vec!["my-proxy.internal".to_owned(), "api.openai.com".to_owned()];
+        let file = vec![
+            "my-proxy.internal".to_owned(),
+            "llm-gateway.corp".to_owned(),
+        ];
+        let merged = merge_allowed_hosts(&defaults, &env, &file);
+        assert_eq!(
+            merged,
+            vec![
+                "api.openai.com",
+                "api.deepseek.com",
+                "localhost",
+                "127.0.0.1",
+                "my-proxy.internal",
+                "llm-gateway.corp",
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_host_warning_none_when_empty() {
+        assert!(custom_host_warning(&[]).is_none());
+    }
+
+    #[test]
+    fn custom_host_warning_message_when_custom() {
+        let hosts = vec!["my-proxy.internal".to_owned()];
+        let msg = custom_host_warning(&hosts).expect("warning");
+        assert!(msg.to_lowercase().contains("warning"), "msg: {msg}");
+        assert!(msg.contains("my-proxy.internal"), "msg: {msg}");
+        assert!(msg.contains("host"), "msg: {msg}");
+    }
+
+    #[test]
+    fn allowed_hosts_layer_accumulates_env_and_file() {
+        let env = RunConfig {
+            allowed_hosts: Some(vec!["env-host.local".to_owned()]),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            allowed_hosts: Some(vec!["file-host.local".to_owned()]),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &RunConfig::empty());
+        assert_eq!(
+            resolved.allowed_hosts.as_deref(),
+            Some(["env-host.local".to_owned(), "file-host.local".to_owned()].as_slice())
+        );
     }
 }

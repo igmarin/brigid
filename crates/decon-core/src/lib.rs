@@ -48,8 +48,8 @@ pub use checkpoint::{
 };
 pub use config::{
     ConfigError, DEFAULT_CONFIG_CHARS_PER_TOKEN, DEFAULT_MAX_LLM_CALLS, RunConfig,
-    canonical_config_json, config_from_env_map, parse_toml_config, parse_yaml_config,
-    resolve_config,
+    canonical_config_json, config_from_env_map, custom_host_warning, merge_allowed_hosts,
+    parse_toml_config, parse_yaml_config, resolve_config, validate_hostname,
 };
 pub use diagrams::{
     DiagramEdge, learning_path_flowchart, module_inventory_flowchart, module_inventory_from_counts,
