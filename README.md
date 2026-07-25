@@ -180,6 +180,26 @@ Reload your shell (or open a new terminal) after installing.
 
 ---
 
+## Man page
+
+`decon` can generate a troff-formatted man page covering every subcommand and
+flag. The man page includes SYNOPSIS, DESCRIPTION, OPTIONS, COMMANDS,
+EXAMPLES, ENVIRONMENT, FILES, EXIT STATUS, and SEE ALSO sections.
+
+```bash
+# Print the man page to stdout
+decon manpage
+
+# Write it to a file and install it
+decon manpage > decon.1 && sudo mv decon.1 /usr/local/share/man/man1/
+
+# Or write directly to a file with --output
+decon manpage --output decon.1
+man -l decon.1
+```
+
+---
+
 ## Workspace layout
 
 ```

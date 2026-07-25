@@ -2985,6 +2985,110 @@ fn init_wizard_with_eof_uses_defaults() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// --- Issue #188: man page generation ---
+
+#[test]
+fn manpage_to_stdout_is_valid_troff() {
+    decon()
+        .arg("manpage")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH "));
+}
+
+#[test]
+fn manpage_contains_all_subcommands() {
+    let out = decon().arg("manpage").assert().success();
+    let stdout = &out.get_output().stdout;
+    let text = String::from_utf8(stdout.to_vec()).expect("valid UTF-8");
+    for name in &[
+        "init",
+        "crawl",
+        "dry-run",
+        "eval",
+        "resume",
+        "identify",
+        "generate",
+        "relationships",
+        "order",
+        "chapters",
+        "setup",
+        "overview",
+        "combine",
+        "manpage",
+    ] {
+        assert!(
+            text.contains(name),
+            "man page should mention subcommand '{name}'"
+        );
+    }
+}
+
+#[test]
+fn manpage_contains_key_sections() {
+    let out = decon().arg("manpage").assert().success();
+    let stdout = &out.get_output().stdout;
+    let text = String::from_utf8(stdout.to_vec()).expect("valid UTF-8");
+    for section in &["SYNOPSIS", "DESCRIPTION", "OPTIONS", "SUBCOMMANDS"] {
+        assert!(
+            text.contains(&format!(".SH {section}")),
+            "man page should have a {section} section"
+        );
+    }
+    for section in &[
+        "EXAMPLES",
+        "ENVIRONMENT",
+        "FILES",
+        "EXIT STATUS",
+        "SEE ALSO",
+    ] {
+        assert!(
+            text.contains(&format!(".SH \"{section}\"")),
+            "man page should have a {section} section"
+        );
+    }
+}
+
+#[test]
+fn manpage_output_flag_writes_file() {
+    let dir = temp_dir("manpage-output-flag");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("decon.1");
+    decon()
+        .args(["manpage", "--output"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    assert!(path.is_file(), "man page file should exist");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.contains(".TH "),
+        "written man page should be valid troff"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manpage_does_not_require_config() {
+    // The manpage subcommand should work even when a broken decon.toml is
+    // present in the cwd — it must not load config.
+    let dir = temp_dir("manpage-broken-config");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("decon.toml"), b"this is not valid toml = = =\n").unwrap();
+
+    let mut cmd = decon();
+    cmd.current_dir(&dir);
+    cmd.arg("manpage")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH "));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // `decon completions` — shell completion script generation (M5-DIST-1)
 // ---------------------------------------------------------------------------
