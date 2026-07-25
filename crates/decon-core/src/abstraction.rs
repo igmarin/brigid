@@ -248,6 +248,57 @@ impl IdentifyResult {
     }
 }
 
+/// Output of the **relationships** stage: the LLM-generated project summary and
+/// the directed edges between abstractions.
+///
+/// Provides [`RelationshipsResult::to_checkpoint_value`] /
+/// [`RelationshipsResult::from_checkpoint_value`] bridge methods so
+/// [`crate::CheckpointV1`]'s `relationships: Option<serde_json::Value>` field
+/// stays compatible without being modified.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RelationshipsResult {
+    /// LLM-generated project description.
+    pub project_summary: String,
+    /// Directed edges between abstractions (indices into
+    /// [`IdentifyResult::abstractions`]).
+    pub relationships: Vec<Relationship>,
+}
+
+impl RelationshipsResult {
+    /// Construct a result from a project summary and a vector of
+    /// relationships.
+    #[must_use]
+    pub fn new(project_summary: impl Into<String>, relationships: Vec<Relationship>) -> Self {
+        Self {
+            project_summary: project_summary.into(),
+            relationships,
+        }
+    }
+
+    /// Serialize to a [`serde_json::Value`] for storage in
+    /// [`crate::CheckpointV1::relationships`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates serde_json serialization errors. In practice
+    /// [`RelationshipsResult`] is always serializable, but the `Result` return
+    /// keeps the API panic-free and symmetric with
+    /// [`RelationshipsResult::from_checkpoint_value`].
+    pub fn to_checkpoint_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::to_value(self)
+    }
+
+    /// Deserialize from a [`serde_json::Value`] stored in
+    /// [`crate::CheckpointV1::relationships`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates serde_json deserialization errors.
+    pub fn from_checkpoint_value(v: serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +409,43 @@ mod tests {
     #[test]
     fn identify_result_to_checkpoint_value_is_ok() {
         let result = IdentifyResult::new(vec![Abstraction::new("A", "d", Tier::S, "x")]);
+        assert!(result.to_checkpoint_value().is_ok());
+    }
+
+    #[test]
+    fn relationships_result_checkpoint_round_trip() {
+        let result = RelationshipsResult::new(
+            "A small web framework with a routing core and middleware pipeline.",
+            vec![
+                Relationship::new(0, 1, "routes to", "calls"),
+                Relationship::new(1, 2, "hands off", "publishes"),
+            ],
+        );
+        let v = result.to_checkpoint_value().unwrap();
+        let back = RelationshipsResult::from_checkpoint_value(v).unwrap();
+        assert_eq!(back, result);
+    }
+
+    #[test]
+    fn relationships_result_empty_round_trip() {
+        let result = RelationshipsResult::new(String::new(), Vec::new());
+        let v = result.to_checkpoint_value().unwrap();
+        let back = RelationshipsResult::from_checkpoint_value(v).unwrap();
+        assert_eq!(back, result);
+        assert!(back.relationships.is_empty());
+        assert!(back.project_summary.is_empty());
+    }
+
+    #[test]
+    fn relationships_result_from_invalid_value_errors() {
+        let bad = serde_json::json!({"nope": 1});
+        assert!(RelationshipsResult::from_checkpoint_value(bad).is_err());
+    }
+
+    #[test]
+    fn relationships_result_to_checkpoint_value_is_ok() {
+        let result =
+            RelationshipsResult::new("summary", vec![Relationship::new(0, 1, "label", "kind")]);
         assert!(result.to_checkpoint_value().is_ok());
     }
 }
