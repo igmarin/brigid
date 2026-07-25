@@ -7,15 +7,18 @@
 //! enabling resume from any point. The orchestration logic lives here so the
 //! CLI binary stays thin.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use decon_core::{
     ChapterOrder, ChapterResult, CheckpointV1, CombinedTutorial, IdentifyResult, Locale, ModuleKey,
     ProgressTracker, RelationshipsResult, RunConfig, StageId, config_hash,
 };
+use decon_crawl::crawl_local;
 
 use crate::cancellation::CancelToken;
-use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
+use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
+use crate::dry_run::dry_run;
 use crate::prompts::PromptRenderer;
 
 use crate::chapters::{ChaptersConfig, DiagramLevel, chapters_and_checkpoint};
@@ -108,6 +111,9 @@ pub struct GenerateConfig {
     pub max_abstractions: usize,
     /// Use single-shot identify instead of map+reduce.
     pub single_shot: bool,
+    /// Run the full pipeline once per discovered app/module, writing separate
+    /// output directories and a summary index.
+    pub each_app: bool,
     /// Merged run config (CLI > file > env > defaults).
     pub run_config: RunConfig,
     /// Maximum concurrent chapter writes.
@@ -399,6 +405,261 @@ fn write_output_if_needed(
     Ok(())
 }
 
+/// Summary of one app's generate run within an `--each-app` batch.
+#[derive(Clone, Debug)]
+pub struct EachAppSummary {
+    /// Module key (e.g. `apps/alpha`).
+    pub app: String,
+    /// Slugified directory name (e.g. `apps-alpha`).
+    pub slug: String,
+    /// Output directory for this app's tutorial.
+    pub output_dir: PathBuf,
+    /// Whether the pipeline completed successfully for this app.
+    pub success: bool,
+    /// Error message if the run failed.
+    pub error: Option<String>,
+}
+
+/// Outcome of [`run_generate_each_app`].
+#[derive(Debug)]
+pub enum EachAppOutcome {
+    /// All per-app runs finished (some may have failed; check each summary).
+    Completed(Vec<EachAppSummary>),
+    /// The batch was cancelled. `summaries` holds results for apps that
+    /// ran before the cancellation; `cancelled_app` is the module key that
+    /// was about to run.
+    Partial {
+        /// Results for apps that ran before cancellation.
+        summaries: Vec<EachAppSummary>,
+        /// Module key of the app that was cancelled.
+        cancelled_app: String,
+    },
+}
+
+/// Run the full generate pipeline once per discovered app/module.
+///
+/// 1. Runs a dry-run on the full repo to discover all modules.
+/// 2. For each module, runs a scoped dry-run, sets up a scoped checkpoint
+///    (`.decon-checkpoint-<slug>`), and calls [`run_generate`] with a scoped
+///    `GenerateConfig` (output goes to `output/<slug>/`).
+/// 3. If one app fails, continues with the remaining apps and records the
+///    failure in the summary.
+/// 4. If the cancel token fires, stops immediately and returns
+///    [`EachAppOutcome::Partial`].
+/// 5. Writes a summary `output/index.md` listing each app with a link to its
+///    tutorial.
+///
+/// # Errors
+///
+/// Returns [`GenerateError`] only if the initial dry-run or crawl fails.
+/// Per-app failures are captured in the returned summaries, not propagated.
+pub async fn run_generate_each_app(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    cancel: &CancelToken,
+    config: &GenerateConfig,
+) -> Result<EachAppOutcome, GenerateError> {
+    let full_plan = dry_run(&config.dir, None)
+        .map_err(|e| GenerateError::Config(format!("each-app dry-run failed: {e}")))?;
+
+    let modules: Vec<ModuleKey> = full_plan.modules.iter().map(|m| m.key.clone()).collect();
+
+    if modules.is_empty() {
+        write_each_app_index(&config.output_dir, &[])?;
+        return Ok(EachAppOutcome::Completed(Vec::new()));
+    }
+
+    let crawl = crawl_local(&config.dir).map_err(|e| GenerateError::Crawl(e.to_string()))?;
+    let size_map: std::collections::HashMap<&str, u64> = crawl
+        .files
+        .iter()
+        .zip(crawl.sizes.iter())
+        .map(|(f, s)| (f.as_str(), *s))
+        .collect();
+
+    let mut summaries: Vec<EachAppSummary> = Vec::new();
+
+    for module in &modules {
+        if cancel.is_cancelled() {
+            return Ok(EachAppOutcome::Partial {
+                summaries,
+                cancelled_app: module.as_str().to_string(),
+            });
+        }
+
+        let slug = slugify_module_key(module);
+        let scoped_ckpt = PathBuf::from(format!("{}-{}", config.checkpoint_dir.display(), slug));
+        let scoped_output = config.output_dir.join(&slug);
+
+        let scoped_plan = match dry_run(&config.dir, Some(std::slice::from_ref(module))) {
+            Ok(p) => p,
+            Err(e) => {
+                summaries.push(EachAppSummary {
+                    app: module.as_str().to_string(),
+                    slug: slug.clone(),
+                    output_dir: scoped_output,
+                    success: false,
+                    error: Some(format!("scoped dry-run failed: {e}")),
+                });
+                continue;
+            }
+        };
+
+        let scoped_sizes: Vec<u64> = scoped_plan
+            .files
+            .iter()
+            .map(|f| size_map.get(f.as_str()).copied().unwrap_or(0))
+            .collect();
+        let scoped_file_contents: Vec<(String, String)> = scoped_plan
+            .files
+            .iter()
+            .map(|f| (f.clone(), String::new()))
+            .collect();
+        let setup_context = scoped_plan
+            .setup
+            .config_files
+            .iter()
+            .map(|f| format!("# File: {f}\n"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let store = CheckpointStore::new(&scoped_ckpt);
+        let mut cp = match CheckpointV1::new(
+            &config.run_config,
+            config.run_config.redacted_for_checkpoint(),
+            config.dir.display().to_string(),
+            "0Z",
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                summaries.push(EachAppSummary {
+                    app: module.as_str().to_string(),
+                    slug: slug.clone(),
+                    output_dir: scoped_output,
+                    success: false,
+                    error: Some(format!("checkpoint init: {e}")),
+                });
+                continue;
+            }
+        };
+        cp.mark_stage_complete(StageId::Fetch, "0Z");
+        cp.mark_stage_complete(StageId::DryRun, "0Z");
+
+        let file_entries: Vec<(&str, &[u8])> = scoped_plan
+            .files
+            .iter()
+            .map(|f| (f.as_str(), b"" as &[u8]))
+            .collect();
+        let records = records_from_files(&file_entries);
+        if let Err(e) = store.save(cp.clone(), &records) {
+            summaries.push(EachAppSummary {
+                app: module.as_str().to_string(),
+                slug: slug.clone(),
+                output_dir: scoped_output,
+                success: false,
+                error: Some(format!("checkpoint save: {e}")),
+            });
+            continue;
+        }
+
+        let scoped_config = GenerateConfig {
+            apps: vec![module.as_str().to_string()],
+            checkpoint_dir: scoped_ckpt.clone(),
+            output_dir: scoped_output.clone(),
+            ..config.clone()
+        };
+
+        let mut progress = ProgressTracker::new(
+            config
+                .run_config
+                .max_llm_calls
+                .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS),
+        );
+
+        let result = run_generate(
+            client,
+            renderer,
+            &store,
+            &mut cp,
+            &mut progress,
+            cancel,
+            &scoped_config,
+            &scoped_file_contents,
+            scoped_plan.files.clone(),
+            scoped_sizes,
+            scoped_plan.setup.score,
+            &scoped_plan.setup.gaps,
+            &setup_context,
+            &modules,
+        )
+        .await;
+
+        match result {
+            Ok(GenerateOutcome::Completed(_)) => {
+                summaries.push(EachAppSummary {
+                    app: module.as_str().to_string(),
+                    slug: slug.clone(),
+                    output_dir: scoped_output,
+                    success: true,
+                    error: None,
+                });
+            }
+            Ok(GenerateOutcome::Cancelled { .. }) => {
+                return Ok(EachAppOutcome::Partial {
+                    summaries,
+                    cancelled_app: module.as_str().to_string(),
+                });
+            }
+            Err(e) => {
+                summaries.push(EachAppSummary {
+                    app: module.as_str().to_string(),
+                    slug: slug.clone(),
+                    output_dir: scoped_output,
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+
+    write_each_app_index(&config.output_dir, &summaries)?;
+    Ok(EachAppOutcome::Completed(summaries))
+}
+
+/// Convert a module key into a filesystem-safe slug (e.g. `apps/alpha` ->
+/// `apps-alpha`).
+fn slugify_module_key(key: &ModuleKey) -> String {
+    key.as_str().replace('/', "-")
+}
+
+/// Write the summary `index.md` listing each per-app tutorial.
+fn write_each_app_index(
+    output_dir: &Path,
+    summaries: &[EachAppSummary],
+) -> Result<(), GenerateError> {
+    fs::create_dir_all(output_dir)
+        .map_err(|e| GenerateError::Config(format!("create output dir: {e}")))?;
+
+    let mut content = String::from("# Tutorial Index\n\n");
+    content.push_str("Per-app tutorials generated by `decon generate --each-app`.\n\n");
+
+    if summaries.is_empty() {
+        content.push_str("_No apps found._\n");
+    } else {
+        for s in summaries {
+            let link = format!("{}/index.md", s.slug);
+            let status = if s.success { "" } else { " (FAILED)" };
+            content.push_str(&format!("- [{}]({}){status}\n", s.app, link));
+        }
+    }
+
+    let index_path = output_dir.join("index.md");
+    fs::write(&index_path, content)
+        .map_err(|e| GenerateError::Config(format!("write index: {e}")))?;
+
+    Ok(())
+}
+
 fn load_identify(checkpoint: &CheckpointV1) -> Result<IdentifyResult, GenerateError> {
     crate::identify_checkpoint::load_identify_result(checkpoint).ok_or_else(|| {
         GenerateError::Config(
@@ -593,6 +854,7 @@ mod tests {
             output_dir,
             max_abstractions: 10,
             single_shot: true,
+            each_app: false,
             run_config: RunConfig::default(),
             chapter_concurrency: 4,
         }
@@ -1066,5 +1328,324 @@ mod tests {
     #[test]
     fn setup_score_threshold_is_fifty() {
         assert_eq!(crate::setup_guide::SETUP_SCORE_THRESHOLD, 50);
+    }
+
+    // --- each-app tests ---
+
+    fn make_monorepo_dir(apps: &[&str]) -> PathBuf {
+        let dir = temp_dir("each-app-repo");
+        for app in apps {
+            let app_path = dir.join("apps").join(app).join("lib");
+            fs::create_dir_all(&app_path).unwrap();
+            fs::write(
+                app_path.join(format!("{app}.ex")),
+                format!("defmodule {app} do\nend\n"),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn each_app_config(
+        dir: PathBuf,
+        output_dir: PathBuf,
+        checkpoint_dir: PathBuf,
+    ) -> GenerateConfig {
+        GenerateConfig {
+            dir,
+            apps: Vec::new(),
+            language: "en".to_string(),
+            diagram_level: DiagramLevel::Standard,
+            force_setup: false,
+            no_setup: true,
+            no_overview: false,
+            checkpoint_dir,
+            output_dir,
+            max_abstractions: 10,
+            single_shot: true,
+            each_app: true,
+            run_config: RunConfig::default(),
+            chapter_concurrency: 4,
+        }
+    }
+
+    fn per_app_responses_with_overview() -> Vec<String> {
+        vec![
+            single_file_identify(),
+            single_file_relationships(),
+            single_file_order(),
+            canned_chapter("Alpha", 1),
+            each_app_overview(),
+        ]
+    }
+
+    fn per_app_responses_no_overview() -> Vec<String> {
+        vec![
+            single_file_identify(),
+            single_file_relationships(),
+            single_file_order(),
+            canned_chapter("Alpha", 1),
+        ]
+    }
+
+    fn single_file_identify() -> String {
+        let yaml = "- name: \"Alpha\"\n  description: \"Alpha module\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: [\"apps/alpha\"]\n  entry_files: [\"apps/alpha/lib/alpha.ex\"]\n";
+        format!("```yaml\n{yaml}```\n")
+    }
+
+    fn single_file_relationships() -> String {
+        "```yaml\nsummary: \"Alpha module.\"\nrelationships: []\n```\n".to_string()
+    }
+
+    fn single_file_order() -> String {
+        "```yaml\n- 0\n```\n".to_string()
+    }
+
+    fn each_app_overview() -> String {
+        "# Architecture Overview\n\nThis is a monorepo with apps/alpha and apps/beta.\n".to_string()
+    }
+
+    fn repeated_responses(single: Vec<String>, times: usize) -> Vec<String> {
+        let mut all = Vec::new();
+        for _ in 0..times {
+            all.extend(single.clone());
+        }
+        all
+    }
+
+    fn scoped_ckpt_path(base: &Path, slug: &str) -> PathBuf {
+        PathBuf::from(format!("{}-{}", base.display(), slug))
+    }
+
+    #[tokio::test]
+    async fn each_app_with_2_apps_runs_pipeline_twice_and_creates_index() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-2-out");
+        let ckpt_dir = temp_dir("each-app-2-ckpt");
+
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete");
+
+        match &outcome {
+            EachAppOutcome::Completed(summaries) => {
+                assert_eq!(summaries.len(), 2);
+                assert!(summaries.iter().all(|s| s.success), "all should succeed");
+            }
+            EachAppOutcome::Partial { .. } => panic!("expected completed"),
+        }
+
+        assert!(
+            output_dir.join("apps-alpha").join("index.md").is_file(),
+            "alpha output should exist"
+        );
+        assert!(
+            output_dir.join("apps-beta").join("index.md").is_file(),
+            "beta output should exist"
+        );
+
+        let index = fs::read_to_string(output_dir.join("index.md")).unwrap();
+        assert!(index.contains("apps-alpha"), "index should list alpha");
+        assert!(index.contains("apps-beta"), "index should list beta");
+
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
+        assert!(alpha_ckpt.join("checkpoint.json").is_file());
+        assert!(beta_ckpt.join("checkpoint.json").is_file());
+        assert_ne!(alpha_ckpt, beta_ckpt);
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+        let _ = fs::remove_dir_all(&beta_ckpt);
+    }
+
+    #[tokio::test]
+    async fn each_app_with_1_app_runs_once() {
+        let repo = make_monorepo_dir(&["alpha"]);
+        let output_dir = temp_dir("each-app-1-out");
+        let ckpt_dir = temp_dir("each-app-1-ckpt");
+
+        let responses = per_app_responses_no_overview();
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete");
+
+        match &outcome {
+            EachAppOutcome::Completed(summaries) => {
+                assert_eq!(summaries.len(), 1);
+                assert!(summaries[0].success);
+            }
+            EachAppOutcome::Partial { .. } => panic!("expected completed"),
+        }
+
+        assert!(
+            output_dir.join("apps-alpha").join("index.md").is_file(),
+            "alpha output should exist in scoped dir"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+    }
+
+    #[tokio::test]
+    async fn each_app_with_one_failing_continues_with_other() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-fail-out");
+        let ckpt_dir = temp_dir("each-app-fail-ckpt");
+
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses).unwrap().fail_on(
+            5,
+            decon_llm::LlmError::network("mock failure for second app"),
+        );
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete");
+
+        match &outcome {
+            EachAppOutcome::Completed(summaries) => {
+                assert_eq!(summaries.len(), 2);
+                let successes: Vec<_> = summaries.iter().filter(|s| s.success).collect();
+                let failures: Vec<_> = summaries.iter().filter(|s| !s.success).collect();
+                assert_eq!(successes.len(), 1, "one should succeed");
+                assert_eq!(failures.len(), 1, "one should fail");
+                assert!(
+                    failures[0].error.is_some(),
+                    "failure should have error message"
+                );
+            }
+            EachAppOutcome::Partial { .. } => panic!("expected completed"),
+        }
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+        let _ = fs::remove_dir_all(&beta_ckpt);
+    }
+
+    #[tokio::test]
+    async fn each_app_with_cancellation_returns_partial() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-cancel-out");
+        let ckpt_dir = temp_dir("each-app-cancel-ckpt");
+
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should not error");
+
+        match &outcome {
+            EachAppOutcome::Partial { cancelled_app, .. } => {
+                assert!(!cancelled_app.is_empty());
+            }
+            EachAppOutcome::Completed(_) => panic!("expected partial"),
+        }
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[tokio::test]
+    async fn each_app_summary_index_contains_links() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-links-out");
+        let ckpt_dir = temp_dir("each-app-links-ckpt");
+
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let _ = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete");
+
+        let index_path = output_dir.join("index.md");
+        assert!(index_path.is_file(), "summary index.md should exist");
+        let index = fs::read_to_string(&index_path).unwrap();
+        assert!(
+            index.contains("apps-alpha/index.md"),
+            "index should link to alpha tutorial"
+        );
+        assert!(
+            index.contains("apps-beta/index.md"),
+            "index should link to beta tutorial"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+        let _ = fs::remove_dir_all(&beta_ckpt);
+    }
+
+    #[tokio::test]
+    async fn each_app_checkpoint_dirs_dont_collide() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-collide-out");
+        let ckpt_dir = temp_dir("each-app-collide-ckpt");
+
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let _ = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete");
+
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
+        assert!(alpha_ckpt.is_dir(), "alpha checkpoint dir should exist");
+        assert!(beta_ckpt.is_dir(), "beta checkpoint dir should exist");
+        assert_ne!(alpha_ckpt, beta_ckpt, "checkpoint dirs must differ");
+        assert!(
+            alpha_ckpt.join("checkpoint.json").is_file(),
+            "alpha checkpoint.json should exist"
+        );
+        assert!(
+            beta_ckpt.join("checkpoint.json").is_file(),
+            "beta checkpoint.json should exist"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+        let _ = fs::remove_dir_all(&beta_ckpt);
     }
 }

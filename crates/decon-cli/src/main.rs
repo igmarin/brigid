@@ -163,6 +163,10 @@ enum Commands {
         /// Use single-shot identify instead of map+reduce.
         #[arg(long = "single-shot", default_value_t = false)]
         single_shot: bool,
+        /// Run the full pipeline once per discovered app/module, writing
+        /// separate output directories and a summary index.
+        #[arg(long = "each-app", default_value_t = false)]
+        each_app: bool,
     },
 }
 
@@ -237,6 +241,7 @@ fn main() -> ExitCode {
             output_dir,
             max_abstractions,
             single_shot,
+            each_app,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
@@ -260,6 +265,7 @@ fn main() -> ExitCode {
                 &output_dir,
                 max_abstractions,
                 single_shot,
+                each_app,
                 &cfg,
             )
         }
@@ -834,6 +840,7 @@ fn cmd_generate(
     output_dir: &Path,
     max_abstractions: usize,
     single_shot: bool,
+    each_app: bool,
     cfg: &RunConfig,
 ) -> ExitCode {
     let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
@@ -846,6 +853,22 @@ fn cmd_generate(
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+
+    if each_app {
+        return cmd_generate_each_app(
+            dir,
+            language,
+            diagram_level_parsed,
+            force_setup,
+            no_setup,
+            no_overview,
+            checkpoint_dir,
+            output_dir,
+            max_abstractions,
+            single_shot,
+            cfg,
+        );
+    }
 
     let crawl_result = match crawl_local(dir) {
         Ok(r) => r,
@@ -1046,6 +1069,7 @@ fn cmd_generate(
             output_dir: output_dir.to_path_buf(),
             max_abstractions,
             single_shot,
+            each_app: false,
             run_config: run_config.clone(),
             chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
         };
@@ -1124,6 +1148,206 @@ fn cmd_generate(
                     _ => EXIT_FAIL,
                 };
                 eprintln!("error: generate failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+/// Run the full generate pipeline once per discovered app/module.
+///
+/// Delegates to `decon_pipeline::run_generate_each_app`, which discovers
+/// modules via dry-run, runs the pipeline once per module with scoped
+/// output/checkpoint dirs, and writes a summary `index.md`.
+///
+/// Exit codes:
+/// - All apps succeeded -> exit 0.
+/// - Some apps failed (none cancelled) -> exit 1.
+/// - Cancelled -> exit 5.
+/// - Config / prompt error -> exit 2.
+/// - Other errors -> exit 1.
+#[allow(clippy::too_many_arguments)]
+fn cmd_generate_each_app(
+    dir: &Path,
+    language: &str,
+    diagram_level: decon_pipeline::DiagramLevel,
+    force_setup: bool,
+    no_setup: bool,
+    no_overview: bool,
+    checkpoint_dir: &Path,
+    output_dir: &Path,
+    max_abstractions: usize,
+    single_shot: bool,
+    cfg: &RunConfig,
+) -> ExitCode {
+    let mut run_config = cfg.clone();
+    if run_config.language.is_none() {
+        run_config.language = Some(language.to_string());
+    }
+    run_config.max_llm_calls = run_config
+        .max_llm_calls
+        .or(Some(10 + max_abstractions as u32));
+
+    let api_key = env::var("DECON_LLM_API_KEY").ok();
+    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        eprintln!(
+            "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
+             The output will be a placeholder, not a real LLM analysis. \
+             Set DECON_LLM_API_KEY to use a real provider (M4)."
+        );
+    }
+
+    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+    let placeholder_rel =
+        "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+    let placeholder_order = "```yaml\n- 0\n```\n";
+    let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+    let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+    let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
+
+    let mut single_app_responses: Vec<String> = Vec::new();
+    if single_shot {
+        single_app_responses.push(placeholder_yaml.to_string());
+    } else {
+        single_app_responses.push(placeholder_yaml.to_string());
+        single_app_responses.push(placeholder_yaml.to_string());
+    }
+    single_app_responses.push(placeholder_rel.to_string());
+    single_app_responses.push(placeholder_order.to_string());
+    single_app_responses.push(placeholder_chapter.to_string());
+    if !no_setup {
+        single_app_responses.push(placeholder_setup.to_string());
+    }
+    if !no_overview {
+        single_app_responses.push(placeholder_overview.to_string());
+    }
+
+    let mut responses: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        responses.extend(single_app_responses.clone());
+    }
+
+    #[cfg(debug_assertions)]
+    let client: Box<dyn decon_llm::LlmClient> = if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let err = match kind.as_str() {
+            "timeout" => decon_llm::LlmError::Timeout,
+            "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+            "provider" => decon_llm::LlmError::Provider {
+                status: 502,
+                body: "mock provider error".to_string(),
+            },
+            "parse" => decon_llm::LlmError::parse("mock parse failure"),
+            _ => decon_llm::LlmError::network("mock network failure"),
+        };
+        Box::new(decon_llm::MockClient::new("").fail_on(0, err))
+    } else {
+        Box::new(
+            decon_llm::MockClient::with_responses(responses)
+                .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+        )
+    };
+    #[cfg(not(debug_assertions))]
+    let client: Box<dyn decon_llm::LlmClient> = Box::new(
+        decon_llm::MockClient::with_responses(responses)
+            .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+    );
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: generate: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let gen_config = decon_pipeline::GenerateConfig {
+        dir: dir.to_path_buf(),
+        apps: Vec::new(),
+        language: language.to_string(),
+        diagram_level,
+        force_setup,
+        no_setup,
+        no_overview,
+        checkpoint_dir: checkpoint_dir.to_path_buf(),
+        output_dir: output_dir.to_path_buf(),
+        max_abstractions,
+        single_shot,
+        each_app: true,
+        run_config: run_config.clone(),
+        chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: generate: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        let cancel = match decon_pipeline::setup_ctrl_c_handler() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: generate: signal handler: {e}");
+                return ExitCode::from(EXIT_FAIL);
+            }
+        };
+
+        let outcome =
+            decon_pipeline::run_generate_each_app(client.as_ref(), &renderer, &cancel, &gen_config)
+                .await;
+
+        match outcome {
+            Ok(decon_pipeline::EachAppOutcome::Completed(summaries)) => {
+                let failures: Vec<_> = summaries.iter().filter(|s| !s.success).collect();
+                let success_count = summaries.len() - failures.len();
+                eprintln!(
+                    "generate: each-app completed: {success_count}/{} apps succeeded",
+                    summaries.len()
+                );
+                for s in &summaries {
+                    if !s.success {
+                        eprintln!(
+                            "  FAILED: {} -- {}",
+                            s.app,
+                            s.error.as_deref().unwrap_or("unknown error")
+                        );
+                    }
+                }
+                eprintln!("output: {}", output_dir.display());
+                if failures.is_empty() {
+                    ExitCode::from(EXIT_OK)
+                } else {
+                    ExitCode::from(EXIT_FAIL)
+                }
+            }
+            Ok(decon_pipeline::EachAppOutcome::Partial {
+                summaries,
+                cancelled_app,
+            }) => {
+                eprintln!("generate: each-app cancelled at '{cancelled_app}'");
+                eprintln!(
+                    "  {}/{} apps completed before cancellation",
+                    summaries.len(),
+                    summaries.len() + 1
+                );
+                eprintln!("output: {}", output_dir.display());
+                ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
+            }
+            Err(e) => {
+                let code = match &e {
+                    decon_pipeline::GenerateError::Budget(_) => EXIT_BUDGET,
+                    decon_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
+                    _ => EXIT_FAIL,
+                };
+                eprintln!("error: generate --each-app failed: {e}");
                 ExitCode::from(code)
             }
         }

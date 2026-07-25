@@ -41,7 +41,10 @@ pub use combine::{
     slugify_chapter_filename, write_output_directory,
 };
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
-pub use generate::{GenerateConfig, GenerateError, GenerateOutcome, run_generate};
+pub use generate::{
+    EachAppOutcome, EachAppSummary, GenerateConfig, GenerateError, GenerateOutcome, run_generate,
+    run_generate_each_app,
+};
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,
     IdentifySingleShotInput, identify_map, identify_reduce, identify_single_shot,
