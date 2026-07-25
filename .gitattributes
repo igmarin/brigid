@@ -1,0 +1,5 @@
+# Normalize line endings to LF for all text files.
+# This ensures `include_str!` embeds consistent content regardless of
+# the platform git checks out on (Windows defaults to CRLF, which
+# changes template lengths and breaks snapshot tests).
+* text=auto eol=lf
