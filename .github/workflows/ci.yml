@@ -64,6 +64,32 @@ jobs:
           rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline
           /tmp/regen_baseline tests/fixtures/ --check
 
+  # M4-EVL-1: structural eval regression gate on the golden tutorial fixture
+  # (good-mini must score at or above threshold 80) plus a negative test on
+  # broken-mini (must score below threshold). See issue #138.
+  eval-regression:
+    name: Eval Regression Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Golden tutorial passes at threshold 80
+        run: cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
+      - name: Broken tutorial fails below threshold 80
+        run: |
+          set +e
+          cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/broken-mini --threshold 80
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "error: broken-mini unexpectedly passed the eval gate (exit 0)"
+            exit 1
+          fi
+          echo "broken-mini correctly failed with exit $code"
+          exit 0
+
   # M2 hard gate: fail under 85% workspace line coverage (see docs/m2-coverage-baseline.md).
   coverage:
     name: Coverage (≥85% lines)
