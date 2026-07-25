@@ -413,6 +413,25 @@ mod tests {
     }
 
     #[test]
+    fn estimate_batch_budget_smaller_than_single_truncated_file() {
+        let cfg = BudgetConfig {
+            max_file_chars: 1_000,
+            batch_char_budget: 500,
+            chars_per_token: 4,
+            max_full_files_per_module: 40,
+        };
+        let files = [file("src/huge.rs", 5_000, "src")];
+        let est = estimate_budget(&files, &cfg);
+        assert_eq!(est.file_count, 1);
+        assert_eq!(est.truncated_file_count, 1);
+        assert_eq!(est.budgeted_chars, 1_000);
+        assert_eq!(est.raw_chars, 5_000);
+        assert_eq!(est.batch_count, 1);
+        assert!(est.oversized_batch);
+        assert_eq!(est.stubbed_file_count, 0);
+    }
+
+    #[test]
     fn estimate_multi_module_packing_splits_batches() {
         let cfg = BudgetConfig {
             max_file_chars: 1_000,

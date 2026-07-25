@@ -244,6 +244,20 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_on_empty_repo_yields_zero_files_batches_and_chars() {
+        let dir = unique_temp_dir();
+        let plan = dry_run(&dir, None).expect("empty repo dry-run");
+        assert_eq!(plan.files.len(), 0);
+        assert_eq!(plan.budget.file_count, 0);
+        assert_eq!(plan.budget.batch_count, 0);
+        assert_eq!(plan.budget.raw_chars, 0);
+        assert_eq!(plan.budget.budgeted_chars, 0);
+        assert_eq!(plan.budget.token_estimate, 0);
+        assert!(!plan.budget.oversized_batch);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn dry_run_with_budget_respects_custom_config() {
         let dir = unique_temp_dir();
         // 100-byte file exceeds a tiny max_file_chars so truncated_file_count ticks.
