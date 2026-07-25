@@ -15,6 +15,7 @@
 pub mod cancellation;
 pub mod chapters;
 pub mod checkpoint_store;
+pub mod combine;
 pub mod dry_run;
 pub mod identify;
 pub mod identify_checkpoint;
@@ -34,6 +35,10 @@ pub use chapters::{
     should_run_chapters, write_chapters, write_single_chapter,
 };
 pub use checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
+pub use combine::{
+    CombineError, build_index_markdown, combine_and_checkpoint, combine_tutorial,
+    slugify_chapter_filename, write_output_directory,
+};
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,
