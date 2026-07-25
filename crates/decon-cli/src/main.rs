@@ -281,6 +281,22 @@ enum Commands {
         /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
         #[arg(long = "review-chapters", default_value_t = false)]
         review_chapters: bool,
+        /// Maximum concurrent chapter writes (overrides config default of 4).
+        #[arg(long = "concurrency", value_name = "N")]
+        concurrency: Option<usize>,
+        /// Hard ceiling on LLM calls for this run (overrides budget from
+        /// config/env).
+        #[arg(long = "max-llm-calls", value_name = "N")]
+        max_llm_calls: Option<u32>,
+        /// Detailed progress output: stage timing, LLM call count, cache
+        /// stats, checkpoint path. Sent to stderr so stdout piping is
+        /// unaffected. Mutually exclusive with `--quiet`.
+        #[arg(long = "verbose", default_value_t = false)]
+        verbose: bool,
+        /// Minimal output: errors only, no progress messages. Mutually
+        /// exclusive with `--verbose`.
+        #[arg(long = "quiet", default_value_t = false)]
+        quiet: bool,
     },
     /// Run only the relationships stage (reads identify from checkpoint).
     Relationships {
@@ -366,6 +382,163 @@ enum OutputFormat {
     Json,
 }
 
+/// Output verbosity level for `decon generate`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verbosity {
+    /// Minimal output: errors only, no progress messages.
+    Quiet,
+    /// Normal output: progress messages and warnings.
+    Normal,
+    /// Detailed output: stage timing, LLM call count, cache stats, checkpoint path.
+    Verbose,
+}
+
+impl Verbosity {
+    /// Returns `true` if progress messages should be printed.
+    fn show_progress(self) -> bool {
+        !matches!(self, Verbosity::Quiet)
+    }
+
+    /// Returns `true` if verbose detail should be printed.
+    fn is_verbose(self) -> bool {
+        matches!(self, Verbosity::Verbose)
+    }
+}
+
+/// Print a progress message to stderr unless in quiet mode.
+fn print_progress(verbosity: Verbosity, msg: &str) {
+    if verbosity.show_progress() {
+        eprintln!("{msg}");
+    }
+}
+
+/// Print a verbose-only message to stderr.
+fn verbose_msg(verbosity: Verbosity, msg: &str) {
+    if verbosity.is_verbose() {
+        eprintln!("verbose: {msg}");
+    }
+}
+
+/// Format a [`std::time::Duration`] as a human-readable string (e.g. `"12ms"`,
+/// `"1.5s"`).
+fn fmt_duration(d: std::time::Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
+/// Print verbose summary after a generate run: stage timings, LLM call count,
+/// cache stats, and checkpoint path.
+fn print_verbose_summary(
+    progress: &decon_core::ProgressTracker,
+    cache: Option<&decon_llm::DiskCache>,
+    checkpoint_dir: &Path,
+) {
+    let snap = progress.snapshot();
+    verbose_msg(
+        Verbosity::Verbose,
+        &format!("llm-calls: {}/{}", snap.llm_calls_used, snap.max_llm_calls),
+    );
+    for timing in progress.stage_timings() {
+        verbose_msg(
+            Verbosity::Verbose,
+            &format!("stage {}: {}", timing.stage, fmt_duration(timing.elapsed)),
+        );
+    }
+    if let Some(cache) = cache {
+        let stats = cache.stats();
+        verbose_msg(
+            Verbosity::Verbose,
+            &format!(
+                "cache: hits={} misses={} evictions={} size={}B",
+                stats.hits, stats.misses, stats.evictions, stats.current_size_bytes
+            ),
+        );
+    }
+    verbose_msg(
+        Verbosity::Verbose,
+        &format!("checkpoint: {}", checkpoint_dir.display()),
+    );
+}
+
+/// Map a [`decon_pipeline::GenerateError`] to an actionable suggestion string.
+fn error_suggestion(err: &decon_pipeline::GenerateError) -> Option<String> {
+    match err {
+        decon_pipeline::GenerateError::Budget(_)
+        | decon_pipeline::GenerateError::Identify(
+            decon_pipeline::identify::IdentifyError::Budget(_),
+        )
+        | decon_pipeline::GenerateError::Relationships(
+            decon_pipeline::relationships::RelationshipsError::Budget(_),
+        )
+        | decon_pipeline::GenerateError::Order(decon_pipeline::order::OrderError::Budget(_))
+        | decon_pipeline::GenerateError::Chapters(
+            decon_pipeline::chapters::ChaptersError::Budget(_),
+        )
+        | decon_pipeline::GenerateError::Review(
+            decon_pipeline::review::ReviewError::Budget(_),
+        ) => Some(
+            "Increase the budget with --max-llm-calls N or DECON_MAX_LLM_CALLS, \
+             then run 'decon resume --checkpoint-dir <path>' to continue from the last completed stage."
+                .to_string(),
+        ),
+        decon_pipeline::GenerateError::Identify(
+            decon_pipeline::identify::IdentifyError::Llm(_)
+            | decon_pipeline::identify::IdentifyError::LlmBatch { .. },
+        )
+        | decon_pipeline::GenerateError::Relationships(
+            decon_pipeline::relationships::RelationshipsError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Order(decon_pipeline::order::OrderError::Llm(_))
+        | decon_pipeline::GenerateError::Chapters(
+            decon_pipeline::chapters::ChaptersError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Review(
+            decon_pipeline::review::ReviewError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Setup(
+            decon_pipeline::setup_guide::SetupGuideError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Overview(
+            decon_pipeline::overview::OverviewError::Llm(_),
+        ) => Some(
+            "Check your network connection and DECON_LLM_API_KEY. \
+             Run with --checkpoint-dir to resume from the last completed stage."
+                .to_string(),
+        ),
+        decon_pipeline::GenerateError::Config(_) => Some(
+            "Verify your decon.toml / .decon.yaml and CLI flags. \
+             Run 'decon dry-run --dir <path>' to validate the project setup."
+                .to_string(),
+        ),
+        decon_pipeline::GenerateError::Crawl(_) => Some(
+            "Ensure the --dir path exists and is readable. \
+             Run 'decon crawl --dir <path>' to inspect the file inventory."
+                .to_string(),
+        ),
+        decon_pipeline::GenerateError::Checkpoint(_) => Some(
+            "Check disk space and permissions on the checkpoint directory. \
+             Run with --checkpoint-dir to specify a writable location."
+                .to_string(),
+        ),
+        _ => Some(
+            "Run with --checkpoint-dir to resume from the last completed stage."
+                .to_string(),
+        ),
+    }
+}
+
+/// Print an error with an actionable suggestion (to stderr, always shown).
+fn print_error(prefix: &str, err: &decon_pipeline::GenerateError) {
+    eprintln!("error: {prefix}: {err}");
+    if let Some(hint) = error_suggestion(err) {
+        eprintln!("hint: {hint}");
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let cfg = match load_merged_config(cli.config.as_deref(), &RunConfig::empty()) {
@@ -433,7 +606,39 @@ fn main() -> ExitCode {
             single_shot,
             each_app,
             review_chapters,
+            concurrency,
+            max_llm_calls,
+            verbose,
+            quiet,
         } => {
+            if verbose && quiet {
+                eprintln!(
+                    "error: --verbose and --quiet are mutually exclusive. \
+                     Specify at most one of these flags."
+                );
+                return ExitCode::from(EXIT_CONFIG);
+            }
+            let verbosity = if quiet {
+                Verbosity::Quiet
+            } else if verbose {
+                Verbosity::Verbose
+            } else {
+                Verbosity::Normal
+            };
+            // Validate positive-integer flags (clap parses them, but 0 is
+            // semantically invalid for concurrency and max-llm-calls).
+            if let Some(n) = concurrency {
+                if n == 0 {
+                    eprintln!("error: --concurrency must be a positive integer (got 0)");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
+            }
+            if let Some(n) = max_llm_calls {
+                if n == 0 {
+                    eprintln!("error: --max-llm-calls must be a positive integer (got 0)");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
+            }
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
             let output_dir = output_dir
@@ -458,6 +663,9 @@ fn main() -> ExitCode {
                 single_shot,
                 each_app,
                 review_chapters,
+                concurrency,
+                max_llm_calls,
+                verbosity,
                 &cfg,
             )
         }
@@ -1106,6 +1314,9 @@ fn cmd_generate(
     single_shot: bool,
     each_app: bool,
     review_chapters: bool,
+    concurrency: Option<usize>,
+    max_llm_calls: Option<u32>,
+    verbosity: Verbosity,
     cfg: &RunConfig,
 ) -> ExitCode {
     let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
@@ -1132,6 +1343,9 @@ fn cmd_generate(
             max_abstractions,
             single_shot,
             review_chapters,
+            concurrency,
+            max_llm_calls,
+            verbosity,
             cfg,
         );
     }
@@ -1188,9 +1402,27 @@ fn cmd_generate(
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
-    run_config.max_llm_calls = run_config
-        .max_llm_calls
-        .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
+    // CLI --max-llm-calls overrides config/env budget.
+    if let Some(n) = max_llm_calls {
+        run_config.max_llm_calls = Some(n);
+    } else {
+        run_config.max_llm_calls = run_config
+            .max_llm_calls
+            .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
+    }
+    // CLI --concurrency overrides the default chapter concurrency (4).
+    let chapter_concurrency = concurrency.unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
+
+    verbose_msg(
+        verbosity,
+        &format!(
+            "concurrency={} max-llm-calls={}",
+            chapter_concurrency,
+            run_config
+                .max_llm_calls
+                .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS)
+        ),
+    );
 
     let cache = build_llm_cache(&run_config);
     let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
@@ -1198,14 +1430,15 @@ fn cmd_generate(
         run_config.allowed_hosts.as_deref().unwrap_or(&[]),
     ) {
         Some(c) => {
-            eprintln!("generate: using live LLM provider");
+            print_progress(verbosity, "generate: using live LLM provider");
             c
         }
         None => {
-            eprintln!(
+            print_progress(
+                verbosity,
                 "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
                  The output will be a placeholder, not a real LLM analysis. \
-                 Set DECON_LLM_API_KEY to use a real provider (M4)."
+                 Set DECON_LLM_API_KEY to use a real provider (M4).",
             );
             let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
             let placeholder_rel =
@@ -1354,7 +1587,7 @@ fn cmd_generate(
             single_shot,
             each_app: false,
             run_config: run_config.clone(),
-            chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+            chapter_concurrency,
             review_chapters,
         };
 
@@ -1378,19 +1611,31 @@ fn cmd_generate(
 
         match outcome {
             Ok(decon_pipeline::GenerateOutcome::Completed(combined)) => {
-                eprintln!(
-                    "generate: completed with {} chapters (locale={})",
-                    combined.chapter_count, combined.locale
+                print_progress(
+                    verbosity,
+                    &format!(
+                        "generate: completed with {} chapters (locale={})",
+                        combined.chapter_count, combined.locale
+                    ),
                 );
-                eprintln!("output: {}", output_dir.display());
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                print_progress(verbosity, &format!("output: {}", output_dir.display()));
+                print_progress(
+                    verbosity,
+                    &format!("checkpoint: {}", checkpoint_dir.display()),
+                );
+                if verbosity.is_verbose() {
+                    print_verbose_summary(&progress, cache.as_ref(), checkpoint_dir);
+                }
                 ExitCode::from(EXIT_OK)
             }
             Ok(decon_pipeline::GenerateOutcome::Cancelled { checkpoint_path }) => {
-                eprintln!("generate: cancelled");
-                eprintln!(
-                    "partial checkpoint: {} -- resume to continue",
-                    checkpoint_path.display()
+                print_progress(verbosity, "generate: cancelled");
+                print_progress(
+                    verbosity,
+                    &format!(
+                        "partial checkpoint: {} -- resume to continue",
+                        checkpoint_path.display()
+                    ),
                 );
                 ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
             }
@@ -1437,12 +1682,14 @@ fn cmd_generate(
                     decon_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
                     _ => EXIT_FAIL,
                 };
-                eprintln!("error: generate failed: {e}");
+                print_error("generate failed", &e);
                 ExitCode::from(code)
             }
         }
     });
-    print_cache_stats(cache.as_ref());
+    if verbosity.is_verbose() {
+        print_cache_stats(cache.as_ref());
+    }
     exit_code
 }
 
@@ -1471,15 +1718,36 @@ fn cmd_generate_each_app(
     max_abstractions: usize,
     single_shot: bool,
     review_chapters: bool,
+    concurrency: Option<usize>,
+    max_llm_calls: Option<u32>,
+    verbosity: Verbosity,
     cfg: &RunConfig,
 ) -> ExitCode {
     let mut run_config = cfg.clone();
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
-    run_config.max_llm_calls = run_config
-        .max_llm_calls
-        .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
+    // CLI --max-llm-calls overrides config/env budget.
+    if let Some(n) = max_llm_calls {
+        run_config.max_llm_calls = Some(n);
+    } else {
+        run_config.max_llm_calls = run_config
+            .max_llm_calls
+            .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
+    }
+    // CLI --concurrency overrides the default chapter concurrency (4).
+    let chapter_concurrency = concurrency.unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
+
+    verbose_msg(
+        verbosity,
+        &format!(
+            "concurrency={} max-llm-calls={}",
+            chapter_concurrency,
+            run_config
+                .max_llm_calls
+                .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS)
+        ),
+    );
 
     let cache = build_llm_cache(&run_config);
     let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
@@ -1487,14 +1755,15 @@ fn cmd_generate_each_app(
         run_config.allowed_hosts.as_deref().unwrap_or(&[]),
     ) {
         Some(c) => {
-            eprintln!("generate: using live LLM provider");
+            print_progress(verbosity, "generate: using live LLM provider");
             c
         }
         None => {
-            eprintln!(
+            print_progress(
+                verbosity,
                 "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
                  The output will be a placeholder, not a real LLM analysis. \
-                 Set DECON_LLM_API_KEY to use a real provider (M4)."
+                 Set DECON_LLM_API_KEY to use a real provider (M4).",
             );
             let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
             let placeholder_rel =
@@ -1584,7 +1853,7 @@ fn cmd_generate_each_app(
         single_shot,
         each_app: true,
         run_config: run_config.clone(),
-        chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+        chapter_concurrency,
         review_chapters,
     };
 
@@ -1616,20 +1885,26 @@ fn cmd_generate_each_app(
             Ok(decon_pipeline::EachAppOutcome::Completed(summaries)) => {
                 let failures: Vec<_> = summaries.iter().filter(|s| !s.success).collect();
                 let success_count = summaries.len() - failures.len();
-                eprintln!(
-                    "generate: each-app completed: {success_count}/{} apps succeeded",
-                    summaries.len()
+                print_progress(
+                    verbosity,
+                    &format!(
+                        "generate: each-app completed: {success_count}/{} apps succeeded",
+                        summaries.len()
+                    ),
                 );
                 for s in &summaries {
                     if !s.success {
-                        eprintln!(
-                            "  FAILED: {} -- {}",
-                            s.app,
-                            s.error.as_deref().unwrap_or("unknown error")
+                        print_progress(
+                            verbosity,
+                            &format!(
+                                "  FAILED: {} -- {}",
+                                s.app,
+                                s.error.as_deref().unwrap_or("unknown error")
+                            ),
                         );
                     }
                 }
-                eprintln!("output: {}", output_dir.display());
+                print_progress(verbosity, &format!("output: {}", output_dir.display()));
                 if failures.is_empty() {
                     ExitCode::from(EXIT_OK)
                 } else {
@@ -1640,13 +1915,19 @@ fn cmd_generate_each_app(
                 summaries,
                 cancelled_app,
             }) => {
-                eprintln!("generate: each-app cancelled at '{cancelled_app}'");
-                eprintln!(
-                    "  {}/{} apps completed before cancellation",
-                    summaries.len(),
-                    summaries.len() + 1
+                print_progress(
+                    verbosity,
+                    &format!("generate: each-app cancelled at '{cancelled_app}'"),
                 );
-                eprintln!("output: {}", output_dir.display());
+                print_progress(
+                    verbosity,
+                    &format!(
+                        "  {}/{} apps completed before cancellation",
+                        summaries.len(),
+                        summaries.len() + 1
+                    ),
+                );
+                print_progress(verbosity, &format!("output: {}", output_dir.display()));
                 ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
             }
             Err(e) => {
@@ -1655,12 +1936,14 @@ fn cmd_generate_each_app(
                     decon_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
                     _ => EXIT_FAIL,
                 };
-                eprintln!("error: generate --each-app failed: {e}");
+                print_error("generate --each-app failed", &e);
                 ExitCode::from(code)
             }
         }
     });
-    print_cache_stats(cache.as_ref());
+    if verbosity.is_verbose() {
+        print_cache_stats(cache.as_ref());
+    }
     exit_code
 }
 
@@ -2404,5 +2687,58 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert("DECON_NO_CACHE".into(), "".into());
         assert!(!cache_is_disabled(&vars));
+    }
+
+    // --- Issue #183: Verbosity, fmt_duration, error_suggestion unit tests ---
+
+    #[test]
+    fn verbosity_quiet_suppresses_progress() {
+        assert!(!Verbosity::Quiet.show_progress());
+        assert!(!Verbosity::Quiet.is_verbose());
+    }
+
+    #[test]
+    fn verbosity_normal_shows_progress_not_verbose() {
+        assert!(Verbosity::Normal.show_progress());
+        assert!(!Verbosity::Normal.is_verbose());
+    }
+
+    #[test]
+    fn verbosity_verbose_shows_all() {
+        assert!(Verbosity::Verbose.show_progress());
+        assert!(Verbosity::Verbose.is_verbose());
+    }
+
+    #[test]
+    fn fmt_duration_milliseconds() {
+        let d = std::time::Duration::from_millis(42);
+        assert_eq!(fmt_duration(d), "42ms");
+    }
+
+    #[test]
+    fn fmt_duration_seconds() {
+        let d = std::time::Duration::from_millis(1500);
+        assert_eq!(fmt_duration(d), "1.5s");
+    }
+
+    #[test]
+    fn error_suggestion_budget_mentions_max_llm_calls() {
+        let err =
+            decon_pipeline::GenerateError::Budget(decon_core::BudgetExceeded { used: 10, max: 10 });
+        let hint = error_suggestion(&err).expect("budget error should have a hint");
+        assert!(
+            hint.contains("--max-llm-calls"),
+            "budget hint should mention --max-llm-calls: {hint}"
+        );
+    }
+
+    #[test]
+    fn error_suggestion_config_mentions_dry_run() {
+        let err = decon_pipeline::GenerateError::Config("bad config".to_string());
+        let hint = error_suggestion(&err).expect("config error should have a hint");
+        assert!(
+            hint.contains("dry-run"),
+            "config hint should suggest dry-run: {hint}"
+        );
     }
 }

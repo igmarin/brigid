@@ -2,6 +2,11 @@
 //!
 //! Pure counters for operability before live LLM stages. Exceeding
 //! the configured maximum returns [`BudgetExceeded`].
+//!
+//! Stage timings are recorded with [`std::time::Instant`] so the CLI can
+//! report per-stage elapsed time in `--verbose` mode.
+
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -30,6 +35,15 @@ pub struct ProgressSnapshot {
     pub stages_completed: u32,
 }
 
+/// A completed stage's name and elapsed time, for verbose reporting.
+#[derive(Clone, Debug)]
+pub struct StageTiming {
+    /// Human-readable stage label (e.g. `"identify"`).
+    pub stage: String,
+    /// Elapsed wall-clock time for this stage.
+    pub elapsed: Duration,
+}
+
 /// Fail-closed LLM call budget and light progress state.
 #[derive(Clone, Debug)]
 pub struct ProgressTracker {
@@ -37,6 +51,8 @@ pub struct ProgressTracker {
     llm_calls_used: u32,
     current_stage: Option<String>,
     stages_completed: u32,
+    stage_start: Option<Instant>,
+    stage_timings: Vec<StageTiming>,
 }
 
 impl ProgressTracker {
@@ -48,6 +64,8 @@ impl ProgressTracker {
             llm_calls_used: 0,
             current_stage: None,
             stages_completed: 0,
+            stage_start: None,
+            stage_timings: Vec::new(),
         }
     }
 
@@ -85,14 +103,45 @@ impl ProgressTracker {
     }
 
     /// Set the human-readable current stage label.
+    ///
+    /// If a stage is already running, its elapsed time is recorded before
+    /// switching to the new stage.
     pub fn set_stage(&mut self, stage: impl Into<String>) {
+        self.record_stage_timing();
         self.current_stage = Some(stage.into());
+        self.stage_start = Some(Instant::now());
     }
 
     /// Clear current stage and increment completed stage count.
+    ///
+    /// The elapsed time for the current stage is recorded for verbose
+    /// reporting via [`ProgressTracker::stage_timings`].
     pub fn complete_stage(&mut self) {
+        self.record_stage_timing();
         self.current_stage = None;
         self.stages_completed = self.stages_completed.saturating_add(1);
+    }
+
+    /// Record the elapsed time for the current stage (if any) into the
+    /// timings list and clear the start instant.
+    fn record_stage_timing(&mut self) {
+        if let (Some(name), Some(start)) = (self.current_stage.as_ref(), self.stage_start.take()) {
+            self.stage_timings.push(StageTiming {
+                stage: name.clone(),
+                elapsed: start.elapsed(),
+            });
+        }
+    }
+
+    /// Return per-stage elapsed timings recorded so far.
+    ///
+    /// Only stages that were started via [`set_stage`](Self::set_stage) and
+    /// then completed or switched away from via
+    /// [`complete_stage`](Self::complete_stage) or another `set_stage` call
+    /// appear here.
+    #[must_use]
+    pub fn stage_timings(&self) -> &[StageTiming] {
+        &self.stage_timings
     }
 
     /// Immutable snapshot for display / tests.
