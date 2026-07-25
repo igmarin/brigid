@@ -232,7 +232,7 @@ pub(crate) fn batch_files_by_size(
     let mut current_size: usize = 0;
 
     for (idx, (_, &size)) in files.iter().zip(sizes.iter()).enumerate() {
-        let chars = usize::try_from(size).unwrap_or(usize::MAX);
+        let chars = size.min(usize::MAX as u64) as usize;
         let capped = capped_file_chars(chars, config.max_file_chars);
 
         // Start a new batch if the current one is non-empty and adding this
@@ -609,6 +609,30 @@ mod map_tests {
         let batches = batch_files_by_size(&files, &sizes, &cfg);
         // huge.rs is capped to 1000, which exceeds budget 50 -> own batch.
         // tiny.rs is 10, fits in a new batch.
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0], vec![0]);
+        assert_eq!(batches[1], vec![1]);
+    }
+
+    #[tokio::test]
+    async fn batching_handles_file_sizes_exceeding_32bit_usize() {
+        // A file size that exceeds 32-bit usize (>4GB) must still convert to a
+        // usable usize without panicking. On 64-bit (the target) u64 fits usize
+        // so this is a no-op; on 32-bit the value saturates to usize::MAX. In
+        // both cases the capped size (max_file_chars) drives batching, so the
+        // oversized file lands in its own batch.
+        let files = vec!["oversized.rs".to_string(), "small.rs".to_string()];
+        // 5 GB — above the 4 GB 32-bit usize ceiling.
+        let sizes: Vec<u64> = vec![5_000_000_000, 10];
+        let cfg = BudgetConfig {
+            max_file_chars: 1_000,
+            batch_char_budget: 50,
+            chars_per_token: 4,
+            max_full_files_per_module: 40,
+        };
+        let batches = batch_files_by_size(&files, &sizes, &cfg);
+        // oversized.rs capped to 1000 > budget 50 -> own batch.
+        // small.rs is 10, fits in a new batch.
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0], vec![0]);
         assert_eq!(batches[1], vec![1]);
