@@ -52,6 +52,37 @@ fn default_max_llm_calls(max_abstractions: usize, review_chapters: bool) -> u32 
     }
 }
 
+/// Build a live [`decon_llm::LlmClient`] from the environment when an API key
+/// is present, optionally with a disk cache (`DECON_LLM_CACHE_DIR`).
+///
+/// Returns `None` when no non-empty `DECON_LLM_API_KEY` / `DEEPSEEK_API_KEY`
+/// is set or the client cannot be constructed, so callers can fall back to a
+/// mock client for offline/test runs.
+fn build_real_llm_client() -> Option<Box<dyn decon_llm::LlmClient>> {
+    if env::var("DECON_FORCE_MOCK")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        return None;
+    }
+    let key_ok = |var: &str| env::var(var).ok().filter(|s| !s.is_empty()).is_some();
+    if !key_ok("DECON_LLM_API_KEY") && !key_ok("DEEPSEEK_API_KEY") {
+        return None;
+    }
+    let config = decon_llm::OpenAiClientConfig::from_env().ok()?;
+    let client = decon_llm::OpenAiCompatibleClient::new(config).ok()?;
+    let client = if let Some(cache_dir) = env::var("DECON_LLM_CACHE_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        client.with_cache(decon_llm::DiskCache::new(PathBuf::from(cache_dir)))
+    } else {
+        client
+    };
+    Some(Box::new(client))
+}
+
 /// Deconstruct a codebase into an AI-generated tutorial.
 #[derive(Parser, Debug)]
 #[command(name = "decon", version, about, long_about = None)]
@@ -1089,78 +1120,86 @@ fn cmd_generate(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
-    let api_key = env::var("DECON_LLM_API_KEY").ok();
-    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
-        eprintln!(
-            "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
-             The output will be a placeholder, not a real LLM analysis. \
-             Set DECON_LLM_API_KEY to use a real provider (M4)."
-        );
-    }
-
-    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
-    let placeholder_rel =
-        "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
-    let placeholder_order = "```yaml\n- 0\n```\n";
-    let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
-    let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
-    let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
-
-    let mut responses: Vec<String> = Vec::new();
-    if single_shot {
-        responses.push(placeholder_yaml.to_string());
-    } else {
-        responses.push(placeholder_yaml.to_string());
-        responses.push(placeholder_yaml.to_string());
-    }
-    responses.push(placeholder_rel.to_string());
-    responses.push(placeholder_order.to_string());
-    for _ in 0..max_abstractions {
-        responses.push(placeholder_chapter.to_string());
-    }
-    if review_chapters {
-        for _ in 0..max_abstractions {
-            responses.push(placeholder_chapter.to_string());
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client() {
+        Some(c) => {
+            eprintln!("generate: using live LLM provider");
+            c
         }
-    }
-    if !no_setup {
-        let do_setup =
-            force_setup || dry_run_plan.setup.score < 50 || dry_run_plan.setup.gaps.len() >= 3;
-        if do_setup {
-            responses.push(placeholder_setup.to_string());
-        }
-    }
-    if !no_overview && modules.len() > 1 {
-        responses.push(placeholder_overview.to_string());
-    }
+        None => {
+            eprintln!(
+                "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
+                 The output will be a placeholder, not a real LLM analysis. \
+                 Set DECON_LLM_API_KEY to use a real provider (M4)."
+            );
+            let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+            let placeholder_rel =
+                "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+            let placeholder_order = "```yaml\n- 0\n```\n";
+            let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+            let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+            let placeholder_overview =
+                "# Architecture Overview\n\nThis project has multiple modules.\n";
 
-    #[cfg(debug_assertions)]
-    let client: Box<dyn decon_llm::LlmClient> = if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        let err = match kind.as_str() {
-            "timeout" => decon_llm::LlmError::Timeout,
-            "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
-            "provider" => decon_llm::LlmError::Provider {
-                status: 502,
-                body: "mock provider error".to_string(),
-            },
-            "parse" => decon_llm::LlmError::parse("mock parse failure"),
-            _ => decon_llm::LlmError::network("mock network failure"),
-        };
-        Box::new(decon_llm::MockClient::new("").fail_on(0, err))
-    } else {
-        Box::new(
-            decon_llm::MockClient::with_responses(responses)
-                .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
-        )
+            let mut responses: Vec<String> = Vec::new();
+            if single_shot {
+                responses.push(placeholder_yaml.to_string());
+            } else {
+                responses.push(placeholder_yaml.to_string());
+                responses.push(placeholder_yaml.to_string());
+            }
+            responses.push(placeholder_rel.to_string());
+            responses.push(placeholder_order.to_string());
+            for _ in 0..max_abstractions {
+                responses.push(placeholder_chapter.to_string());
+            }
+            if review_chapters {
+                for _ in 0..max_abstractions {
+                    responses.push(placeholder_chapter.to_string());
+                }
+            }
+            if !no_setup {
+                let do_setup = force_setup
+                    || dry_run_plan.setup.score < 50
+                    || dry_run_plan.setup.gaps.len() >= 3;
+                if do_setup {
+                    responses.push(placeholder_setup.to_string());
+                }
+            }
+            if !no_overview && modules.len() > 1 {
+                responses.push(placeholder_overview.to_string());
+            }
+
+            #[cfg(debug_assertions)]
+            let mock: Box<dyn decon_llm::LlmClient> = if let Some(kind) =
+                env::var("DECON_LLM_MOCK_FAIL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            {
+                let err = match kind.as_str() {
+                    "timeout" => decon_llm::LlmError::Timeout,
+                    "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+                    "provider" => decon_llm::LlmError::Provider {
+                        status: 502,
+                        body: "mock provider error".to_string(),
+                    },
+                    "parse" => decon_llm::LlmError::parse("mock parse failure"),
+                    _ => decon_llm::LlmError::network("mock network failure"),
+                };
+                Box::new(decon_llm::MockClient::new("").fail_on(0, err))
+            } else {
+                Box::new(
+                    decon_llm::MockClient::with_responses(responses)
+                        .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+                )
+            };
+            #[cfg(not(debug_assertions))]
+            let mock: Box<dyn decon_llm::LlmClient> = Box::new(
+                decon_llm::MockClient::with_responses(responses)
+                    .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+            );
+            mock
+        }
     };
-    #[cfg(not(debug_assertions))]
-    let client: Box<dyn decon_llm::LlmClient> = Box::new(
-        decon_llm::MockClient::with_responses(responses)
-            .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
-    );
 
     let renderer = match decon_pipeline::PromptRenderer::new() {
         Ok(r) => r,
@@ -1364,75 +1403,82 @@ fn cmd_generate_each_app(
         .max_llm_calls
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
-    let api_key = env::var("DECON_LLM_API_KEY").ok();
-    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
-        eprintln!(
-            "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
-             The output will be a placeholder, not a real LLM analysis. \
-             Set DECON_LLM_API_KEY to use a real provider (M4)."
-        );
-    }
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client() {
+        Some(c) => {
+            eprintln!("generate: using live LLM provider");
+            c
+        }
+        None => {
+            eprintln!(
+                "warning: generate: no DECON_LLM_API_KEY set -- using a mock client. \
+                 The output will be a placeholder, not a real LLM analysis. \
+                 Set DECON_LLM_API_KEY to use a real provider (M4)."
+            );
+            let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+            let placeholder_rel =
+                "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+            let placeholder_order = "```yaml\n- 0\n```\n";
+            let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+            let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+            let placeholder_overview =
+                "# Architecture Overview\n\nThis project has multiple modules.\n";
 
-    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
-    let placeholder_rel =
-        "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
-    let placeholder_order = "```yaml\n- 0\n```\n";
-    let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
-    let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
-    let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
+            let mut single_app_responses: Vec<String> = Vec::new();
+            if single_shot {
+                single_app_responses.push(placeholder_yaml.to_string());
+            } else {
+                single_app_responses.push(placeholder_yaml.to_string());
+                single_app_responses.push(placeholder_yaml.to_string());
+            }
+            single_app_responses.push(placeholder_rel.to_string());
+            single_app_responses.push(placeholder_order.to_string());
+            single_app_responses.push(placeholder_chapter.to_string());
+            if review_chapters {
+                single_app_responses.push(placeholder_chapter.to_string());
+            }
+            if !no_setup {
+                single_app_responses.push(placeholder_setup.to_string());
+            }
+            if !no_overview {
+                single_app_responses.push(placeholder_overview.to_string());
+            }
 
-    let mut single_app_responses: Vec<String> = Vec::new();
-    if single_shot {
-        single_app_responses.push(placeholder_yaml.to_string());
-    } else {
-        single_app_responses.push(placeholder_yaml.to_string());
-        single_app_responses.push(placeholder_yaml.to_string());
-    }
-    single_app_responses.push(placeholder_rel.to_string());
-    single_app_responses.push(placeholder_order.to_string());
-    single_app_responses.push(placeholder_chapter.to_string());
-    if review_chapters {
-        single_app_responses.push(placeholder_chapter.to_string());
-    }
-    if !no_setup {
-        single_app_responses.push(placeholder_setup.to_string());
-    }
-    if !no_overview {
-        single_app_responses.push(placeholder_overview.to_string());
-    }
+            let mut responses: Vec<String> = Vec::new();
+            for _ in 0..20 {
+                responses.extend(single_app_responses.clone());
+            }
 
-    let mut responses: Vec<String> = Vec::new();
-    for _ in 0..20 {
-        responses.extend(single_app_responses.clone());
-    }
-
-    #[cfg(debug_assertions)]
-    let client: Box<dyn decon_llm::LlmClient> = if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        let err = match kind.as_str() {
-            "timeout" => decon_llm::LlmError::Timeout,
-            "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
-            "provider" => decon_llm::LlmError::Provider {
-                status: 502,
-                body: "mock provider error".to_string(),
-            },
-            "parse" => decon_llm::LlmError::parse("mock parse failure"),
-            _ => decon_llm::LlmError::network("mock network failure"),
-        };
-        Box::new(decon_llm::MockClient::new("").fail_on(0, err))
-    } else {
-        Box::new(
-            decon_llm::MockClient::with_responses(responses)
-                .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
-        )
+            #[cfg(debug_assertions)]
+            let mock: Box<dyn decon_llm::LlmClient> = if let Some(kind) =
+                env::var("DECON_LLM_MOCK_FAIL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            {
+                let err = match kind.as_str() {
+                    "timeout" => decon_llm::LlmError::Timeout,
+                    "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+                    "provider" => decon_llm::LlmError::Provider {
+                        status: 502,
+                        body: "mock provider error".to_string(),
+                    },
+                    "parse" => decon_llm::LlmError::parse("mock parse failure"),
+                    _ => decon_llm::LlmError::network("mock network failure"),
+                };
+                Box::new(decon_llm::MockClient::new("").fail_on(0, err))
+            } else {
+                Box::new(
+                    decon_llm::MockClient::with_responses(responses)
+                        .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+                )
+            };
+            #[cfg(not(debug_assertions))]
+            let mock: Box<dyn decon_llm::LlmClient> = Box::new(
+                decon_llm::MockClient::with_responses(responses)
+                    .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
+            );
+            mock
+        }
     };
-    #[cfg(not(debug_assertions))]
-    let client: Box<dyn decon_llm::LlmClient> = Box::new(
-        decon_llm::MockClient::with_responses(responses)
-            .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder_yaml)),
-    );
 
     let renderer = match decon_pipeline::PromptRenderer::new() {
         Ok(r) => r,

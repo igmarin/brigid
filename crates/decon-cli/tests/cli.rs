@@ -8,7 +8,9 @@ use predicates::prelude::*;
 use std::path::PathBuf;
 
 fn decon() -> Command {
-    Command::cargo_bin("decon").expect("decon binary should build")
+    let mut cmd = Command::cargo_bin("decon").expect("decon binary should build");
+    cmd.env("DECON_FORCE_MOCK", "1");
+    cmd
 }
 
 fn fixtures_dir() -> PathBuf {
