@@ -11,6 +11,7 @@
 //! `.gitignore` support (via the `ignore` crate) is deferred; fixtures do not
 //! rely on it. GitHub fetch is out of scope for this module.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -91,8 +92,8 @@ pub enum CrawlError {
 ///   appear as `out_link/...` (still under `root` via the link path).
 ///
 /// Paths that cannot be expressed relative to `root` are omitted.
-/// Infinite symlink loops are not specially detected -- do not crawl
-/// pathological trees.
+/// Symlink cycles are detected via a visited-set of canonical paths and
+/// skipped with a warning to stderr (the crawl continues for other files).
 ///
 /// # Errors
 ///
@@ -154,11 +155,16 @@ fn relative_posix(root: &Path, path: &Path) -> Result<Option<String>, CrawlError
     Ok(Some(s.replace('\\', "/")))
 }
 
+const MAX_SYMLINK_DEPTH: usize = 40;
+
 fn crawl_tree(root: &Path) -> Result<Vec<(String, u64)>, CrawlError> {
     let mut files: Vec<(String, u64)> = Vec::new();
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+    let mut symlink_visited: HashSet<PathBuf> = HashSet::new();
+    let root_canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    symlink_visited.insert(root_canonical);
 
-    while let Some(dir) = stack.pop() {
+    while let Some((dir, depth)) = stack.pop() {
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(_) => continue,
@@ -172,20 +178,38 @@ fn crawl_tree(root: &Path) -> Result<Vec<(String, u64)>, CrawlError> {
                 continue;
             }
 
-            if path.is_file() {
+            let is_symlink = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+
+            if is_symlink {
+                match fs::canonicalize(&path) {
+                    Ok(canon) => {
+                        if path.is_dir() {
+                            if depth >= MAX_SYMLINK_DEPTH || symlink_visited.contains(&canon) {
+                                eprintln!("skipping symlink cycle: {}", path.display());
+                                continue;
+                            }
+                            symlink_visited.insert(canon);
+                            stack.push((path, depth + 1));
+                        } else if path.is_file() {
+                            if let Some(rel) = relative_posix(root, &path)? {
+                                if let Ok(meta) = fs::metadata(&path) {
+                                    files.push((rel, meta.len()));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!("skipping symlink cycle: {}", path.display());
+                    }
+                }
+            } else if path.is_file() {
                 if let Some(rel) = relative_posix(root, &path)? {
-                    // Use `fs::metadata` (follows symlinks) to match the
-                    // classification via `Path::is_file` and the prior
-                    // dry_run behavior. `DirEntry::metadata` would return
-                    // symlink metadata (lstat) instead of the target size.
-                    // On metadata error, skip the file (best-effort walk,
-                    // matching the existing treatment of unreadable dirs).
                     if let Ok(meta) = fs::metadata(&path) {
                         files.push((rel, meta.len()));
                     }
                 }
             } else if path.is_dir() {
-                stack.push(path);
+                stack.push((path, depth));
             }
         }
     }
@@ -474,5 +498,149 @@ mod tests {
         let result = crawl_local(root).expect("crawl");
         let pairs: Vec<(&str, u64)> = result.iter().collect();
         assert_eq!(pairs, vec![("a.txt", 3)]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn self_referencing_symlink_is_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        let link = root.path().join("a");
+        symlink(&link, &link).expect("self symlink");
+
+        File::create(root.path().join("real.txt"))
+            .and_then(|mut f| f.write_all(b"ok\n"))
+            .expect("real file");
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(
+            !result.files.iter().any(|f| f == "a"),
+            "self-referencing symlink must be skipped"
+        );
+        assert!(result.files.contains(&"real.txt".to_owned()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mutual_symlink_loop_is_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        let a = root.path().join("a");
+        let b = root.path().join("b");
+        symlink(&b, &a).expect("a -> b");
+        symlink(&a, &b).expect("b -> a");
+
+        File::create(root.path().join("real.txt"))
+            .and_then(|mut f| f.write_all(b"ok\n"))
+            .expect("real file");
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(
+            !result.files.iter().any(|f| f == "a" || f == "b"),
+            "mutual symlink loop must be skipped"
+        );
+        assert!(result.files.contains(&"real.txt".to_owned()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn deep_symlink_chain_is_skipped_at_depth_limit() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        let target = root.path().join("real.txt");
+        File::create(&target)
+            .and_then(|mut f| f.write_all(b"ok\n"))
+            .expect("real file");
+
+        let mut prev = target;
+        for i in 0..50 {
+            let link = root.path().join(format!("link{i}"));
+            symlink(&prev, &link).expect("chain link");
+            prev = link;
+        }
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(
+            !result.files.iter().any(|f| f == "link49"),
+            "deepest symlink in chain must be skipped at depth limit"
+        );
+        assert!(result.files.contains(&"real.txt".to_owned()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dir_symlink_to_root_is_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        File::create(root.path().join("real.txt"))
+            .and_then(|mut f| f.write_all(b"ok\n"))
+            .expect("real file");
+        symlink(root.path(), root.path().join("link")).expect("dir symlink to root");
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(
+            !result.files.iter().any(|f| f.starts_with("link")),
+            "directory symlink cycle to root must be skipped"
+        );
+        assert!(result.files.contains(&"real.txt".to_owned()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mutual_dir_symlink_loop_is_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        let dir_a = root.path().join("a");
+        let dir_b = root.path().join("b");
+        fs::create_dir(&dir_a).expect("dir a");
+        fs::create_dir(&dir_b).expect("dir b");
+        symlink(&dir_b, dir_a.join("loop_b")).expect("a/loop_b -> b");
+        symlink(&dir_a, dir_b.join("loop_a")).expect("b/loop_a -> a");
+
+        File::create(dir_a.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"a\n"))
+            .expect("a.txt");
+        File::create(dir_b.join("b.txt"))
+            .and_then(|mut f| f.write_all(b"b\n"))
+            .expect("b.txt");
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(
+            result.files.contains(&"a/a.txt".to_owned()),
+            "a/a.txt must be found via real directory"
+        );
+        assert!(
+            result.files.contains(&"b/b.txt".to_owned()),
+            "b/b.txt must be found via real directory"
+        );
+        let loop_files: Vec<_> = result.files.iter().filter(|f| f.contains("loop")).collect();
+        assert!(
+            loop_files.len() <= 2,
+            "mutual symlink loop must not recurse infinitely (found {} files under loop paths: {:?})",
+            loop_files.len(),
+            loop_files
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn normal_symlink_to_file_still_followed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root tempdir");
+        let target = root.path().join("target.txt");
+        File::create(&target)
+            .and_then(|mut f| f.write_all(b"data\n"))
+            .expect("target");
+        symlink(&target, root.path().join("alias.txt")).expect("symlink");
+
+        let result = crawl_local(root.path()).expect("crawl");
+        assert!(result.files.contains(&"target.txt".to_owned()));
+        assert!(result.files.contains(&"alias.txt".to_owned()));
     }
 }
