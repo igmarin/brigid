@@ -40,6 +40,12 @@ pub enum CheckpointStoreError {
     NotFound(PathBuf),
 }
 
+impl From<serde_json::Error> for CheckpointStoreError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Checkpoint(e.into())
+    }
+}
+
 /// Save and load ADR 0001 checkpoint directories.
 #[derive(Clone, Debug)]
 pub struct CheckpointStore {
@@ -177,8 +183,7 @@ pub fn records_from_files(entries: &[(&str, &[u8])]) -> Vec<FileBundleRecord> {
 fn encode_file_bundle(files: &[FileBundleRecord]) -> Result<Vec<u8>, CheckpointStoreError> {
     let mut out = Vec::new();
     for rec in files {
-        let line = serde_json::to_string(rec)
-            .map_err(|e| CheckpointStoreError::Checkpoint(CheckpointError::Json(e.to_string())))?;
+        let line = serde_json::to_string(rec)?;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder
             .write_all(line.as_bytes())
@@ -213,8 +218,7 @@ fn decode_file_bundle(compressed: &[u8]) -> Result<Vec<FileBundleRecord>, Checkp
         if line.trim().is_empty() {
             continue;
         }
-        let rec: FileBundleRecord = serde_json::from_str(line)
-            .map_err(|e| CheckpointStoreError::Checkpoint(CheckpointError::Json(e.to_string())))?;
+        let rec: FileBundleRecord = serde_json::from_str(line)?;
         records.push(rec);
     }
     Ok(records)

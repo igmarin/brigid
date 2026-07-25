@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
+use crate::checkpoint_store::CheckpointStoreError;
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
 
 /// Re-export of [`PromptError`] for ergonomic matching at call sites that
@@ -51,7 +52,7 @@ pub enum IdentifyError {
     Extract(#[from] ExtractError),
     /// The extracted YAML could not be parsed into a list of [`Abstraction`]s.
     #[error("failed to parse abstractions from LLM output: {0}")]
-    Parse(String),
+    Parse(#[from] serde_yaml::Error),
     /// An abstraction referenced a file index outside the crawl inventory.
     #[error("abstraction file index {index} out of range (have {total} files)")]
     FileIndexOutOfRange {
@@ -65,7 +66,7 @@ pub enum IdentifyError {
     NoAbstractions,
     /// The configured LLM call budget was exceeded.
     #[error("budget exceeded: {0}")]
-    Budget(String),
+    Budget(#[from] BudgetExceeded),
     /// An LLM call failed for a specific map batch.
     ///
     /// We **fail closed**: rather than silently dropping the failed batch's
@@ -88,7 +89,7 @@ pub enum IdentifyError {
     /// [`crate::identify_checkpoint`] can propagate persistence failures
     /// without inventing a separate error enum.
     #[error("checkpoint error during identify: {0}")]
-    Checkpoint(String),
+    Checkpoint(#[from] CheckpointStoreError),
 }
 
 /// Input to the single-shot identify stage.
@@ -149,9 +150,7 @@ pub async fn identify_single_shot(
     //    matching the single call we make. We intentionally do NOT also call
     //    `record_llm_call` (that would double-count).
     if let Some(tracker) = progress {
-        tracker
-            .reserve_llm_calls(1)
-            .map_err(|e: BudgetExceeded| IdentifyError::Budget(e.to_string()))?;
+        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
         tracker.set_stage("identify");
     }
 
@@ -165,8 +164,7 @@ pub async fn identify_single_shot(
     let yaml_text = extract_yaml_block(&response)?;
 
     // g. Parse the extracted YAML into a list of abstractions.
-    let abstractions: Vec<Abstraction> =
-        serde_yaml::from_str(&yaml_text).map_err(|e| IdentifyError::Parse(e.to_string()))?;
+    let abstractions: Vec<Abstraction> = serde_yaml::from_str(&yaml_text)?;
 
     // h. Validate file_indices against the crawl inventory.
     let total = input.files.len();
@@ -315,7 +313,7 @@ pub async fn identify_map(
             tracker.set_stage("identify_map");
             bounded_complete_with_budget(client, prompts, input.max_concurrency, tracker)
                 .await
-                .map_err(|e: BudgetExceeded| IdentifyError::Budget(e.to_string()))?
+                .map_err(IdentifyError::from)?
         }
         None => bounded_complete(client, prompts, input.max_concurrency).await,
     };
@@ -396,9 +394,7 @@ pub(crate) async fn run_single_map_batch(
     let prompt = render_map_prompt(renderer, input, batch_indices, batch_idx, batch_total)?;
 
     if let Some(tracker) = progress {
-        tracker
-            .reserve_llm_calls(1)
-            .map_err(|e: BudgetExceeded| IdentifyError::Budget(e.to_string()))?;
+        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
         tracker.set_stage("identify_map");
     }
 
@@ -547,8 +543,7 @@ pub(crate) fn parse_candidates(
     yaml_text: &str,
     batch_idx: usize,
 ) -> Result<Vec<CandidateAbstraction>, IdentifyError> {
-    let raw: Vec<RawCandidate> =
-        serde_yaml::from_str(yaml_text).map_err(|e| IdentifyError::Parse(e.to_string()))?;
+    let raw: Vec<RawCandidate> = serde_yaml::from_str(yaml_text)?;
 
     let candidates = raw
         .into_iter()
@@ -654,9 +649,7 @@ pub async fn identify_reduce(
     //    matching the single call we make. We intentionally do NOT also call
     //    `record_llm_call` (that would double-count).
     if let Some(tracker) = progress {
-        tracker
-            .reserve_llm_calls(1)
-            .map_err(|e: BudgetExceeded| IdentifyError::Budget(e.to_string()))?;
+        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
         tracker.set_stage("identify_reduce");
     }
 
@@ -667,8 +660,7 @@ pub async fn identify_reduce(
     let yaml_text = extract_yaml_block(&response)?;
 
     // f. Parse the extracted YAML into a list of abstractions.
-    let mut abstractions: Vec<Abstraction> =
-        serde_yaml::from_str(&yaml_text).map_err(|e| IdentifyError::Parse(e.to_string()))?;
+    let mut abstractions: Vec<Abstraction> = serde_yaml::from_str(&yaml_text)?;
 
     // g. Enforce max_abstraction_num cap: if the LLM returned more than the
     //    requested maximum, truncate to the top-N (the LLM is instructed to
@@ -714,8 +706,7 @@ fn candidates_to_yaml(candidates: &[CandidateAbstraction]) -> Result<String, Ide
     if candidates.is_empty() {
         return Ok("[]".to_string());
     }
-    serde_yaml::to_string(candidates)
-        .map_err(|e| IdentifyError::Parse(format!("candidate serialization failed: {e}")))
+    Ok(serde_yaml::to_string(candidates)?)
 }
 
 /// Format the crawl inventory as the `file_listing` the template expects:
@@ -847,6 +838,27 @@ mod tests {
             .await
             .expect_err("malformed yaml should error");
         assert!(matches!(err, IdentifyError::Parse(_)), "got: {err:?}");
+    }
+
+    #[tokio::test]
+    async fn malformed_yaml_preserves_typed_serde_yaml_error() {
+        let yaml = "```yaml\n- name: \"Broken\n  description: : :\n```\n";
+        let client = MockClient::new(yaml.to_string());
+        let renderer = PromptRenderer::new().unwrap();
+        let input = sample_input();
+        let err = identify_single_shot(&client, &renderer, &input, None)
+            .await
+            .expect_err("malformed yaml should error");
+        // The Parse variant must hold a typed serde_yaml::Error, not a String,
+        // so callers can inspect the error kind and line number. This fails to
+        // compile if Parse holds String instead of serde_yaml::Error.
+        match err {
+            IdentifyError::Parse(inner) => {
+                let _: serde_yaml::Error = inner;
+                assert!(!inner.to_string().is_empty());
+            }
+            other => panic!("expected IdentifyError::Parse(serde_yaml::Error), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -997,8 +1009,12 @@ mod tests {
     fn identify_error_display_is_sensible() {
         let e = IdentifyError::NoAbstractions;
         assert_eq!(e.to_string(), "no abstractions found in LLM output");
-        let e = IdentifyError::Parse("bad yaml".to_string());
-        assert!(e.to_string().contains("bad yaml"));
+        let yaml_err = serde_yaml::from_str::<Vec<Abstraction>>("bad: : :\n").unwrap_err();
+        let e = IdentifyError::Parse(yaml_err);
+        assert!(
+            e.to_string()
+                .contains("failed to parse abstractions from LLM output")
+        );
         let e = IdentifyError::FileIndexOutOfRange { index: 5, total: 3 };
         assert!(e.to_string().contains("5"));
         assert!(e.to_string().contains("3"));

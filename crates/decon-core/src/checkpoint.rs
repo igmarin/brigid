@@ -203,7 +203,7 @@ pub struct CheckpointV1 {
 }
 
 /// Errors when validating or hashing checkpoint metadata.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum CheckpointError {
     /// Unsupported or missing schema version.
     #[error("unsupported checkpoint version: {0}")]
@@ -213,7 +213,7 @@ pub enum CheckpointError {
     ConfigHash(String),
     /// JSON (de)serialization failed.
     #[error("checkpoint JSON error: {0}")]
-    Json(String),
+    Json(#[from] serde_json::Error),
 }
 
 impl CheckpointV1 {
@@ -264,7 +264,7 @@ impl CheckpointV1 {
     ///
     /// [`CheckpointError::Json`] on serialization failure.
     pub fn to_json(&self) -> Result<String, CheckpointError> {
-        serde_json::to_string(self).map_err(|e| CheckpointError::Json(e.to_string()))
+        Ok(serde_json::to_string(self)?)
     }
 
     /// Parse from JSON text.
@@ -273,8 +273,7 @@ impl CheckpointV1 {
     ///
     /// [`CheckpointError::Json`] or version validation errors.
     pub fn from_json(text: &str) -> Result<Self, CheckpointError> {
-        let cp: Self =
-            serde_json::from_str(text).map_err(|e| CheckpointError::Json(e.to_string()))?;
+        let cp: Self = serde_json::from_str(text)?;
         cp.validate_version()?;
         Ok(cp)
     }
