@@ -19,6 +19,7 @@ pub mod identify;
 pub mod identify_checkpoint;
 pub mod identify_runner;
 pub mod prompts;
+pub mod relationships;
 pub mod resume;
 
 pub use cancellation::{CancelToken, setup_ctrl_c_handler};
