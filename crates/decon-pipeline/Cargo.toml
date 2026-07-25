@@ -20,7 +20,7 @@ flate2 = "1"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 # Pinned because prompt syntax is sensitive to minijinja/Jinja2 behavior and
 # golden/snapshot tests depend on exact render output.
 minijinja = "=2.20.0"

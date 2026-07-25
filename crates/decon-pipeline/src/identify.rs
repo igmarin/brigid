@@ -52,7 +52,7 @@ pub enum IdentifyError {
     Extract(#[from] ExtractError),
     /// The extracted YAML could not be parsed into a list of [`Abstraction`]s.
     #[error("failed to parse abstractions from LLM output: {0}")]
-    Parse(#[from] serde_yaml::Error),
+    Parse(#[from] serde_yaml_ng::Error),
     /// An abstraction referenced a file index outside the crawl inventory.
     #[error("abstraction file index {index} out of range (have {total} files)")]
     FileIndexOutOfRange {
@@ -164,7 +164,7 @@ pub async fn identify_single_shot(
     let yaml_text = extract_yaml_block(&response)?;
 
     // g. Parse the extracted YAML into a list of abstractions.
-    let abstractions: Vec<Abstraction> = serde_yaml::from_str(&yaml_text)?;
+    let abstractions: Vec<Abstraction> = serde_yaml_ng::from_str(&yaml_text)?;
 
     // h. Validate file_indices against the crawl inventory.
     let total = input.files.len();
@@ -543,7 +543,7 @@ pub(crate) fn parse_candidates(
     yaml_text: &str,
     batch_idx: usize,
 ) -> Result<Vec<CandidateAbstraction>, IdentifyError> {
-    let raw: Vec<RawCandidate> = serde_yaml::from_str(yaml_text)?;
+    let raw: Vec<RawCandidate> = serde_yaml_ng::from_str(yaml_text)?;
 
     let candidates = raw
         .into_iter()
@@ -660,7 +660,7 @@ pub async fn identify_reduce(
     let yaml_text = extract_yaml_block(&response)?;
 
     // f. Parse the extracted YAML into a list of abstractions.
-    let mut abstractions: Vec<Abstraction> = serde_yaml::from_str(&yaml_text)?;
+    let mut abstractions: Vec<Abstraction> = serde_yaml_ng::from_str(&yaml_text)?;
 
     // g. Enforce max_abstraction_num cap: if the LLM returned more than the
     //    requested maximum, truncate to the top-N (the LLM is instructed to
@@ -706,7 +706,7 @@ fn candidates_to_yaml(candidates: &[CandidateAbstraction]) -> Result<String, Ide
     if candidates.is_empty() {
         return Ok("[]".to_string());
     }
-    Ok(serde_yaml::to_string(candidates)?)
+    Ok(serde_yaml_ng::to_string(candidates)?)
 }
 
 /// Format the crawl inventory as the `file_listing` the template expects:
@@ -849,15 +849,15 @@ mod tests {
         let err = identify_single_shot(&client, &renderer, &input, None)
             .await
             .expect_err("malformed yaml should error");
-        // The Parse variant must hold a typed serde_yaml::Error, not a String,
+        // The Parse variant must hold a typed serde_yaml_ng::Error, not a String,
         // so callers can inspect the error kind and line number. This fails to
-        // compile if Parse holds String instead of serde_yaml::Error.
+        // compile if Parse holds String instead of serde_yaml_ng::Error.
         match err {
             IdentifyError::Parse(inner) => {
-                let _: serde_yaml::Error = inner;
+                let _: serde_yaml_ng::Error = inner;
                 assert!(!inner.to_string().is_empty());
             }
-            other => panic!("expected IdentifyError::Parse(serde_yaml::Error), got {other:?}"),
+            other => panic!("expected IdentifyError::Parse(serde_yaml_ng::Error), got {other:?}"),
         }
     }
 
@@ -1009,7 +1009,7 @@ mod tests {
     fn identify_error_display_is_sensible() {
         let e = IdentifyError::NoAbstractions;
         assert_eq!(e.to_string(), "no abstractions found in LLM output");
-        let yaml_err = serde_yaml::from_str::<Vec<Abstraction>>("bad: : :\n").unwrap_err();
+        let yaml_err = serde_yaml_ng::from_str::<Vec<Abstraction>>("bad: : :\n").unwrap_err();
         let e = IdentifyError::Parse(yaml_err);
         assert!(
             e.to_string()
@@ -1779,7 +1779,7 @@ mod reduce_tests {
         let yaml = candidates_to_yaml(&candidates).expect("should serialize");
         // Should parse back into the same number of candidates.
         let back: Vec<CandidateAbstraction> =
-            serde_yaml::from_str(&yaml).expect("should parse back");
+            serde_yaml_ng::from_str(&yaml).expect("should parse back");
         assert_eq!(back.len(), 3);
         assert_eq!(back[0].name, "Module A");
         assert_eq!(back[2].batch_idx, 1);
@@ -1808,7 +1808,7 @@ mod reduce_tests {
         ];
         let yaml = candidates_to_yaml(&candidates).expect("should serialize");
         let back: Vec<CandidateAbstraction> =
-            serde_yaml::from_str(&yaml).expect("should parse back");
+            serde_yaml_ng::from_str(&yaml).expect("should parse back");
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].name, "name: with colon");
         assert_eq!(back[0].description, "desc # hash");
