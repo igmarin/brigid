@@ -693,6 +693,289 @@ fn load_chapters(
         .map_err(GenerateError::from)
 }
 
+fn prerequisite_error(stage: &str, prerequisite: &str) -> GenerateError {
+    GenerateError::Config(format!(
+        "{stage} stage requires '{prerequisite}' to be complete -- run 'decon {prerequisite}' or 'decon generate' first"
+    ))
+}
+
+/// Run only the relationships stage for per-stage debugging.
+///
+/// Validates that the identify stage is complete in the checkpoint, loads the
+/// identify result, and calls [`relationships_and_checkpoint`]. Returns the
+/// [`RelationshipsResult`] and updates the checkpoint in place.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the identify stage is not complete.
+/// Returns stage errors from [`relationships_and_checkpoint`].
+pub async fn run_relationships_stage(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    file_contents: &[(String, String)],
+    project_name: &str,
+    language_instruction: &str,
+) -> Result<RelationshipsResult, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Identify) {
+        return Err(prerequisite_error("relationships", "identify"));
+    }
+    let identify = load_identify(checkpoint)?;
+    let rel_config = RelationshipsConfig {
+        project_name: project_name.to_string(),
+        language_instruction: language_instruction.to_string(),
+        ..Default::default()
+    };
+    let result = relationships_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &identify,
+        file_contents,
+        &rel_config,
+        None,
+    )
+    .await?;
+    Ok(result)
+}
+
+/// Run only the order stage for per-stage debugging.
+///
+/// Validates that the relationships stage is complete, loads identify and
+/// relationships results from the checkpoint, and calls
+/// [`order_and_checkpoint`]. Returns the [`ChapterOrder`] and updates the
+/// checkpoint in place.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the relationships stage is not
+/// complete. Returns stage errors from [`order_and_checkpoint`].
+pub async fn run_order_stage(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    project_name: &str,
+    language_instruction: &str,
+) -> Result<ChapterOrder, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Relationships) {
+        return Err(prerequisite_error("order", "relationships"));
+    }
+    let identify = load_identify(checkpoint)?;
+    let relationships = load_relationships(checkpoint)?;
+    let order_config = OrderConfig {
+        project_name: project_name.to_string(),
+        language_instruction: language_instruction.to_string(),
+        ..Default::default()
+    };
+    let result = order_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &identify,
+        &relationships,
+        &order_config,
+        None,
+    )
+    .await?;
+    Ok(result)
+}
+
+/// Run only the chapters stage for per-stage debugging.
+///
+/// Validates that the order stage is complete, loads identify and order
+/// results from the checkpoint, and calls [`chapters_and_checkpoint`]. Returns
+/// the [`ChapterResult`] and updates the checkpoint in place.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the order stage is not complete.
+/// Returns stage errors from [`chapters_and_checkpoint`].
+#[allow(clippy::too_many_arguments)]
+pub async fn run_chapters_stage(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    file_contents: &[(String, String)],
+    project_name: &str,
+    language_instruction: &str,
+    lang: &str,
+    diagram_level: DiagramLevel,
+    chapter_concurrency: usize,
+) -> Result<ChapterResult, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Order) {
+        return Err(prerequisite_error("chapters", "order"));
+    }
+    let identify = load_identify(checkpoint)?;
+    let order = load_order(checkpoint)?;
+    let locale = Locale::parse_or_default(lang);
+    let chapters_config = ChaptersConfig {
+        project_name: project_name.to_string(),
+        language_instruction: language_instruction.to_string(),
+        lang: locale.as_str().to_string(),
+        diagram_level,
+        max_concurrency: chapter_concurrency,
+        ..Default::default()
+    };
+    let result = chapters_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &identify,
+        &order,
+        file_contents,
+        &chapters_config,
+        None,
+    )
+    .await?;
+    Ok(result)
+}
+
+/// Run only the setup guide stage for per-stage debugging.
+///
+/// Validates that the identify stage is complete, runs a dry-run plan to
+/// obtain the setup score and gaps, and calls
+/// [`write_setup_guide_and_checkpoint`]. Returns the
+/// [`decon_core::SetupGuide`] and updates the checkpoint in place.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the identify stage is not complete or
+/// the dry-run fails. Returns stage errors from
+/// [`write_setup_guide_and_checkpoint`].
+pub async fn run_setup_stage(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    dir: &Path,
+    forced: bool,
+    lang: &str,
+) -> Result<decon_core::SetupGuide, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Identify) {
+        return Err(prerequisite_error("setup", "identify"));
+    }
+    let dry_run_plan = crate::dry_run::dry_run(dir, None)
+        .map_err(|e| GenerateError::Config(format!("dry-run failed: {e}")))?;
+    let project_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let setup_context = dry_run_plan
+        .setup
+        .config_files
+        .iter()
+        .map(|f| format!("# File: {f}\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let locale = Locale::parse_or_default(lang);
+    let input = WriteSetupGuideInput {
+        project_name: &project_name,
+        score: dry_run_plan.setup.score,
+        gaps: &dry_run_plan.setup.gaps,
+        context: &setup_context,
+        lang: locale.as_str(),
+        forced,
+    };
+    let guide =
+        write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+    Ok(guide)
+}
+
+/// Run only the architecture overview stage for per-stage debugging.
+///
+/// Validates that the relationships stage is complete, loads identify and
+/// relationships results from the checkpoint, and calls
+/// [`overview_and_checkpoint`]. Returns the
+/// [`decon_core::ArchitectureOverview`] and updates the checkpoint in place.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the relationships stage is not
+/// complete. Returns stage errors from [`overview_and_checkpoint`].
+pub async fn run_overview_stage(
+    client: &dyn LlmClient,
+    renderer: &PromptRenderer,
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    project_name: &str,
+    lang_note: &str,
+    modules: &[ModuleKey],
+) -> Result<decon_core::ArchitectureOverview, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Relationships) {
+        return Err(prerequisite_error("overview", "relationships"));
+    }
+    let identify = load_identify(checkpoint)?;
+    let relationships = load_relationships(checkpoint)?;
+    let input = OverviewInput {
+        project_name: project_name.to_string(),
+        summary: relationships.project_summary.clone(),
+        inventory: modules.to_vec(),
+        abstractions: identify.abstractions.clone(),
+        relationships: relationships.relationships.clone(),
+        lang_note: lang_note.to_string(),
+        strict_app_validation: true,
+    };
+    let overview = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+    Ok(overview)
+}
+
+/// Run only the combine stage for per-stage debugging.
+///
+/// Validates that the chapters stage is complete, loads all prior stage
+/// results from the checkpoint (identify, relationships, order, chapters,
+/// and optionally setup/overview), and calls [`combine_and_checkpoint`].
+/// Writes the final `index.md` to `output_dir` and updates the checkpoint.
+///
+/// # Errors
+///
+/// Returns [`GenerateError::Config`] if the chapters stage is not complete.
+/// Returns stage errors from [`combine_and_checkpoint`].
+pub fn run_combine_stage(
+    store: &CheckpointStore,
+    checkpoint: &mut CheckpointV1,
+    output_dir: &Path,
+    language: &str,
+    modules: &[ModuleKey],
+) -> Result<CombinedTutorial, GenerateError> {
+    if !checkpoint.is_stage_complete(StageId::Chapters) {
+        return Err(prerequisite_error("combine", "chapters"));
+    }
+    let identify = load_identify(checkpoint)?;
+    let relationships = load_relationships(checkpoint)?;
+    let order = load_order(checkpoint)?;
+    let chapters = load_chapters(store, checkpoint)?;
+    let setup: Option<decon_core::SetupGuide> = store
+        .read_setup_guide(&store.dir, checkpoint)
+        .ok()
+        .flatten();
+    let overview: Option<decon_core::ArchitectureOverview> = store
+        .read_architecture_overview(&store.dir, checkpoint)
+        .ok()
+        .flatten();
+    let locale = Locale::parse_or_default(language);
+    let combined = combine_and_checkpoint(
+        store,
+        checkpoint,
+        &identify,
+        &relationships,
+        &order,
+        &chapters,
+        setup.as_ref(),
+        overview.as_ref(),
+        modules,
+        locale,
+        output_dir,
+    )?;
+    Ok(combined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1647,5 +1930,343 @@ mod tests {
         let _ = fs::remove_dir_all(&output_dir);
         let _ = fs::remove_dir_all(&alpha_ckpt);
         let _ = fs::remove_dir_all(&beta_ckpt);
+    }
+
+    fn seed_identify_complete(store: &CheckpointStore) -> CheckpointV1 {
+        let mut cp = seed_store(store);
+        let identify = IdentifyResult::new(three_abstractions());
+        cp.abstractions = Some(identify.to_checkpoint_value().unwrap());
+        cp.mark_stage_complete(StageId::Identify, "t3");
+        let (_, files) = store.load().unwrap();
+        store.save(cp.clone(), &files).unwrap();
+        cp
+    }
+
+    fn seed_relationships_complete(store: &CheckpointStore) -> CheckpointV1 {
+        let mut cp = seed_identify_complete(store);
+        let rels = RelationshipsResult::new(
+            "A web framework with routing and persistence.".to_string(),
+            vec![decon_core::Relationship::new(
+                0,
+                1,
+                "calls".to_string(),
+                "calls".to_string(),
+            )],
+        );
+        cp.relationships = Some(rels.to_checkpoint_value().unwrap());
+        cp.mark_stage_complete(StageId::Relationships, "t4");
+        let (_, files) = store.load().unwrap();
+        store.save(cp.clone(), &files).unwrap();
+        cp
+    }
+
+    fn seed_order_complete(store: &CheckpointStore) -> CheckpointV1 {
+        let mut cp = seed_relationships_complete(store);
+        let order = ChapterOrder::new(vec![0, 1, 2]);
+        cp.order = Some(order.to_checkpoint_value().unwrap());
+        cp.mark_stage_complete(StageId::Order, "t5");
+        let (_, files) = store.load().unwrap();
+        store.save(cp.clone(), &files).unwrap();
+        cp
+    }
+
+    fn seed_chapters_complete(store: &CheckpointStore) -> CheckpointV1 {
+        let mut cp = seed_order_complete(store);
+        let chapters = ChapterResult::new(vec![
+            decon_core::Chapter::new(0, 1, "Router", "# Router\n", Tier::S, "module", "f0"),
+            decon_core::Chapter::new(1, 2, "Store", "# Store\n", Tier::S, "module", "f1"),
+            decon_core::Chapter::new(2, 3, "Worker", "# Worker\n", Tier::S, "module", "f2"),
+        ]);
+        let entries = store.write_chapters(&store.dir, &chapters).unwrap();
+        cp.mark_stage_complete(StageId::Chapters, "t6");
+        store
+            .record_stage_outputs(&mut cp, StageId::Chapters, entries)
+            .unwrap();
+        let (_, files) = store.load().unwrap();
+        store.save(cp.clone(), &files).unwrap();
+        cp
+    }
+
+    #[tokio::test]
+    async fn run_relationships_stage_with_identify_complete_runs() {
+        let ckpt_dir = temp_dir("rel-stage-ok");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::with_responses(vec![canned_relationships()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result =
+            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "")
+                .await
+                .expect("should run with identify complete");
+
+        assert_eq!(
+            result.project_summary,
+            "A web framework with routing and persistence."
+        );
+        assert!(cp.is_stage_complete(StageId::Relationships));
+        assert_eq!(client.call_count(), 1);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_relationships_stage_without_identify_returns_error() {
+        let ckpt_dir = temp_dir("rel-stage-no-id");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_store(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result =
+            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "")
+                .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("identify")),
+            "expected Config error about identify, got: {err:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_order_stage_with_relationships_complete_runs() {
+        let ckpt_dir = temp_dir("order-stage-ok");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_relationships_complete(&store);
+        let client = MockClient::with_responses(vec![canned_order()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "")
+            .await
+            .expect("should run with relationships complete");
+
+        assert_eq!(result.ordered_indices, vec![0, 1, 2]);
+        assert!(cp.is_stage_complete(StageId::Order));
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_order_stage_without_relationships_returns_error() {
+        let ckpt_dir = temp_dir("order-stage-no-rel");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "").await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("relationships")),
+            "expected Config error about relationships, got: {err:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_chapters_stage_with_order_complete_runs() {
+        let ckpt_dir = temp_dir("chapters-stage-ok");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_order_complete(&store);
+        let client = MockClient::with_responses(vec![
+            canned_chapter("Router", 1),
+            canned_chapter("Store", 2),
+            canned_chapter("Worker", 3),
+        ])
+        .unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result = run_chapters_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            "en",
+            DiagramLevel::Standard,
+            4,
+        )
+        .await
+        .expect("should run with order complete");
+
+        assert_eq!(result.chapters.len(), 3);
+        assert!(cp.is_stage_complete(StageId::Chapters));
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_chapters_stage_without_order_returns_error() {
+        let ckpt_dir = temp_dir("chapters-stage-no-order");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_relationships_complete(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result = run_chapters_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            "en",
+            DiagramLevel::Standard,
+            4,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("order")),
+            "expected Config error about order, got: {err:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_setup_stage_with_identify_complete_runs() {
+        let ckpt_dir = temp_dir("setup-stage-ok");
+        let repo_dir = temp_dir("setup-stage-repo");
+        fs::write(repo_dir.join("README.md"), b"# My Project\n").unwrap();
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::with_responses(vec![canned_setup()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en")
+            .await
+            .expect("should run with identify complete");
+
+        assert!(cp.is_stage_complete(StageId::Setup));
+        assert!(result.forced);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&repo_dir);
+    }
+
+    #[tokio::test]
+    async fn run_setup_stage_without_identify_returns_error() {
+        let ckpt_dir = temp_dir("setup-stage-no-id");
+        let repo_dir = temp_dir("setup-stage-no-id-repo");
+        fs::write(repo_dir.join("README.md"), b"# My Project\n").unwrap();
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_store(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result =
+            run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en").await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("identify")),
+            "expected Config error about identify, got: {err:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&repo_dir);
+    }
+
+    #[tokio::test]
+    async fn run_overview_stage_with_relationships_complete_runs() {
+        let ckpt_dir = temp_dir("overview-stage-ok");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_relationships_complete(&store);
+        let client = MockClient::with_responses(vec![canned_overview()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+
+        let _result = run_overview_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &two_modules(),
+        )
+        .await
+        .expect("should run with relationships complete");
+
+        assert!(cp.is_stage_complete(StageId::Overview));
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_overview_stage_without_relationships_returns_error() {
+        let ckpt_dir = temp_dir("overview-stage-no-rel");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_overview_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &two_modules(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("relationships")),
+            "expected Config error about relationships, got: {err:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[test]
+    fn run_combine_stage_with_all_stages_complete_runs() {
+        let ckpt_dir = temp_dir("combine-stage-ok");
+        let output_dir = temp_dir("combine-stage-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_chapters_complete(&store);
+
+        let result = run_combine_stage(&store, &mut cp, &output_dir, "en", &two_modules())
+            .expect("should run with all stages complete");
+
+        assert!(output_dir.join("index.md").is_file());
+        assert_eq!(result.chapter_count, 3);
+        assert!(cp.is_stage_complete(StageId::Combine));
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn run_combine_stage_without_chapters_returns_error() {
+        let ckpt_dir = temp_dir("combine-stage-no-chap");
+        let output_dir = temp_dir("combine-stage-no-chap-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_order_complete(&store);
+
+        let result = run_combine_stage(&store, &mut cp, &output_dir, "en", &two_modules());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GenerateError::Config(ref m) if m.contains("chapters")),
+            "expected Config error about chapters, got: {err:?}"
+        );
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
     }
 }

@@ -168,6 +168,82 @@ enum Commands {
         #[arg(long = "each-app", default_value_t = false)]
         each_app: bool,
     },
+    /// Run only the relationships stage (reads identify from checkpoint).
+    Relationships {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+    },
+    /// Run only the order stage (reads identify + relationships from checkpoint).
+    Order {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+    },
+    /// Run only the chapters stage (reads identify + relationships + order from checkpoint).
+    Chapters {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+        /// Output directory (default: `output`).
+        #[arg(long = "output-dir", value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+        /// Output language (default: `en`).
+        #[arg(long = "language", value_name = "LANG", default_value = "en")]
+        language: String,
+        /// Diagram richness level: minimal, standard, or rich (default: standard).
+        #[arg(
+            long = "diagram-level",
+            value_name = "LEVEL",
+            default_value = "standard"
+        )]
+        diagram_level: String,
+    },
+    /// Run only the setup guide stage (reads identify + dry-run from checkpoint).
+    Setup {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+        /// Force generation even if the setup score is high.
+        #[arg(long = "force", default_value_t = false)]
+        force: bool,
+    },
+    /// Run only the architecture overview stage (reads identify + relationships from checkpoint).
+    Overview {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+    },
+    /// Run only the combine stage (reads all prior outputs from checkpoint).
+    Combine {
+        /// Repository root (required).
+        #[arg(long = "dir", value_name = "PATH", required = true)]
+        dir: PathBuf,
+        /// Checkpoint directory (default: `.decon-checkpoint`).
+        #[arg(long = "checkpoint-dir", value_name = "PATH")]
+        checkpoint_dir: Option<PathBuf>,
+        /// Output directory (default: `output`).
+        #[arg(long = "output-dir", value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+        /// Output language (default: `en`).
+        #[arg(long = "language", value_name = "LANG", default_value = "en")]
+        language: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -268,6 +344,72 @@ fn main() -> ExitCode {
                 each_app,
                 &cfg,
             )
+        }
+        Commands::Relationships {
+            dir,
+            checkpoint_dir,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            cmd_relationships(&dir, &checkpoint_dir, &cfg)
+        }
+        Commands::Order {
+            dir,
+            checkpoint_dir,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            cmd_order(&dir, &checkpoint_dir, &cfg)
+        }
+        Commands::Chapters {
+            dir,
+            checkpoint_dir,
+            output_dir,
+            language,
+            diagram_level,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            let output_dir = output_dir
+                .or_else(|| cfg.output.clone())
+                .unwrap_or_else(|| PathBuf::from("output"));
+            cmd_chapters(
+                &dir,
+                &checkpoint_dir,
+                &output_dir,
+                &language,
+                &diagram_level,
+            )
+        }
+        Commands::Setup {
+            dir,
+            checkpoint_dir,
+            force,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            cmd_setup(&dir, &checkpoint_dir, force, &cfg)
+        }
+        Commands::Overview {
+            dir,
+            checkpoint_dir,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            cmd_overview(&dir, &checkpoint_dir, &cfg)
+        }
+        Commands::Combine {
+            dir,
+            checkpoint_dir,
+            output_dir,
+            language,
+        } => {
+            let checkpoint_dir =
+                checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
+            let output_dir = output_dir
+                .or_else(|| cfg.output.clone())
+                .unwrap_or_else(|| PathBuf::from("output"));
+            cmd_combine(&dir, &checkpoint_dir, &output_dir, &language, &cfg)
         }
     }
 }
@@ -1352,6 +1494,534 @@ fn cmd_generate_each_app(
             }
         }
     })
+}
+
+fn load_stage_checkpoint(
+    checkpoint_dir: &Path,
+) -> Result<(decon_core::CheckpointV1, Vec<decon_core::FileBundleRecord>), ExitCode> {
+    if !checkpoint_dir.is_dir() {
+        eprintln!(
+            "error: checkpoint directory '{}' does not exist or is not a directory",
+            checkpoint_dir.display()
+        );
+        return Err(ExitCode::from(EXIT_CONFIG));
+    }
+    let store = CheckpointStore::new(checkpoint_dir);
+    match store.load() {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            eprintln!("error: checkpoint load failed: {e}");
+            Err(ExitCode::from(EXIT_CONFIG))
+        }
+    }
+}
+
+fn stage_project_name(dir: &Path) -> String {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string()
+}
+
+fn stage_language_instruction(language: &str) -> String {
+    if language.is_empty() {
+        String::new()
+    } else {
+        format!("Use {language}")
+    }
+}
+
+fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn decon_llm::LlmClient> {
+    let api_key = env::var("DECON_LLM_API_KEY").ok();
+    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+        eprintln!(
+            "warning: no DECON_LLM_API_KEY set -- using a mock client. \
+             The output will be a placeholder, not a real LLM analysis. \
+             Set DECON_LLM_API_KEY to use a real provider (M4)."
+        );
+    }
+    #[cfg(debug_assertions)]
+    {
+        if let Some(kind) = env::var("DECON_LLM_MOCK_FAIL")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            let err = match kind.as_str() {
+                "timeout" => decon_llm::LlmError::Timeout,
+                "ratelimit" => decon_llm::LlmError::RateLimit { retry_after: None },
+                "provider" => decon_llm::LlmError::Provider {
+                    status: 502,
+                    body: "mock provider error".to_string(),
+                },
+                "parse" => decon_llm::LlmError::parse("mock parse failure"),
+                _ => decon_llm::LlmError::network("mock network failure"),
+            };
+            return Box::new(decon_llm::MockClient::new("").fail_on(0, err));
+        }
+    }
+    Box::new(
+        decon_llm::MockClient::with_responses(responses)
+            .unwrap_or_else(|_| decon_llm::MockClient::new(placeholder)),
+    )
+}
+
+fn stage_exit_code(err: &decon_pipeline::GenerateError) -> u8 {
+    match err {
+        decon_pipeline::GenerateError::Budget(_)
+        | decon_pipeline::GenerateError::Identify(
+            decon_pipeline::identify::IdentifyError::Budget(_),
+        )
+        | decon_pipeline::GenerateError::Relationships(
+            decon_pipeline::relationships::RelationshipsError::Budget(_),
+        )
+        | decon_pipeline::GenerateError::Order(decon_pipeline::order::OrderError::Budget(_))
+        | decon_pipeline::GenerateError::Chapters(
+            decon_pipeline::chapters::ChaptersError::Budget(_),
+        ) => EXIT_BUDGET,
+        decon_pipeline::GenerateError::Identify(
+            decon_pipeline::identify::IdentifyError::Llm(_)
+            | decon_pipeline::identify::IdentifyError::LlmBatch { .. },
+        )
+        | decon_pipeline::GenerateError::Relationships(
+            decon_pipeline::relationships::RelationshipsError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Order(decon_pipeline::order::OrderError::Llm(_))
+        | decon_pipeline::GenerateError::Chapters(decon_pipeline::chapters::ChaptersError::Llm(
+            _,
+        ))
+        | decon_pipeline::GenerateError::Setup(
+            decon_pipeline::setup_guide::SetupGuideError::Llm(_),
+        )
+        | decon_pipeline::GenerateError::Overview(decon_pipeline::overview::OverviewError::Llm(
+            _,
+        )) => EXIT_LLM,
+        decon_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
+        _ => EXIT_FAIL,
+    }
+}
+
+fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let crawl_result = match crawl_local(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: relationships: crawl failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let file_contents: Vec<(String, String)> = crawl_result
+        .files
+        .iter()
+        .map(|f| (f.clone(), String::new()))
+        .collect();
+
+    let project_name = stage_project_name(dir);
+    let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+
+    let placeholder_rel =
+        "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+    let client = make_stage_client(vec![placeholder_rel.to_string()], placeholder_rel);
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: relationships: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: relationships: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        match decon_pipeline::run_relationships_stage(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            &file_contents,
+            &project_name,
+            &language_instruction,
+        )
+        .await
+        {
+            Ok(result) => {
+                eprintln!(
+                    "relationships: completed (summary_len={}, rels={})",
+                    result.project_summary.len(),
+                    result.relationships.len()
+                );
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                let _ = store.save(checkpoint.clone(), &files);
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                let code = stage_exit_code(&e);
+                eprintln!("error: relationships failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let project_name = stage_project_name(dir);
+    let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+
+    let placeholder_order = "```yaml\n- 0\n```\n";
+    let client = make_stage_client(vec![placeholder_order.to_string()], placeholder_order);
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: order: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: order: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        match decon_pipeline::run_order_stage(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            &project_name,
+            &language_instruction,
+        )
+        .await
+        {
+            Ok(result) => {
+                eprintln!(
+                    "order: completed (chapters={})",
+                    result.ordered_indices.len()
+                );
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                let _ = store.save(checkpoint.clone(), &files);
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                let code = stage_exit_code(&e);
+                eprintln!("error: order failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_chapters(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    output_dir: &Path,
+    language: &str,
+    diagram_level: &str,
+) -> ExitCode {
+    let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
+        Some(dl) => dl,
+        None => {
+            eprintln!(
+                "error: chapters: invalid diagram level '{diagram_level}' \
+                 (expected: minimal, standard, or rich)"
+            );
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let crawl_result = match crawl_local(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: chapters: crawl failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let file_contents: Vec<(String, String)> = crawl_result
+        .files
+        .iter()
+        .map(|f| (f.clone(), String::new()))
+        .collect();
+
+    let project_name = stage_project_name(dir);
+    let language_instruction = stage_language_instruction(language);
+
+    let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+    let identify = match decon_pipeline::identify_checkpoint::load_identify_result(&checkpoint) {
+        Some(i) => i,
+        None => {
+            eprintln!("error: chapters: identify result not found in checkpoint");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let max_chapters = identify.abstractions.len().max(1);
+    let responses: Vec<String> = (0..max_chapters)
+        .map(|_| placeholder_chapter.to_string())
+        .collect();
+    let client = make_stage_client(responses, placeholder_chapter);
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: chapters: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: chapters: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        match decon_pipeline::run_chapters_stage(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            &file_contents,
+            &project_name,
+            &language_instruction,
+            language,
+            diagram_level_parsed,
+            decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+        )
+        .await
+        {
+            Ok(result) => {
+                eprintln!("chapters: completed (chapters={})", result.chapters.len());
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                eprintln!("output: {}", output_dir.display());
+                let _ = store.save(checkpoint.clone(), &files);
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                let code = stage_exit_code(&e);
+                eprintln!("error: chapters failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) -> ExitCode {
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+    let client = make_stage_client(vec![placeholder_setup.to_string()], placeholder_setup);
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: setup: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let lang = cfg.language.as_deref().unwrap_or("en");
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: setup: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        match decon_pipeline::run_setup_stage(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            dir,
+            force,
+            lang,
+        )
+        .await
+        {
+            Ok(_guide) => {
+                eprintln!("setup: completed (forced={force})");
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                let _ = store.save(checkpoint.clone(), &files);
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                let code = stage_exit_code(&e);
+                eprintln!("error: setup failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+fn cmd_overview(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let dry_run_plan = match decon_pipeline::dry_run(dir, None) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: overview: dry-run failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let modules: Vec<decon_core::ModuleKey> = dry_run_plan
+        .modules
+        .iter()
+        .map(|m| decon_core::ModuleKey::new(m.key.as_str()))
+        .collect();
+
+    let project_name = stage_project_name(dir);
+    let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+
+    let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
+    let client = make_stage_client(vec![placeholder_overview.to_string()], placeholder_overview);
+
+    let renderer = match decon_pipeline::PromptRenderer::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: overview: prompt renderer: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: overview: runtime: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    rt.block_on(async {
+        match decon_pipeline::run_overview_stage(
+            client.as_ref(),
+            &renderer,
+            &store,
+            &mut checkpoint,
+            &project_name,
+            &language_instruction,
+            &modules,
+        )
+        .await
+        {
+            Ok(_overview) => {
+                eprintln!("overview: completed");
+                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                let _ = store.save(checkpoint.clone(), &files);
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                let code = stage_exit_code(&e);
+                eprintln!("error: overview failed: {e}");
+                ExitCode::from(code)
+            }
+        }
+    })
+}
+
+fn cmd_combine(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    output_dir: &Path,
+    language: &str,
+    cfg: &RunConfig,
+) -> ExitCode {
+    let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let store = CheckpointStore::new(checkpoint_dir);
+
+    let dry_run_plan = match decon_pipeline::dry_run(dir, None) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: combine: dry-run failed: {e}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let modules: Vec<decon_core::ModuleKey> = dry_run_plan
+        .modules
+        .iter()
+        .map(|m| decon_core::ModuleKey::new(m.key.as_str()))
+        .collect();
+
+    let lang = if language.is_empty() {
+        cfg.language.as_deref().unwrap_or("en")
+    } else {
+        language
+    };
+
+    match decon_pipeline::run_combine_stage(&store, &mut checkpoint, output_dir, lang, &modules) {
+        Ok(combined) => {
+            eprintln!(
+                "combine: completed with {} chapters (locale={})",
+                combined.chapter_count, combined.locale
+            );
+            eprintln!("output: {}", output_dir.display());
+            eprintln!("checkpoint: {}", checkpoint_dir.display());
+            let _ = store.save(checkpoint.clone(), &files);
+            ExitCode::from(EXIT_OK)
+        }
+        Err(e) => {
+            let code = stage_exit_code(&e);
+            eprintln!("error: combine failed: {e}");
+            ExitCode::from(code)
+        }
+    }
 }
 
 fn load_tutorial_markdown(root: &Path) -> Result<Vec<TutorialFile>, String> {
