@@ -14,6 +14,7 @@
 
 pub mod abstraction;
 pub mod budget;
+pub mod chapter;
 pub mod checkpoint;
 pub mod config;
 pub mod diagrams;
@@ -38,6 +39,7 @@ pub use budget::{
     TRUNCATION_MARKER, TruncateResult, capped_file_chars, estimate_budget, path_stub,
     path_stub_chars, truncate_content,
 };
+pub use chapter::{Chapter, ChapterOrder, ChapterOrderError, ChapterResult};
 pub use checkpoint::{
     CHECKPOINT_SCHEMA_VERSION, CheckpointError, CheckpointMeta, CheckpointV1,
     DEFAULT_MANIFEST_REL_PATH, ENCODING_BASE64, FileBundleRecord, ManifestPointer, StageId,
