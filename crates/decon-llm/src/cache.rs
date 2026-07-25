@@ -149,7 +149,7 @@ impl DiskCache {
                     let mut st = self.stats.lock().unwrap();
                     st.hits += 1;
                 }
-                if let Ok(file) = fs::File::open(&path) {
+                if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
                     let _ = file.set_modified(SystemTime::now());
                 }
                 Ok(Some(s))
@@ -440,20 +440,27 @@ mod tests {
         cache.put_for(&input_b, "bbb").unwrap();
         cache.put_for(&input_c, "ccc").unwrap();
 
-        use std::fs::File;
+        use std::fs::OpenOptions;
         use std::time::{Duration, UNIX_EPOCH};
         let path_a = cache.entry_path(&cache_key(&input_a).unwrap());
         let path_b = cache.entry_path(&cache_key(&input_b).unwrap());
         let path_c = cache.entry_path(&cache_key(&input_c).unwrap());
-        File::open(&path_a)
+        // Open with write access — Windows requires it for set_modified.
+        OpenOptions::new()
+            .write(true)
+            .open(&path_a)
             .unwrap()
             .set_modified(UNIX_EPOCH + Duration::from_secs(100))
             .unwrap();
-        File::open(&path_b)
+        OpenOptions::new()
+            .write(true)
+            .open(&path_b)
             .unwrap()
             .set_modified(UNIX_EPOCH + Duration::from_secs(200))
             .unwrap();
-        File::open(&path_c)
+        OpenOptions::new()
+            .write(true)
+            .open(&path_c)
             .unwrap()
             .set_modified(UNIX_EPOCH + Duration::from_secs(300))
             .unwrap();
