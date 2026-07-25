@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -164,3 +167,80 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # M4-SMK-1: nightly LLM smoke verification. Runs the full `decon generate`
+  # pipeline against the umbrella fixture with a live DeepSeek key, evals the
+  # output, and compares the score to the frozen llm-generated fixture. Opens
+  # a GitHub issue on regression. Only runs on schedule (4 AM UTC daily) or
+  # via manual dispatch; never on push/PR (no API key in regular CI).
+  nightly-llm:
+    name: Nightly LLM Smoke
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      DECON_MAX_LLM_CALLS: 20
+      EVAL_THRESHOLD: 70
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Restore LLM disk cache
+        uses: actions/cache@0057852bfa5b37f6b5efde86d0bd74f6d3f4d8a5
+        with:
+          path: target/decon-llm-cache
+          key: decon-llm-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            decon-llm-cache-${{ runner.os }}-
+      - name: Generate tutorial with live LLM
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          cargo run -p decon-cli -- generate \
+            --dir tests/fixtures/umbrella \
+            --output-dir /tmp/llm-output \
+            --max-abstractions 5
+      - name: Eval live output
+        id: live_eval
+        run: |
+          set +e
+          output=$(cargo run -p decon-cli -- eval --out /tmp/llm-output --threshold "$EVAL_THRESHOLD" --format json)
+          code=$?
+          echo "$output"
+          echo "live_exit=$code" >> "$GITHUB_OUTPUT"
+          live_score=$(echo "$output" | jq -r '.score')
+          echo "live_score=$live_score" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ne 0 ]; then
+            echo "live eval failed with exit $code"
+            exit 1
+          fi
+      - name: Eval frozen fixture
+        id: frozen_eval
+        run: |
+          frozen_score=$(cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/llm-generated --threshold "$EVAL_THRESHOLD" --format json | jq -r '.score')
+          echo "frozen_score=$frozen_score" >> "$GITHUB_OUTPUT"
+      - name: Compare scores and open issue on regression
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVE_SCORE: ${{ steps.live_eval.outputs.live_score }}
+          FROZEN_SCORE: ${{ steps.frozen_eval.outputs.frozen_score }}
+        run: |
+          echo "live score: $LIVE_SCORE, frozen score: $FROZEN_SCORE"
+          if [ "$LIVE_SCORE" -lt "$FROZEN_SCORE" ]; then
+            body="Nightly LLM smoke regression detected.
+
+          - Live score: $LIVE_SCORE
+          - Frozen score: $FROZEN_SCORE
+          - Threshold: $EVAL_THRESHOLD
+          - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The live \`decon generate\` pipeline scored below the frozen fixture. Investigate the pipeline output and refresh the fixture if the regression is expected."
+            gh issue create \
+              --title "Nightly LLM smoke regression: live score $LIVE_SCORE < frozen $FROZEN_SCORE" \
+              --body "$body" \
+              --label "nightly-regression" \
+              || true
+            exit 1
+          fi
+          echo "No regression detected."
