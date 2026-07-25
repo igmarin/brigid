@@ -38,6 +38,20 @@ const EXIT_LLM: u8 = 4;
 /// available.
 const EXIT_PARTIAL_CHECKPOINT: u8 = 5;
 
+/// Compute the default `max_llm_calls` budget.
+///
+/// The base budget covers identify + relationships + order + chapters.
+/// When `review_chapters` is active, each chapter gets an additional LLM
+/// call, so we add `max_abstractions` to the budget.
+fn default_max_llm_calls(max_abstractions: usize, review_chapters: bool) -> u32 {
+    let base = 10 + max_abstractions as u32;
+    if review_chapters {
+        base + max_abstractions as u32
+    } else {
+        base
+    }
+}
+
 /// Deconstruct a codebase into an AI-generated tutorial.
 #[derive(Parser, Debug)]
 #[command(name = "decon", version, about, long_about = None)]
@@ -167,6 +181,9 @@ enum Commands {
         /// separate output directories and a summary index.
         #[arg(long = "each-app", default_value_t = false)]
         each_app: bool,
+        /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
+        #[arg(long = "review-chapters", default_value_t = false)]
+        review_chapters: bool,
     },
     /// Run only the relationships stage (reads identify from checkpoint).
     Relationships {
@@ -318,6 +335,7 @@ fn main() -> ExitCode {
             max_abstractions,
             single_shot,
             each_app,
+            review_chapters,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
@@ -342,6 +360,7 @@ fn main() -> ExitCode {
                 max_abstractions,
                 single_shot,
                 each_app,
+                review_chapters,
                 &cfg,
             )
         }
@@ -983,6 +1002,7 @@ fn cmd_generate(
     max_abstractions: usize,
     single_shot: bool,
     each_app: bool,
+    review_chapters: bool,
     cfg: &RunConfig,
 ) -> ExitCode {
     let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
@@ -1008,6 +1028,7 @@ fn cmd_generate(
             output_dir,
             max_abstractions,
             single_shot,
+            review_chapters,
             cfg,
         );
     }
@@ -1066,7 +1087,7 @@ fn cmd_generate(
     }
     run_config.max_llm_calls = run_config
         .max_llm_calls
-        .or(Some(10 + max_abstractions as u32));
+        .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
     let api_key = env::var("DECON_LLM_API_KEY").ok();
     if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
@@ -1096,6 +1117,11 @@ fn cmd_generate(
     responses.push(placeholder_order.to_string());
     for _ in 0..max_abstractions {
         responses.push(placeholder_chapter.to_string());
+    }
+    if review_chapters {
+        for _ in 0..max_abstractions {
+            responses.push(placeholder_chapter.to_string());
+        }
     }
     if !no_setup {
         let do_setup =
@@ -1214,6 +1240,7 @@ fn cmd_generate(
             each_app: false,
             run_config: run_config.clone(),
             chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+            review_chapters,
         };
 
         let outcome = decon_pipeline::run_generate(
@@ -1266,6 +1293,9 @@ fn cmd_generate(
                     )
                     | decon_pipeline::GenerateError::Chapters(
                         decon_pipeline::chapters::ChaptersError::Budget(_),
+                    )
+                    | decon_pipeline::GenerateError::Review(
+                        decon_pipeline::review::ReviewError::Budget(_),
                     ) => EXIT_BUDGET,
                     decon_pipeline::GenerateError::Identify(
                         decon_pipeline::identify::IdentifyError::Llm(_)
@@ -1279,6 +1309,9 @@ fn cmd_generate(
                     )
                     | decon_pipeline::GenerateError::Chapters(
                         decon_pipeline::chapters::ChaptersError::Llm(_),
+                    )
+                    | decon_pipeline::GenerateError::Review(
+                        decon_pipeline::review::ReviewError::Llm(_),
                     )
                     | decon_pipeline::GenerateError::Setup(
                         decon_pipeline::setup_guide::SetupGuideError::Llm(_),
@@ -1320,6 +1353,7 @@ fn cmd_generate_each_app(
     output_dir: &Path,
     max_abstractions: usize,
     single_shot: bool,
+    review_chapters: bool,
     cfg: &RunConfig,
 ) -> ExitCode {
     let mut run_config = cfg.clone();
@@ -1328,7 +1362,7 @@ fn cmd_generate_each_app(
     }
     run_config.max_llm_calls = run_config
         .max_llm_calls
-        .or(Some(10 + max_abstractions as u32));
+        .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
     let api_key = env::var("DECON_LLM_API_KEY").ok();
     if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
@@ -1357,6 +1391,9 @@ fn cmd_generate_each_app(
     single_app_responses.push(placeholder_rel.to_string());
     single_app_responses.push(placeholder_order.to_string());
     single_app_responses.push(placeholder_chapter.to_string());
+    if review_chapters {
+        single_app_responses.push(placeholder_chapter.to_string());
+    }
     if !no_setup {
         single_app_responses.push(placeholder_setup.to_string());
     }
@@ -1420,6 +1457,7 @@ fn cmd_generate_each_app(
         each_app: true,
         run_config: run_config.clone(),
         chapter_concurrency: decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+        review_chapters,
     };
 
     let rt = match tokio::runtime::Builder::new_multi_thread()

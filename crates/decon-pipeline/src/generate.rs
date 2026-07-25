@@ -54,6 +54,9 @@ pub enum GenerateError {
     /// Chapters stage failure.
     #[error("chapters stage failed: {0}")]
     Chapters(#[from] crate::chapters::ChaptersError),
+    /// Chapter review pass failure.
+    #[error("chapter review failed: {0}")]
+    Review(#[from] crate::review::ReviewError),
     /// Setup guide stage failure.
     #[error("setup guide stage failed: {0}")]
     Setup(#[from] crate::setup_guide::SetupGuideError),
@@ -118,6 +121,8 @@ pub struct GenerateConfig {
     pub run_config: RunConfig,
     /// Maximum concurrent chapter writes.
     pub chapter_concurrency: usize,
+    /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
+    pub review_chapters: bool,
 }
 
 /// Run the full generate pipeline with cancellation support.
@@ -280,6 +285,50 @@ pub async fn run_generate(
         )
         .await?;
         progress.complete_stage();
+    }
+
+    let chapters = load_chapters(store, checkpoint)?;
+
+    // --- Stage 4b: Optional chapter review pass ---
+    if config.review_chapters && !chapters.chapters.is_empty() {
+        if cancel.is_cancelled() {
+            return Ok(GenerateOutcome::Cancelled {
+                checkpoint_path: config.checkpoint_dir.clone(),
+            });
+        }
+        let mut chapters = chapters;
+        let allowed_paths: Vec<String> = file_contents.iter().map(|(p, _)| p.clone()).collect();
+        let diagram_level = config.diagram_level;
+        let lang_str = locale.as_str().to_string();
+        let review_result = crate::review::review_chapters(
+            &mut chapters,
+            client,
+            renderer,
+            Some(progress),
+            cancel,
+            &lang_str,
+            move |ch: &decon_core::Chapter| {
+                crate::chapters::diagram_quota_for_tier(ch.tier, diagram_level)
+            },
+            &allowed_paths,
+            config.chapter_concurrency,
+        )
+        .await;
+        // Always write the (possibly partially) reviewed chapters to the
+        // checkpoint so that progress is not lost on budget exhaustion or
+        // cancellation.
+        let entries = store.write_chapters(&store.dir, &chapters)?;
+        store.record_stage_outputs(checkpoint, StageId::Chapters, entries)?;
+        let summary = review_result?;
+        eprintln!(
+            "review: {} reviewed, {} kept original, {} warnings",
+            summary.reviewed,
+            summary.kept_original,
+            summary.warnings.len()
+        );
+        for w in &summary.warnings {
+            eprintln!("review warning: {w}");
+        }
     }
 
     let chapters = load_chapters(store, checkpoint)?;
@@ -1140,6 +1189,7 @@ mod tests {
             each_app: false,
             run_config: RunConfig::default(),
             chapter_concurrency: 4,
+            review_chapters: false,
         }
     }
 
@@ -1649,6 +1699,7 @@ mod tests {
             each_app: true,
             run_config: RunConfig::default(),
             chapter_concurrency: 4,
+            review_chapters: false,
         }
     }
 
