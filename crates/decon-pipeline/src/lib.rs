@@ -26,6 +26,7 @@ pub mod overview;
 pub mod prompts;
 pub mod relationships;
 pub mod resume;
+pub mod review;
 pub mod setup_guide;
 
 pub use cancellation::{CancelToken, setup_ctrl_c_handler};
@@ -61,6 +62,10 @@ pub use identify_runner::{
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{
     ResumeIdentityMismatch, check_identity, invalidate_from, next_stage, pending_stages, should_run,
+};
+pub use review::{
+    ReviewError, ReviewOutcome, ReviewSummary, review_chapter, review_chapters,
+    validate_reviewed_chapter,
 };
 
 /// The version of this crate, as declared in `Cargo.toml`.
