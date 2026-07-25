@@ -177,6 +177,11 @@ fn resume_valid_checkpoint_json() {
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
 
+    // Canonicalise the path for the subprocess — on Windows CI the temp
+    // dir may use 8.3 short names (RUNNER~1) that the subprocess cannot
+    // resolve.
+    let dir = canonicalize_for_subprocess(&dir);
+
     decon()
         .args(["resume", "--checkpoint"])
         .arg(&dir)
@@ -223,6 +228,31 @@ fn temp_dir(label: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     temp_base().join(format!("decon-cli-{label}-{n}"))
+}
+
+/// Canonicalise a directory path for passing to a subprocess.
+///
+/// On Windows, `std::env::temp_dir()` may return a path with 8.3 short
+/// names (e.g. `RUNNER~1`) that the subprocess cannot resolve.  This
+/// function canonicalises the path to resolve short names and symlinks,
+/// then strips the `\\?\` extended-length prefix that `canonicalize`
+/// adds on Windows (which can cause "Access is denied" on file
+/// creation).  Call this *after* creating the directory and writing
+/// files, then pass the result to the subprocess.
+fn canonicalize_for_subprocess(path: &Path) -> PathBuf {
+    match std::fs::canonicalize(path) {
+        Ok(canon) => {
+            #[cfg(windows)]
+            {
+                let s = canon.to_string_lossy().into_owned();
+                if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                    return PathBuf::from(stripped);
+                }
+            }
+            canon
+        }
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// Escape a filesystem path for embedding in a TOML or YAML double-quoted
@@ -344,6 +374,11 @@ fn resume_text_format_on_valid_checkpoint() {
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
+
+    // Canonicalise the path for the subprocess — on Windows CI the temp
+    // dir may use 8.3 short names (RUNNER~1) that the subprocess cannot
+    // resolve.
+    let dir = canonicalize_for_subprocess(&dir);
 
     decon()
         .args(["resume", "--checkpoint"])
