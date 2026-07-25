@@ -17,9 +17,12 @@ for the full migration design.
 
 ## Current status
 
-**Milestone 3 (LLM Identify) — complete.**
-Live LLM provider clients, map-reduce identify, and checkpoint resume are
-working. M4 (full generate pipeline) is next.
+**Milestone 4 (Full Generate) — complete.**
+The full `decon generate` pipeline (relationships → order → chapters → setup →
+overview → combine) is working, with i18n chrome (English + Spanish),
+`--each-app` monorepo fan-out, `--review-chapters` polishing, file-based
+checkpoint output storage, and an eval regression CI gate. M5 (product polish)
+is next.
 
 | Milestone | Goal | Status |
 |-----------|------|--------|
@@ -27,8 +30,8 @@ working. M4 (full generate pipeline) is next.
 | **M1** — Crawl + Dry-run + Eval | `decon crawl` / dry-run matching `baseline.json`; mermaid sanitize; setup-assessment parity; `decon eval` port | ✅ Done |
 | **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `decon.toml`; ≥85% coverage gate | ✅ Done |
 | **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
-| **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app` | 🔜 Next |
-| **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX | Planned |
+| **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app`; `--review-chapters`; eval regression gate | ✅ Done |
+| **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX, Python deprecation | 🔜 Next |
 
 ### What works today
 
@@ -41,23 +44,43 @@ working. M4 (full generate pipeline) is next.
   - `decon eval --out PATH` — structural tutorial quality gate (zero LLM)
   - `decon init` — write starter `decon.toml`
   - `decon resume --checkpoint PATH` — report next/pending stages from a checkpoint
+- **CLI (M3):**
+  - `decon identify --dir PATH [--checkpoint-dir PATH]` — map/reduce identify
+    with checkpoint resume and Ctrl+C graceful shutdown
+- **CLI (M4):**
+  - `decon generate --dir PATH [--output-dir PATH] [--language en|es]
+    [--each-app] [--review-chapters]` — full pipeline: identify → relationships
+    → order → chapters → setup → overview → combine
+  - Per-stage subcommands for debugging: `decon relationships`, `decon order`,
+    `decon chapters`, `decon setup`, `decon overview`, `decon combine`
+  - `--each-app` flag for per-app tutorial generation in monorepos
+  - `--review-chapters` flag for optional chapter quality polishing (second LLM
+    pass per chapter)
+  - i18n chrome: `--language es` localizes index/footer headings and labels
+    (English + Spanish locales)
 - **`decon-core` pure helpers:** module keys, monorepo scope, setup scoring,
   context budget, Mermaid sanitize/validate, index diagram builders, structural
   eval, `RunConfig` layering, checkpoint schema v1 types, progress budget,
-  secrets redaction.
+  secrets redaction, i18n chrome (`Locale`, `ChromeStrings`), chapter domain
+  types (`Chapter`, `ChapterOrder`, `ChapterResult`), M4 domain types
+  (`RelationshipsResult`, `SetupGuide`, `ArchitectureOverview`,
+  `CombinedTutorial`).
 - **Checkpoint store + resume** (`decon-pipeline`): `checkpoint.json` +
-  `files.ndjson.gz`, stage-skip / partial regenerate helpers.
+  `files.ndjson.gz`, stage-skip / partial regenerate helpers, file-based stage
+  output storage with SHA-256 verification (ADR 0006).
 - **LLM provider client** (`decon-llm`): `OpenAiCompatibleClient` with
   retry/backoff/timeout, host allowlist validation, disk cache
   (key = hash(prompt)+model+provider), and bounded-concurrency map batches.
 - **CI coverage hard gate:** ≥85% workspace line coverage.
 - **Parity fixtures:** `tests/fixtures/{python-lib,umbrella,js-lib}` + frozen
-  `baseline.json`; tutorial goldens under `tests/fixtures/tutorials/`.
+  `baseline.json`; tutorial goldens under `tests/fixtures/tutorials/`
+  (hand-crafted `good-mini` + `broken-mini`, LLM-generated `llm-generated`).
 - **CI pipeline:** fmt, clippy (`-D warnings`), test, coverage report, doc,
-  `cargo audit`, fixture baseline check, rs-guard PR review.
+  `cargo audit`, `cargo deny check`, fixture baseline check, eval regression
+  gate (good-mini + broken-mini), nightly LLM smoke, rs-guard PR review.
 - **Prompt catalog** (`prompts/`) and **ADR 0001** checkpoint schema (used from M2+).
 
-### Quick start (M1)
+### Quick start (M1 + M4)
 
 ```bash
 cargo build -p decon-cli
@@ -74,12 +97,29 @@ cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini
 # Config + checkpoint status
 cargo run -p decon-cli -- init --dir /tmp/decon-demo
 # cargo run -p decon-cli -- resume --checkpoint PATH --format json
+
+# Full generate pipeline (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY)
+cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
+  --output-dir /tmp/tutorial --language en
+
+# Generate per-app tutorials in a monorepo
+cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
+  --output-dir /tmp/tutorials --each-app
+
+# Generate with Spanish chrome and chapter review
+cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
+  --output-dir /tmp/tutorial --language es --review-chapters
+
+# Run a single stage for debugging
+cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
+  --checkpoint-dir /tmp/checkpoint
 ```
 
 ### What does not work yet
 
-Full `generate` pipeline (relationships, chapter writing, combine/index
-chrome). Those land in M4.
+Product polish items land in M5: native installers (`brew`, `cargo install`,
+GitHub releases), man page, shell completions (bash/zsh/fish), concurrency
+limits, improved error UX, and deprecation of the Python entrypoint.
 
 ---
 
@@ -181,7 +221,14 @@ cargo audit
 cargo deny check
 rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
   /tmp/regen_baseline tests/fixtures/ --check
+# Eval regression gate (good-mini passes, broken-mini fails at threshold 80)
+cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
 ```
+
+CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
+generates a tutorial with a live DeepSeek key, evals the output, and compares
+the score against the frozen `llm-generated` fixture — opening a GitHub issue
+on regression.
 
 ---
 
@@ -213,6 +260,9 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 | [`docs/adr/0003-bounded-concurrency-semaphore.md`](docs/adr/0003-bounded-concurrency-semaphore.md) | Why `tokio::sync::Semaphore` for bounded map batches |
 | [`docs/adr/0004-yaml-parser-migration.md`](docs/adr/0004-yaml-parser-migration.md) | Migration off unsound `serde_yml`/`libyml` (superseded by 0005) |
 | [`docs/adr/0005-yaml-parser-serde-yaml-ng.md`](docs/adr/0005-yaml-parser-serde-yaml-ng.md) | Migration to `serde_yaml_ng` (maintained fork) |
+| [`docs/adr/0006-file-based-checkpoint-output-storage.md`](docs/adr/0006-file-based-checkpoint-output-storage.md) | File-based stage output storage with SHA-256 verification |
+| [`docs/adr/0007-i18n-chrome-design.md`](docs/adr/0007-i18n-chrome-design.md) | Generic localization framework for tutorial chrome strings |
+| [`docs/adr/0008-two-tier-golden-fixture-strategy.md`](docs/adr/0008-two-tier-golden-fixture-strategy.md) | Two-tier golden fixture strategy for eval regression |
 | [`prompts/README.md`](prompts/README.md) | Prompt catalog: 10 templates, variable schema, integration notes |
 | [`tests/fixtures/README.md`](tests/fixtures/README.md) | Fixture set, baseline regenerator, parity strategy |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | TDD workflow, coverage gate, CI checks, PR process |

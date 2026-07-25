@@ -372,15 +372,28 @@ Tech-debt tickets that should land with M3 (supply-chain + perf):
 
 **Exit criteria:** resume works; candidate counts sane on fixtures.
 
-### Phase 3 — Full generate path
+### Phase 3 — Full generate path (Milestone M4 — complete)
 
-- relationships → order → chapters → setup → overview → combine  
-- Spanish chrome  
-- each-app  
+Tracked as GitHub milestone **M4 — Full Generate Path**. All 20 M4 issues
+(#131–#152) are closed. The full `decon generate` pipeline is working:
 
-**Exit criteria:** `decon eval` score ≥ threshold on fixtures; one real monorepo smoke.
+- `decon generate` subcommand orchestrating: identify → relationships → order
+  → chapters → setup → overview → combine
+- Per-stage subcommands for debugging: `decon relationships`, `decon order`,
+  `decon chapters`, `decon setup`, `decon overview`, `decon combine`
+- `--each-app` flag for per-app tutorial generation in monorepos
+- `--review-chapters` flag for optional chapter quality polishing
+- i18n chrome (English + Spanish locales) via `ChromeStrings` trait
+- File-based checkpoint output storage with SHA-256 verification (ADR 0006)
+- Eval regression CI gate on golden fixtures (good-mini + broken-mini)
+- LLM-generated frozen fixture + nightly CI verification
+- Live full-pipeline smoke test (feature-gated)
 
-### Phase 4 — Polish product
+**Exit criteria:** met — `decon eval` score ≥ threshold on golden fixtures;
+eval regression gate in CI; nightly LLM smoke verifies against frozen
+`llm-generated` fixture.
+
+### Phase 4 — Polish product (Milestone M5 — planned)
 
 - installers, man page, shell completions  
 - `decon.toml`  
@@ -553,7 +566,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 |-------|-------------|
 | Phase 1 (crawl/dry-run/eval) | TDD from day one; coverage ≥ 85% on `decon-core` + crawl already |
 | Phase 2 (identify) | Contract tests for map/reduce parse; mock LLM |
-| Phase 3 (full generate) | Golden eval fixtures; docs for every subcommand |
+| Phase 3 (full generate) | Golden eval fixtures; docs for every subcommand; eval regression gate; nightly LLM smoke |
 | Phase 4 (product polish) | man page, completions, CONTRIBUTING, coverage badge |
 
 **Anti-pattern:** “We’ll add tests after the port works.” That recreates the Python repo’s fragility. The port **is** the moment to lock behavior with tests.
@@ -597,7 +610,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Install time for a new user | &lt; 2 minutes to first dry-run |
 | Dry-run on 2k-file monorepo | seconds–low minutes, clear plan |
 | Resume after kill mid-relationships | zero re-identify if checkpoint valid |
-| Eval score on fixtures | no regression vs frozen eval snapshots (Phase 3) |
+| Eval score on fixtures | no regression vs frozen eval snapshots (Phase 3 — complete) |
 | Full generate UX | progress stages + call counts + checkpoint path always visible |
 | “Works with empty PROVIDER make bug” class | impossible by design |
 | Line coverage (CI) | **≥ 85%** workspace; fail under |
@@ -634,10 +647,10 @@ GitHub issue so debt does not rot into "later means never".
 
 | Issue | Severity | Milestone | Summary |
 |-------|----------|-----------|---------|
-| #75 | High (supply chain) | M3 | `serde_yml` 0.0.12 + `libyml` 0.0.5 unsound/unmaintained (RUSTSEC-2025-0067/0068). Migrate before M3 adds YAML parsing. |
-| #76 | High (supply chain) | M3 | Add `cargo deny` (advisories + licenses + bans) to CI — §8.1 calls for it; only `cargo audit` exists today. |
-| #77 | Medium (perf) | M3 | `dry_run` re-stats every file; fold sizes into `crawl_local`. |
-| #73 | High (security) | M3 | Config-file secret-field guard — forward-looking; must land before API keys arrive (#66). |
+| #75 | High (supply chain) | M3 (resolved) | `serde_yml` 0.0.12 + `libyml` 0.0.5 unsound/unmaintained (RUSTSEC-2025-0067/0068). Migrated to `serde_yaml_ng` (ADR 0005). |
+| #76 | High (supply chain) | M3 (resolved) | Add `cargo deny` (advisories + licenses + bans) to CI. Now running on every PR. |
+| #77 | Medium (perf) | M3 (resolved) | `dry_run` re-stats every file; folded sizes into `crawl_local`. |
+| #73 | High (security) | M3 (resolved) | Config-file secret-field guard. Landed with M3. |
 | #78 | Low (coverage) | M6 | `decon-cli/main.rs` at 64% line coverage; add assert_cmd error-path tests. |
 | #79 | Low (UX) | M6 | `load_file_config` extension detection + `cmd_resume` dir-exists check (rs-guard review Important #3/#4). |
 

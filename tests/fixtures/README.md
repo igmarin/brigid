@@ -54,3 +54,18 @@ Do not add incidental files (editor configs, lockfiles, generated artifacts) to
 fixtures. Every file here is intentional and contributes to the expected
 baseline. If a fixture changes, regenerate `baseline.json` with `--write` and
 update any snapshot expectations.
+
+## Tutorial fixtures
+
+`tutorials/` contains golden tutorial trees used by the eval regression gate
+and nightly LLM smoke (see ADR 0008 for the two-tier strategy):
+
+| Fixture | Tier | Purpose |
+|---------|------|---------|
+| `tutorials/good-mini/` | 1 (CI) | Well-formed tutorial; must score >= 80 in eval |
+| `tutorials/broken-mini/` | 1 (CI) | Deliberately degraded; must score < 80 in eval |
+| `tutorials/llm-generated/` | 2 (nightly) | Frozen LLM-generated baseline for nightly score comparison |
+
+Tier 1 fixtures are hand-crafted and deterministic. Tier 2 is a frozen
+snapshot of live `decon generate` output; refresh it manually when the
+pipeline intentionally changes output quality.
