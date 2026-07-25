@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use decon_core::{
     DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
     custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
@@ -380,6 +380,15 @@ enum Commands {
         #[arg(long = "language", value_name = "LANG", default_value = "en")]
         language: String,
     },
+    /// Generate a troff-formatted man page for `decon` to stdout.
+    ///
+    /// The man page documents every subcommand and flag. Use `--output PATH`
+    /// to write directly to a file instead of stdout.
+    Manpage {
+        /// Write the man page to PATH instead of stdout.
+        #[arg(long = "output", value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -545,8 +554,141 @@ fn print_error(prefix: &str, err: &decon_pipeline::GenerateError) {
     }
 }
 
+/// Troff content for the EXAMPLES section of the man page.
+const MAN_EXAMPLES: &str = "\
+.decon crawl --dir ./my-project
+.decon dry-run --dir ./my-project --format json
+.decon generate --dir ./my-project --output-dir ./tutorial --language en
+.decon generate --dir ./monorepo --each-app --review-chapters
+.decon resume --checkpoint .decon-checkpoint --format json
+.decon eval --out ./tutorial --threshold 80
+";
+
+/// Troff content for the ENVIRONMENT section of the man page.
+const MAN_ENVIRONMENT: &str = "\
+DECON_LLM_API_KEY
+  API key for the LLM provider (checked first; falls back to DEEPSEEK_API_KEY).
+DEEPSEEK_API_KEY
+  Fallback API key for the LLM provider.
+DECON_LLM_BASE_URL
+  OpenAI-compatible endpoint URL (default: https://api.deepseek.com/v1).
+DECON_LLM_MODEL
+  Model identifier sent in requests (default: deepseek-chat).
+DECON_LLM_ALLOWED_HOSTS
+  Comma-separated extra hosts for the Authorization-header allowlist.
+DECON_LLM_CACHE_DIR
+  Disk cache root directory for LLM responses.
+DECON_NO_CACHE
+  Set to 1 or true to disable the disk cache.
+DECON_FORCE_MOCK
+  Set to any non-empty value to force the mock LLM client (offline).
+";
+
+/// Troff content for the FILES section of the man page.
+const MAN_FILES: &str = "\
+decon.toml
+  Project configuration file (TOML format).
+.decon.yaml / .decon.yml
+  Alternative project configuration file (YAML format).
+.decon-checkpoint/
+  Default checkpoint directory (checkpoint.json + files.ndjson.gz).
+output/
+  Default output directory for generated tutorials.
+";
+
+/// Troff content for the EXIT STATUS section of the man page.
+const MAN_EXIT_STATUS: &str = "\
+0  Success.
+1  Generic failure (including structural eval fail).
+2  Config / path / I/O input error.
+3  LLM call budget exceeded (fail-closed on max-LLM-call ceiling).
+4  LLM provider error (network, timeout, rate-limit, provider, parse).
+5  Partial success with checkpoint: the stage was cancelled (Ctrl+C / SIGTERM)
+   mid-flight, but a partial checkpoint was written. Resume to continue.
+";
+
+/// Troff content for the SEE ALSO section of the man page.
+const MAN_SEE_ALSO: &str = "\
+decon(5), cargo(1)
+";
+
+/// Append a custom troff `.SH` section to `buf`.
+fn append_man_section(buf: &mut Vec<u8>, title: &str, body: &str) {
+    use std::io::Write;
+    let _ = writeln!(buf, ".SH \"{title}\"");
+    // Each non-empty line becomes a troff paragraph/line. We use .br to
+    // preserve line breaks within the section body.
+    for line in body.lines() {
+        if line.is_empty() {
+            let _ = writeln!(buf, ".br");
+        } else {
+            let _ = writeln!(buf, "{line}");
+        }
+    }
+}
+
+/// Generate the complete man page (troff) for the `decon` CLI.
+///
+/// Uses `clap_mangen` to render the standard sections (NAME, SYNOPSIS,
+/// DESCRIPTION, OPTIONS, COMMANDS) from the `clap::Command` struct, then
+/// appends custom sections (EXAMPLES, ENVIRONMENT, FILES, EXIT STATUS,
+/// SEE ALSO) that `clap_mangen` does not generate automatically.
+fn generate_man_page() -> Vec<u8> {
+    let cmd = Cli::command();
+    let man = clap_mangen::Man::new(cmd);
+    let mut buf: Vec<u8> = Vec::new();
+    // Render the standard sections from the clap Command.
+    man.render(&mut buf)
+        .expect("clap_mangen render should not fail for a valid Command");
+    // Append custom sections that clap_mangen does not generate.
+    append_man_section(&mut buf, "EXAMPLES", MAN_EXAMPLES);
+    append_man_section(&mut buf, "ENVIRONMENT", MAN_ENVIRONMENT);
+    append_man_section(&mut buf, "FILES", MAN_FILES);
+    append_man_section(&mut buf, "EXIT STATUS", MAN_EXIT_STATUS);
+    append_man_section(&mut buf, "SEE ALSO", MAN_SEE_ALSO);
+    buf
+}
+
+/// Run the `decon manpage` subcommand.
+///
+/// Generates a troff-formatted man page and writes it to stdout (default)
+/// or to the file specified by `--output PATH`.
+fn cmd_manpage(output: Option<PathBuf>) -> ExitCode {
+    let buf = generate_man_page();
+    match output {
+        Some(path) => match fs::write(&path, &buf) {
+            Ok(()) => {
+                println!("wrote {}", path.display());
+                ExitCode::from(EXIT_OK)
+            }
+            Err(e) => {
+                eprintln!("error: write {}: {e}", path.display());
+                ExitCode::from(EXIT_CONFIG)
+            }
+        },
+        None => {
+            use std::io::Write;
+            match std::io::stdout().write_all(&buf) {
+                Ok(()) => ExitCode::from(EXIT_OK),
+                Err(e) => {
+                    eprintln!("error: write stdout: {e}");
+                    ExitCode::from(EXIT_FAIL)
+                }
+            }
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // The `manpage` subcommand is a pure documentation generator: it does
+    // not need a config file, LLM client, or repository. Handle it before
+    // loading config so a broken `decon.toml` in the cwd doesn't block it.
+    if let Commands::Manpage { output } = cli.command {
+        return cmd_manpage(output);
+    }
+
     let cfg = match load_merged_config(cli.config.as_deref(), &RunConfig::empty()) {
         Ok(c) => c,
         Err(e) => {
@@ -745,6 +887,9 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("output"));
             cmd_combine(&dir, &checkpoint_dir, &output_dir, &language, &cfg)
         }
+        // `Manpage` is handled before config loading (see top of `main`),
+        // so this arm is unreachable.
+        Commands::Manpage { .. } => unreachable!("manpage handled before config load"),
     }
 }
 
@@ -3404,6 +3549,130 @@ mod tests {
         std::fs::write(dir.join("decon.toml"), b"# pre-existing").unwrap();
         let code = cmd_init(&dir, true, false);
         assert_eq!(code, ExitCode::from(EXIT_CONFIG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- Issue #188: man page generation tests ---
+
+    #[test]
+    fn man_page_starts_with_th_is_valid_troff() {
+        let buf = generate_man_page();
+        let text = String::from_utf8(buf).expect("man page should be valid UTF-8");
+        assert!(
+            text.contains(".TH "),
+            "man page should contain a .TH title macro (valid troff), got: {text}"
+        );
+    }
+
+    #[test]
+    fn man_page_contains_all_subcommand_names() {
+        let buf = generate_man_page();
+        let text = String::from_utf8(buf).expect("man page should be valid UTF-8");
+        // clap_mangen renders subcommand names as decon-<name>(1).
+        for name in &[
+            "init",
+            "crawl",
+            "dry-run",
+            "eval",
+            "resume",
+            "identify",
+            "generate",
+            "relationships",
+            "order",
+            "chapters",
+            "setup",
+            "overview",
+            "combine",
+            "manpage",
+        ] {
+            assert!(
+                text.contains(name),
+                "man page should mention subcommand '{name}'"
+            );
+        }
+    }
+
+    #[test]
+    fn man_page_contains_key_sections() {
+        let buf = generate_man_page();
+        let text = String::from_utf8(buf).expect("man page should be valid UTF-8");
+        // Standard sections generated by clap_mangen.
+        for section in &["SYNOPSIS", "DESCRIPTION", "OPTIONS"] {
+            assert!(
+                text.contains(&format!(".SH {section}")),
+                "man page should have a {section} section"
+            );
+        }
+        // SUBCOMMANDS is the section clap_mangen uses for subcommands (the
+        // issue's "COMMANDS" requirement).
+        assert!(
+            text.contains(".SH SUBCOMMANDS"),
+            "man page should have a SUBCOMMANDS section (covers COMMANDS)"
+        );
+        // Custom sections appended after clap_mangen output.
+        for section in &[
+            "EXAMPLES",
+            "ENVIRONMENT",
+            "FILES",
+            "EXIT STATUS",
+            "SEE ALSO",
+        ] {
+            assert!(
+                text.contains(&format!(".SH \"{section}\"")),
+                "man page should have a {section} section"
+            );
+        }
+    }
+
+    #[test]
+    fn man_page_contains_environment_variables() {
+        let buf = generate_man_page();
+        let text = String::from_utf8(buf).expect("man page should be valid UTF-8");
+        for var in &[
+            "DECON_LLM_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "DECON_LLM_BASE_URL",
+            "DECON_FORCE_MOCK",
+        ] {
+            assert!(
+                text.contains(var),
+                "man page ENVIRONMENT section should mention {var}"
+            );
+        }
+    }
+
+    #[test]
+    fn man_page_contains_exit_codes() {
+        let buf = generate_man_page();
+        let text = String::from_utf8(buf).expect("man page should be valid UTF-8");
+        // The EXIT STATUS section should mention exit codes 0 through 5.
+        for code in 0..=5u8 {
+            assert!(
+                text.contains(&format!("{code}  ")),
+                "man page EXIT STATUS should mention exit code {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_manpage_stdout_exits_zero() {
+        let code = cmd_manpage(None);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+    }
+
+    #[test]
+    fn cmd_manpage_output_flag_writes_file() {
+        let dir = temp_dir("manpage-output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("decon.1");
+        let code = cmd_manpage(Some(path.clone()));
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        assert!(path.is_file(), "man page file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains(".TH "),
+            "written man page should be valid troff"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
