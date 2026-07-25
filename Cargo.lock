@@ -374,6 +374,7 @@ dependencies = [
  "decon-crawl",
  "decon-llm",
  "flate2",
+ "futures",
  "hex",
  "minijinja",
  "serde",

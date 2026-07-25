@@ -13,6 +13,7 @@
 #![deny(missing_docs)]
 
 pub mod cancellation;
+pub mod chapters;
 pub mod checkpoint_store;
 pub mod dry_run;
 pub mod identify;
@@ -26,6 +27,12 @@ pub mod resume;
 pub mod setup_guide;
 
 pub use cancellation::{CancelToken, setup_ctrl_c_handler};
+pub use chapters::{
+    ChaptersConfig, ChaptersError, DEFAULT_CHAPTER_MAX_FILE_CHARS, DEFAULT_CHAPTERS_BUDGET,
+    DEFAULT_CHAPTERS_CONCURRENCY, DiagramLevel, chapters_and_checkpoint, count_mermaid_blocks,
+    diagram_quota_for_tier, extract_chapter_summary, select_chapter_file_context,
+    should_run_chapters, write_chapters, write_single_chapter,
+};
 pub use checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
 pub use identify::{
