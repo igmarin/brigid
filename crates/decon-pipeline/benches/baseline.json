@@ -1,0 +1,94 @@
+{
+  "chapter_generation/write_chapters/1": {
+    "mean": 0.0001,
+    "unit": "s"
+  },
+  "chapter_generation/write_chapters/3": {
+    "mean": 0.0002,
+    "unit": "s"
+  },
+  "chapter_generation/write_chapters/5": {
+    "mean": 0.0003,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/save_load/2": {
+    "mean": 0.001,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/save_load/10": {
+    "mean": 0.002,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/save_load/25": {
+    "mean": 0.003,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/chapters_write_read/2": {
+    "mean": 0.0005,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/chapters_write_read/10": {
+    "mean": 0.001,
+    "unit": "s"
+  },
+  "checkpoint_roundtrip/chapters_write_read/25": {
+    "mean": 0.002,
+    "unit": "s"
+  },
+  "file_context_selection/files/5": {
+    "mean": 0.00001,
+    "unit": "s"
+  },
+  "file_context_selection/files/20": {
+    "mean": 0.00003,
+    "unit": "s"
+  },
+  "file_context_selection/files/50": {
+    "mean": 0.00008,
+    "unit": "s"
+  },
+  "template_rendering/render/identify_single_shot.md.j2": {
+    "mean": 0.00001,
+    "unit": "s"
+  },
+  "template_rendering/render/write_chapter.md.j2": {
+    "mean": 0.00002,
+    "unit": "s"
+  },
+  "template_rendering/renderer_new": {
+    "mean": 0.0001,
+    "unit": "s"
+  },
+  "mermaid_sanitization/sanitize_flowchart/5": {
+    "mean": 0.000005,
+    "unit": "s"
+  },
+  "mermaid_sanitization/sanitize_flowchart/50": {
+    "mean": 0.00005,
+    "unit": "s"
+  },
+  "mermaid_sanitization/sanitize_validate/50": {
+    "mean": 0.00006,
+    "unit": "s"
+  },
+  "mermaid_sanitization/sanitize_md_blocks/10": {
+    "mean": 0.0001,
+    "unit": "s"
+  },
+  "combine_index/build_index/3": {
+    "mean": 0.00005,
+    "unit": "s"
+  },
+  "combine_index/build_index/25": {
+    "mean": 0.0003,
+    "unit": "s"
+  },
+  "budget_estimation/files/100": {
+    "mean": 0.00001,
+    "unit": "s"
+  },
+  "budget_estimation/large_inventory/1000": {
+    "mean": 0.0001,
+    "unit": "s"
+  }
+}
