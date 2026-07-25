@@ -20,6 +20,7 @@ pub mod identify_checkpoint;
 pub mod identify_runner;
 pub mod overview;
 pub mod prompts;
+pub mod relationships;
 pub mod resume;
 pub mod setup_guide;
 
