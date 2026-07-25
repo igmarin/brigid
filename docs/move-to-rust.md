@@ -393,25 +393,54 @@ Tracked as GitHub milestone **M4 — Full Generate Path**. All 20 M4 issues
 eval regression gate in CI; nightly LLM smoke verifies against frozen
 `llm-generated` fixture.
 
-### Phase 4 — Polish product (Milestone M5 — in progress)
+### Phase 4 — Polish product (Milestone M5 — complete)
 
-- installers, man page, shell completions  
-- `decon.toml`  
-- concurrency limits, better errors  
-- ~~deprecate Python entrypoint or wrap binary~~ **✅ Complete** — Python
-  entrypoint deprecated; migration guide published at
-  [`docs/migrating-from-python.md`](./migrating-from-python.md). Since the
-  Python code lives in a separate repository, Option B (fallback) was
-  implemented: the migration guide documents the command mapping, environment
-  variable changes, feature parity, and FAQ. The Rust CLI is now the canonical
+Tracked as GitHub milestone **M5 — Product Polish**. All M5 issues (#174–#191)
+are closed. The product is now polished and distributable:
+
+- **Native installers** — Homebrew formula, `cargo install`, `cargo-binstall`,
+  and GitHub Releases with pre-built binaries for Linux (x86_64, aarch64),
+  macOS (x86_64, aarch64), and Windows (x86_64) (ADR 0010).
+- **Shell completions** — `decon completions --shell bash|zsh|fish|powershell`
+  via `clap_complete`.
+- **Man page** — `decon manpage` generates a troff-formatted man page via
+  `clap_mangen`.
+- **Disk cache by default** — LLM responses cached on disk with LRU eviction
+  and size limits (ADR 0009). Bypass with `DECON_NO_CACHE=1`.
+- **Concurrency / budget / verbose / quiet flags** — `--concurrency`,
+  `--max-llm-calls`, `--verbose` / `-v`, `--quiet` / `-q`.
+- **Symlink cycle detection** — crawl aborts on symlink loops instead of
+  recursing infinitely.
+- **Host allowlist** — configurable LLM provider host allowlist via
+  `DECON_LLM_ALLOWED_HOSTS` or `[[allowed_hosts]]` in `decon.toml`.
+- **Criterion benchmarks** — seven benchmark suites for critical pipeline paths
+  (template rendering, file context selection, checkpoint roundtrip, budget
+  estimation, chapter generation, combine index, mermaid sanitization).
+- **Init wizard** — `decon init` with `--check` validation for starter
+  `decon.toml`.
+- **CLI error path tests** — `assert_cmd` tests for exit codes and error
+  messages, improving `main.rs` coverage.
+- **Windows CI** — test and clippy jobs run on Ubuntu, macOS, and Windows.
+- **Python deprecation** — the Python entrypoint is deprecated; a migration
+  guide is published at
+  [`docs/migrating-from-python.md`](./migrating-from-python.md) (ADR 0011).
+  Since the Python code lives in a separate repository, Option B (migration
+  guide, no wrapper) was implemented. The Rust CLI is now the canonical
   entrypoint — `pip install decon` users should switch to `brew install decon`
   or `cargo install decon-cli`.
 
-### Phase 5 — Optional advanced
+**Exit criteria:** met — installers, completions, man page, cache-by-default,
+Windows CI, and Python deprecation all landed.
 
-- git-diff incremental tutorials  
-- JSON structured outputs  
-- plugin ecosystem  
+### Phase 5 — Optional / advanced (not on the current roadmap)
+
+These items are explicitly **optional** and are not committed to a milestone.
+They may be pursued if there is user demand:
+
+- git-diff incremental tutorials — only re-explain modules changed since a
+  tag or commit.
+- JSON structured outputs — machine-readable pipeline output beyond dry-run.
+- plugin ecosystem — custom "kind" detectors or pipeline extensions.
 
 ---
 
@@ -574,7 +603,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Phase 1 (crawl/dry-run/eval) | TDD from day one; coverage ≥ 85% on `decon-core` + crawl already |
 | Phase 2 (identify) | Contract tests for map/reduce parse; mock LLM |
 | Phase 3 (full generate) | Golden eval fixtures; docs for every subcommand; eval regression gate; nightly LLM smoke |
-| Phase 4 (product polish) | man page, completions, CONTRIBUTING, coverage badge |
+| Phase 4 (product polish) | man page, completions, benchmarks, Windows CI, Python deprecation |
 
 **Anti-pattern:** “We’ll add tests after the port works.” That recreates the Python repo’s fragility. The port **is** the moment to lock behavior with tests.
 
@@ -585,10 +614,12 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Concern | Crate / approach |
 |---------|------------------|
 | CLI | `clap` derive |
+| Shell completions | `clap_complete` (bash, zsh, fish, PowerShell) |
+| Man page | `clap_mangen` (troff output) |
 | Async | `tokio` |
 | HTTP | `reqwest` |
 | GitHub | REST via reqwest; optional `octocrab` |
-| Walk + gitignore | `ignore` (ripgrep’s walker) |
+| Walk + gitignore | `ignore` (ripgrep's walker) |
 | Globs | `globset` / `wax` |
 | Serialization | `serde` + `serde_json` |
 | YAML prompts out | `serde_yaml_ng` for parsing model output |
@@ -597,6 +628,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Tracing | `tracing` + `tracing-subscriber` |
 | Config | `figment` or `config` |
 | Tests | `insta` snapshots for prompts/mermaid |
+| Benchmarks | `criterion` for critical pipeline paths |
 | Release | `cargo-dist` / `goreleaser`-style GH Actions |
 
 ---
@@ -658,8 +690,8 @@ GitHub issue so debt does not rot into "later means never".
 | #76 | High (supply chain) | M3 (resolved) | Add `cargo deny` (advisories + licenses + bans) to CI. Now running on every PR. |
 | #77 | Medium (perf) | M3 (resolved) | `dry_run` re-stats every file; folded sizes into `crawl_local`. |
 | #73 | High (security) | M3 (resolved) | Config-file secret-field guard. Landed with M3. |
-| #78 | Low (coverage) | M6 | `decon-cli/main.rs` at 64% line coverage; add assert_cmd error-path tests. |
-| #79 | Low (UX) | M6 | `load_file_config` extension detection + `cmd_resume` dir-exists check (rs-guard review Important #3/#4). |
+| #78 | Low (coverage) | M5 (resolved) | `decon-cli/main.rs` at 64% line coverage; add assert_cmd error-path tests. Resolved by #204. |
+| #79 | Low (UX) | M5 (resolved) | `load_file_config` extension detection + `cmd_resume` dir-exists check (rs-guard review Important #3/#4). |
 
 ### M2 review verdict (rs-guard, review-result.txt)
 

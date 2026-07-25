@@ -27,6 +27,14 @@ cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
   --output-dir /tmp/tutorial --language en
 ```
 
+### Windows
+
+`decon` builds and tests natively on Windows with the MSVC toolchain. Install
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+(the C++ workload) and [Rust](https://rustup.rs/) via `rustup-init.exe`, then
+use the same `cargo` commands. CI runs the test and clippy jobs on
+`windows-latest` to catch platform-specific regressions.
+
 ## Development workflow
 
 We use a test-driven workflow for every behavior change, bug fix, or new
@@ -72,6 +80,9 @@ rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
 
 # Eval regression gate (good-mini passes at threshold 80)
 cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
+
+# Benchmarks (criterion — optional, for performance tracking)
+cargo bench -p decon-pipeline
 ```
 
 
@@ -109,7 +120,7 @@ Address Critical / Security / Important findings (or document why not), then
 commit. PRs also receive an automated rs-guard review from GitHub Actions.
 
 
-## Domain modules (M1–M4)
+## Domain modules (M1–M5)
 
 | Area | Crate / path | Notes |
 |------|----------------|-------|
@@ -128,12 +139,12 @@ commit. PRs also receive an automated rs-guard review from GitHub Actions.
 | Chapter domain types | `decon-core::chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` |
 | M4 domain types | `decon-core::generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
 | M4 domain types | `decon-core::abstraction` | `RelationshipsResult`, `Relationship` |
-| LLM disk cache | `decon-llm::cache` | Hash-keyed response cache |
-| LLM provider client | `decon-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff |
+| LLM disk cache | `decon-llm::cache` | Hash-keyed response cache; enabled by default with LRU eviction (ADR 0009) |
+| LLM provider client | `decon-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff + host allowlist |
 | Bounded concurrency | `decon-llm::concurrency` | Semaphore-gated map batches |
 | Checkpoint store | `decon-pipeline::checkpoint_store` | save/load bundle; file-based stage outputs (ADR 0006) |
 | Resume helpers | `decon-pipeline::resume` | stage-skip / invalidate |
-| Local crawl | `decon-crawl::local` | FS I/O |
+| Local crawl | `decon-crawl::local` | FS I/O; symlink cycle detection |
 | Dry-run plan | `decon-pipeline::dry_run` | Orchestration |
 | Identify stage | `decon-pipeline::identify` | Map/reduce + single-shot |
 | Relationships stage | `decon-pipeline::relationships` | Budgeted evidence selection |
@@ -145,7 +156,8 @@ commit. PRs also receive an automated rs-guard review from GitHub Actions.
 | Generate orchestration | `decon-pipeline::generate` | Full pipeline + `--each-app` fan-out |
 | Chapter review | `decon-pipeline::review` | `--review-chapters` second LLM pass |
 | Prompt rendering | `decon-pipeline::prompts` | minijinja templates |
-| CLI | `decon-cli` | Thin wrappers + `assert_cmd` tests |
+| Benchmarks | `decon-pipeline::benches/` | criterion benchmarks for critical paths |
+| CLI | `decon-cli` | Thin wrappers + `assert_cmd` tests; completions + man page |
 
 ## Coverage gate
 
@@ -223,7 +235,8 @@ workspace `members` list.
    and the eval regression gate (`cargo run -p decon-cli -- eval --out
    tests/fixtures/tutorials/good-mini --threshold 80`) pass locally.
 4. Open a PR that references the issue number (e.g. `Closes #3`).
-5. Wait for CI and any automated `rs-guard` review.
+5. Wait for CI (Ubuntu + macOS + Windows matrix for test/clippy) and any
+   automated `rs-guard` review.
 6. Merge only when CI is green.
 
 ## Questions?
