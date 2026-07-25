@@ -190,13 +190,13 @@ pub async fn review_chapters(
 
     let max_concurrency = max_concurrency.max(1);
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let chapters: Arc<Mutex<Vec<Chapter>>> = Arc::new(Mutex::new(result.chapters.clone()));
+    let original_markdowns: Vec<String> =
+        result.chapters.iter().map(|c| c.markdown.clone()).collect();
+    let chapters: Arc<Mutex<Vec<Chapter>>> =
+        Arc::new(Mutex::new(std::mem::take(&mut result.chapters)));
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let budget_exhausted: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     let diagram_need = Arc::new(diagram_need);
-
-    let original_markdowns: Vec<String> =
-        result.chapters.iter().map(|c| c.markdown.clone()).collect();
 
     let futures = (0..count).map(|idx| {
         let sem = Arc::clone(&semaphore);
@@ -277,20 +277,27 @@ pub async fn review_chapters(
 
     join_all(futures).await;
 
-    let guard = chapters.lock().await;
-    let warnings_guard = warnings.lock().await;
-
     let mut summary = ReviewSummary::default();
-    for (i, ch) in guard.iter().enumerate() {
-        if ch.markdown != original_markdowns[i] {
-            summary.reviewed += 1;
-        } else {
-            summary.kept_original += 1;
+    {
+        let guard = chapters.lock().await;
+        for (i, ch) in guard.iter().enumerate() {
+            if ch.markdown != original_markdowns[i] {
+                summary.reviewed += 1;
+            } else {
+                summary.kept_original += 1;
+            }
         }
     }
-    summary.warnings = warnings_guard.clone();
 
-    result.chapters = guard.clone();
+    result.chapters = match Arc::try_unwrap(chapters) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(arc) => arc.lock().await.clone(),
+    };
+
+    summary.warnings = match Arc::try_unwrap(warnings) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(arc) => arc.lock().await.clone(),
+    };
 
     if let Some(tracker) = progress {
         tracker.complete_stage();

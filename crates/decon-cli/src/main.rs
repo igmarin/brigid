@@ -1242,7 +1242,7 @@ fn cmd_generate(
             .unwrap();
             meta.mark_stage_complete(decon_core::StageId::Fetch, "0Z");
             meta.mark_stage_complete(decon_core::StageId::DryRun, "0Z");
-            (meta, records.clone())
+            (meta, records)
         }
     };
     if !checkpoint.is_stage_complete(decon_core::StageId::Fetch) {
@@ -1306,8 +1306,8 @@ fn cmd_generate(
             &cancel,
             &gen_config,
             &file_contents,
-            crawl_result.files.clone(),
-            crawl_result.sizes.clone(),
+            crawl_result.files,
+            crawl_result.sizes,
             dry_run_plan.setup.score,
             &dry_run_plan.setup.gaps,
             &setup_context,
@@ -1766,7 +1766,7 @@ fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> Exit
                     result.relationships.len()
                 );
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -1827,7 +1827,7 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
                     result.ordered_indices.len()
                 );
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -1932,7 +1932,7 @@ fn cmd_chapters(
                 eprintln!("chapters: completed (chapters={})", result.chapters.len());
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
                 eprintln!("output: {}", output_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -1990,7 +1990,7 @@ fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) ->
             Ok(_guide) => {
                 eprintln!("setup: completed (forced={force})");
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -2062,7 +2062,7 @@ fn cmd_overview(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode 
             Ok(_overview) => {
                 eprintln!("overview: completed");
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -2114,7 +2114,7 @@ fn cmd_combine(
             );
             eprintln!("output: {}", output_dir.display());
             eprintln!("checkpoint: {}", checkpoint_dir.display());
-            let _ = store.save(checkpoint.clone(), &files);
+            let _ = store.save(checkpoint, &files);
             ExitCode::from(EXIT_OK)
         }
         Err(e) => {
