@@ -27,6 +27,16 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 dirs = "6"
 
+# cargo-binstall support: allows `cargo binstall decon-cli` to download
+# pre-built release binaries from GitHub Releases instead of compiling.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/decon-{ version }-{ target }{ archive-suffix }"
+bin-dir = "decon-{ version }-{ target }/{ bin }{ format-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"

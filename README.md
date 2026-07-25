@@ -118,9 +118,80 @@ cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
 
 ### What does not work yet
 
-Product polish items land in M5: native installers (`brew`, `cargo install`,
-GitHub releases), man page, concurrency limits, improved error UX, and
-deprecation of the Python entrypoint.
+Remaining M5 items: concurrency limits, improved error UX, and deprecation of
+the Python entrypoint. Native installers (Homebrew, `cargo install`, GitHub
+Releases), the man page, and shell completions are now available — see
+[Installation](#installation) below.
+
+---
+
+## Installation
+
+`decon` is distributed as pre-built binaries for Linux (x86_64, aarch64),
+macOS (x86_64, aarch64), and Windows (x86_64). You can install it via
+Homebrew, `cargo install`, `cargo-binstall`, or by downloading a binary
+directly from GitHub Releases.
+
+### Homebrew (macOS)
+
+```bash
+brew tap igmarin/homebrew-tap
+brew install decon
+```
+
+This installs the `decon` binary, man page (`man 1 decon`), and shell
+completions (bash, zsh, fish) automatically.
+
+### cargo install
+
+```bash
+cargo install decon-cli
+```
+
+Or install directly from the git repository:
+
+```bash
+cargo install --git https://github.com/igmarin/decon-rs decon-cli
+```
+
+### cargo-binstall (fast binary download)
+
+If you have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall)
+installed, `decon-cli` ships with binstall metadata so it downloads a
+pre-built binary instead of compiling from source:
+
+```bash
+cargo binstall decon-cli
+```
+
+### Direct download
+
+1. Go to the [Releases page](https://github.com/igmarin/decon-rs/releases).
+2. Download the archive matching your platform, e.g.
+   `decon-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+3. Verify the SHA-256 checksum against the `SHA256SUMS` file in the release.
+4. Extract the archive and move the `decon` binary to your `PATH`:
+
+   ```bash
+   tar xzf decon-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   sudo mv decon-0.1.0-x86_64-unknown-linux-gnu/decon /usr/local/bin/
+   # Optional: install man page and completions
+   sudo mv decon-0.1.0-x86_64-unknown-linux-gnu/decon.1 /usr/local/share/man/man1/
+   mkdir -p ~/.local/share/bash-completion/completions
+   mv decon-0.1.0-x86_64-unknown-linux-gnu/completions/decon.bash \
+      ~/.local/share/bash-completion/completions/decon
+   ```
+
+5. Verify: `decon --version`
+
+### Verifying checksums
+
+Every release includes a `SHA256SUMS` file listing the SHA-256 hash of each
+artifact. Verify a downloaded archive before installing:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
 
 ---
 
@@ -216,7 +287,8 @@ decon-rs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
 │   └── adr/              # Architecture Decision Records
-├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + rs-guard review
+├── homebrew/             # Homebrew formula template (decon.rb)
+├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
 ```
 
@@ -383,6 +455,13 @@ CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
 generates a tutorial with a live DeepSeek key, evals the output, and compares
 the score against the frozen `llm-generated` fixture — opening a GitHub issue
 on regression.
+
+A **release workflow** (`.github/workflows/release.yml`) triggers on tag push
+(`vX.Y.Z`), builds release binaries for Linux (x86_64, aarch64), macOS
+(x86_64, aarch64), and Windows (x86_64), packages them with the man page and
+completion scripts, generates SHA-256 checksums, and creates a GitHub Release
+with notes extracted from [`CHANGELOG.md`](CHANGELOG.md). It can also be
+dispatched manually in dry-run mode to validate the build without publishing.
 
 ---
 
