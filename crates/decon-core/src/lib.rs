@@ -28,7 +28,8 @@ pub mod setup;
 
 // Re-exports inherit rustdoc from `budget` (no extra crate-root docs required).
 pub use abstraction::{
-    Abstraction, AbstractionKind, IdentifyResult, Relationship, Tier, TierParseError,
+    Abstraction, AbstractionKind, IdentifyResult, Relationship, RelationshipsResult, Tier,
+    TierParseError,
 };
 pub use budget::{
     BudgetConfig, BudgetEstimate, DEFAULT_BATCH_CHAR_BUDGET, DEFAULT_CHARS_PER_TOKEN,
