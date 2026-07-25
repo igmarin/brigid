@@ -181,6 +181,7 @@ fn resume_valid_checkpoint_json() {
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
+    wait_for_dir(&dir);
 
     decon()
         .args(["resume", "--checkpoint"])
@@ -211,6 +212,22 @@ fn temp_dir(label: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("decon-cli-{label}-{n}"))
+}
+
+/// Wait for a directory to be visible to other processes.
+///
+/// On Windows, newly created directories may not be immediately visible to
+/// subprocesses due to filesystem caching. This helper retries `is_dir()`
+/// a few times with a short sleep before giving up.
+fn wait_for_dir(path: &Path) {
+    for _ in 0..10 {
+        if path.is_dir() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Final check – if still not visible, let the test fail with its
+    // normal assertion rather than panicking here.
 }
 
 /// Escape a filesystem path for embedding in a TOML or YAML double-quoted
@@ -332,6 +349,7 @@ fn resume_text_format_on_valid_checkpoint() {
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
+    wait_for_dir(&dir);
 
     decon()
         .args(["resume", "--checkpoint"])
@@ -1229,6 +1247,7 @@ fn combine_with_incomplete_checkpoint_errors_about_prerequisites() {
     meta.mark_stage_complete(StageId::Identify, "t3");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["combine", "--dir"])
@@ -2291,6 +2310,7 @@ fn seed_identify_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(ckpt_dir);
 }
 
 /// Seed a checkpoint with Fetch + DryRun + Identify + Relationships complete.
@@ -2339,6 +2359,7 @@ fn seed_relationships_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(ckpt_dir);
 }
 
 /// Seed a checkpoint with Fetch + DryRun + Identify + Relationships + Order.
@@ -2391,6 +2412,7 @@ fn seed_order_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(ckpt_dir);
 }
 
 #[test]
@@ -2545,6 +2567,7 @@ fn relationships_stage_without_identify_exits_config() {
     meta.mark_stage_complete(StageId::DryRun, "t2");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["relationships", "--dir"])
@@ -2583,6 +2606,7 @@ fn chapters_stage_without_identify_exits_config() {
     meta.mark_stage_complete(StageId::DryRun, "t2");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["chapters", "--dir"])
