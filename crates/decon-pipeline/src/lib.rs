@@ -20,6 +20,7 @@ pub mod identify_checkpoint;
 pub mod identify_runner;
 pub mod prompts;
 pub mod resume;
+pub mod setup_guide;
 
 pub use cancellation::{CancelToken, setup_ctrl_c_handler};
 pub use checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
