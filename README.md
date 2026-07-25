@@ -253,6 +253,8 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 
 | Document | What it covers |
 |----------|---------------|
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Crate structure, pipeline data flow, key types, checkpoint/resume design, ADR index |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history per milestone (Keep a Changelog format) |
 | [`docs/move-to-rust.md`](docs/move-to-rust.md) | Migration design, pipeline model, domain objects, phase plan, engineering bar |
 | [`docs/best-practices.md`](docs/best-practices.md) | Language-agnostic product rules: scope, budget, abstraction quality, mermaid, setup docs |
 | [`docs/adr/0001-checkpoint-schema-v1.md`](docs/adr/0001-checkpoint-schema-v1.md) | Content-addressed checkpoint format for resume |
