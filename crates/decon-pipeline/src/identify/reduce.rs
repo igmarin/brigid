@@ -137,7 +137,7 @@ pub async fn identify_reduce(
 ///
 /// # Errors
 ///
-/// Returns [`IdentifyError::Parse`] if `serde_yaml` fails to serialize the
+/// Returns [`IdentifyError::Parse`] if `serde_yaml_ng` fails to serialize the
 /// candidates. In practice [`CandidateAbstraction`] is a plain serializable
 /// struct so this never fails, but the `Result` return avoids silently
 /// swallowing a serialization error (which would send an empty blob to the
@@ -501,7 +501,7 @@ mod reduce_tests {
     #[test]
     fn candidates_to_yaml_round_trips_special_yaml_chars() {
         // Candidate names with special YAML characters should round-trip
-        // through serde_yaml without corruption.
+        // through serde_yaml_ng without corruption.
         let candidates = vec![
             cand(
                 "name: with colon",

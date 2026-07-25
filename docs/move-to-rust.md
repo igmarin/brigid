@@ -571,7 +571,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Walk + gitignore | `ignore` (ripgrep’s walker) |
 | Globs | `globset` / `wax` |
 | Serialization | `serde` + `serde_json` |
-| YAML prompts out | `serde_yaml` for parsing model output |
+| YAML prompts out | `serde_yaml_ng` for parsing model output |
 | Templates | `minijinja` or `handlebars` |
 | Errors | `thiserror` + `anyhow` in CLI |
 | Tracing | `tracing` + `tracing-subscriber` |

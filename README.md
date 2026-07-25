@@ -17,16 +17,17 @@ for the full migration design.
 
 ## Current status
 
-**Milestone 2 (Checkpoint, Config & Coverage) — complete.**
-Still no live LLM spend. M3 (provider clients + map-reduce identify) is next.
+**Milestone 3 (LLM Identify) — complete.**
+Live LLM provider clients, map-reduce identify, and checkpoint resume are
+working. M4 (full generate pipeline) is next.
 
 | Milestone | Goal | Status |
 |-----------|------|--------|
 | **M0** — Spec Freeze | Workspace layout, CI, CONTRIBUTING, ADR 0001, prompt catalog, test fixtures, parity baseline | ✅ Done |
 | **M1** — Crawl + Dry-run + Eval | `decon crawl` / dry-run matching `baseline.json`; mermaid sanitize; setup-assessment parity; `decon eval` port | ✅ Done |
 | **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `decon.toml`; ≥85% coverage gate | ✅ Done |
-| **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | 🔜 Next (scoped: #62–#74) |
-| **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app` | Planned |
+| **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
+| **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app` | 🔜 Next |
 | **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX | Planned |
 
 ### What works today
@@ -46,8 +47,9 @@ Still no live LLM spend. M3 (provider clients + map-reduce identify) is next.
   secrets redaction.
 - **Checkpoint store + resume** (`decon-pipeline`): `checkpoint.json` +
   `files.ndjson.gz`, stage-skip / partial regenerate helpers.
-- **LLM disk cache structure** (`decon-llm`): key = hash(prompt)+model+provider
-  (no live network yet).
+- **LLM provider client** (`decon-llm`): `OpenAiCompatibleClient` with
+  retry/backoff/timeout, host allowlist validation, disk cache
+  (key = hash(prompt)+model+provider), and bounded-concurrency map batches.
 - **CI coverage hard gate:** ≥85% workspace line coverage.
 - **Parity fixtures:** `tests/fixtures/{python-lib,umbrella,js-lib}` + frozen
   `baseline.json`; tutorial goldens under `tests/fixtures/tutorials/`.
@@ -76,8 +78,8 @@ cargo run -p decon-cli -- init --dir /tmp/decon-demo
 
 ### What does not work yet
 
-Live LLM provider clients, map-reduce identify, full `generate` pipeline,
-chapter writing, and combine/index chrome. Those land in M3–M4.
+Full `generate` pipeline (relationships, chapter writing, combine/index
+chrome). Those land in M4.
 
 ---
 
@@ -114,7 +116,7 @@ cd decon-rs
 # Build the workspace
 cargo build --workspace
 
-# Run the CLI (currently --help / --version only)
+# Run the CLI
 cargo run -p decon-cli -- --help
 ```
 
@@ -173,8 +175,10 @@ the list of CI checks to run locally.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo llvm-cov --workspace --fail-under-lines 85
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo audit
+cargo deny check
 rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
   /tmp/regen_baseline tests/fixtures/ --check
 ```
@@ -205,6 +209,10 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 | [`docs/move-to-rust.md`](docs/move-to-rust.md) | Migration design, pipeline model, domain objects, phase plan, engineering bar |
 | [`docs/best-practices.md`](docs/best-practices.md) | Language-agnostic product rules: scope, budget, abstraction quality, mermaid, setup docs |
 | [`docs/adr/0001-checkpoint-schema-v1.md`](docs/adr/0001-checkpoint-schema-v1.md) | Content-addressed checkpoint format for resume |
+| [`docs/adr/0002-async-trait-llm-client.md`](docs/adr/0002-async-trait-llm-client.md) | Why `async-trait` for `LlmClient` (object-safety tradeoff) |
+| [`docs/adr/0003-bounded-concurrency-semaphore.md`](docs/adr/0003-bounded-concurrency-semaphore.md) | Why `tokio::sync::Semaphore` for bounded map batches |
+| [`docs/adr/0004-yaml-parser-migration.md`](docs/adr/0004-yaml-parser-migration.md) | Migration off unsound `serde_yml`/`libyml` (superseded by 0005) |
+| [`docs/adr/0005-yaml-parser-serde-yaml-ng.md`](docs/adr/0005-yaml-parser-serde-yaml-ng.md) | Migration to `serde_yaml_ng` (maintained fork) |
 | [`prompts/README.md`](prompts/README.md) | Prompt catalog: 10 templates, variable schema, integration notes |
 | [`tests/fixtures/README.md`](tests/fixtures/README.md) | Fixture set, baseline regenerator, parity strategy |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | TDD workflow, coverage gate, CI checks, PR process |

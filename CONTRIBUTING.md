@@ -117,7 +117,9 @@ commit. PRs also receive an automated rs-guard review from GitHub Actions.
 | Checkpoint types | `decon-core::checkpoint` | ADR 0001 metadata |
 | Progress / LLM budget | `decon-core::progress` | Fail-closed max calls |
 | Secrets redaction | `decon-core::secrets` | Paths + content heuristics |
-| LLM disk cache | `decon-llm::cache` | No live network |
+| LLM disk cache | `decon-llm::cache` | Hash-keyed response cache |
+| LLM provider client | `decon-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff |
+| Bounded concurrency | `decon-llm::concurrency` | Semaphore-gated map batches |
 | Checkpoint store | `decon-pipeline::checkpoint_store` | save/load bundle |
 | Resume helpers | `decon-pipeline::resume` | stage-skip / invalidate |
 | Local crawl | `decon-crawl::local` | FS I/O |
@@ -193,7 +195,8 @@ workspace `members` list.
    `feature/3-contributing-guide`).
 2. Make focused, incremental commits.
 3. Ensure `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
-   and `cargo audit` pass locally.
+   `cargo llvm-cov --fail-under-lines 85`, `cargo audit`, and `cargo deny check`
+   pass locally.
 4. Open a PR that references the issue number (e.g. `Closes #3`).
 5. Wait for CI and any automated `rs-guard` review.
 6. Merge only when CI is green.
