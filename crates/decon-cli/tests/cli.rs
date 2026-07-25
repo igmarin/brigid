@@ -116,6 +116,18 @@ fn eval_broken_mini_exits_nonzero() {
 }
 
 #[test]
+fn eval_llm_generated_fixture_passes_at_threshold_70() {
+    let dir = fixtures_dir().join("tutorials/llm-generated");
+    decon()
+        .args(["eval", "--out"])
+        .arg(&dir)
+        .args(["--threshold", "70"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("passed=true"));
+}
+
+#[test]
 fn init_writes_decon_toml() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = SystemTime::now()
