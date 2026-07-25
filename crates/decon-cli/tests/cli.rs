@@ -1459,6 +1459,1299 @@ fn generate_error_includes_actionable_hint() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #186: M5-TST-2 — CLI error path tests + coverage improvement.
+//
+// Comprehensive tests for all exit codes (0–5), malformed user input, error
+// message content, and flag coverage to push main.rs coverage from 64% to
+// ≥80%.
+// ---------------------------------------------------------------------------
+
+// --- Exit code 5: partial/checkpoint (cancellation) ---
+
+#[test]
+#[cfg(debug_assertions)]
+fn identify_cancelled_exits_partial_code_5() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-cancel-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    // DECON_MOCK_CANCEL causes the cancel token to fire immediately, so the
+    // identify stage returns `Cancelled` → exit 5.
+    decon()
+        .env("DECON_MOCK_CANCEL", "1")
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(5)
+        .stderr(predicate::str::contains("cancelled"))
+        .stderr(predicate::str::contains("partial checkpoint"))
+        .stderr(predicate::str::contains("resume to continue"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn generate_cancelled_exits_partial_code_5() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-cancel-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-cancel-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_MOCK_CANCEL", "1")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(5)
+        .stderr(predicate::str::contains("cancelled"))
+        .stderr(predicate::str::contains("partial checkpoint"))
+        .stderr(predicate::str::contains("resume to continue"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Exit code 4: LLM error on `generate` ---
+
+#[test]
+#[cfg(debug_assertions)]
+fn generate_llm_error_exits_llm_code_4() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-llm-err-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_LLM_MOCK_FAIL", "network")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("error: generate failed:"))
+        .stderr(predicate::str::contains("LLM"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn generate_llm_error_includes_hint_about_api_key() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-llm-hint-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_LLM_MOCK_FAIL", "timeout")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("hint:"))
+        .stderr(predicate::str::contains("DECON_LLM_API_KEY"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// --- Exit code 0: success with various flag combinations ---
+
+#[test]
+fn generate_review_chapters_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-review-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-review-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--review-chapters", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_no_setup_no_overview_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-nosetup-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-nosetup-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--no-setup", "--no-overview"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_force_setup_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-force-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-force-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--force-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_verbose_with_concurrency_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-conc-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-conc-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--verbose", "--concurrency", "1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("verbose: concurrency=1"))
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_max_llm_calls_flag_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-maxcalls-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-maxcalls-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    // Provide a generous budget so the pipeline completes.
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--max-llm-calls", "100"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Malformed input: invalid types, bad flags, missing args ---
+
+#[test]
+fn eval_invalid_threshold_type_exits_config() {
+    // clap rejects non-integer values for --threshold with exit code 2.
+    let dir = fixtures_dir().join("tutorials/good-mini");
+    decon()
+        .args(["eval", "--out"])
+        .arg(&dir)
+        .args(["--threshold", "not-a-number"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn generate_invalid_diagram_level_exits_config() {
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--diagram-level", "bogus"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("invalid diagram level"))
+        .stderr(predicate::str::contains("minimal, standard, or rich"));
+}
+
+#[test]
+fn chapters_invalid_diagram_level_exits_config() {
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["chapters", "--dir"])
+        .arg(&dir)
+        .args(["--diagram-level", "bogus"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("invalid diagram level"))
+        .stderr(predicate::str::contains("minimal, standard, or rich"));
+}
+
+#[test]
+fn generate_invalid_concurrency_type_exits_config() {
+    // clap rejects non-integer values for --concurrency.
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--concurrency", "abc"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn generate_invalid_max_llm_calls_type_exits_config() {
+    // clap rejects non-integer values for --max-llm-calls.
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--max-llm-calls", "abc"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn crawl_invalid_format_exits_config() {
+    // clap rejects non-enum values for --format.
+    let dir = fixtures_dir().join("python-lib");
+    decon()
+        .args(["crawl", "--dir"])
+        .arg(&dir)
+        .args(["--format", "xml"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn eval_missing_out_arg_exits_config() {
+    // eval without --out defaults to "output" which likely doesn't exist.
+    decon()
+        .args(["eval"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("eval failed to load tutorial"));
+}
+
+#[test]
+fn generate_missing_dir_arg_exits_config() {
+    // generate requires --dir; clap rejects missing required arg with code 2.
+    decon().args(["generate"]).assert().failure().code(2);
+}
+
+#[test]
+fn config_path_with_no_filename_exits_config() {
+    // A path like "/" has no file name component; the loader must error.
+    decon()
+        .args(["--config", "/"])
+        .args(["crawl"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("config:"))
+        .stderr(predicate::str::contains("file name"));
+}
+
+// --- Error message content assertions ---
+
+#[test]
+fn crawl_error_message_contains_crawl_failed() {
+    decon()
+        .args(["crawl", "--dir", "/no/such/decon-crawl-msg-test"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: crawl failed:"));
+}
+
+#[test]
+fn dry_run_error_message_contains_dry_run_failed() {
+    decon()
+        .args(["dry-run", "--dir", "/no/such/decon-dryrun-msg-test"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: dry-run failed:"));
+}
+
+#[test]
+fn eval_error_message_contains_eval_failed() {
+    decon()
+        .args(["eval", "--out", "/no/such/decon-eval-msg-test"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "error: eval failed to load tutorial:",
+        ));
+}
+
+#[test]
+fn identify_error_message_contains_identify_failed() {
+    decon()
+        .args(["identify", "--dir", "/no/such/decon-identify-msg-test"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: identify: crawl failed:"));
+}
+
+#[test]
+fn generate_empty_dir_error_message_contains_no_files() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let empty = std::env::temp_dir().join(format!("decon-cli-gen-empty-msg-{n}"));
+    std::fs::create_dir_all(&empty).unwrap();
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&empty)
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("no files found"));
+
+    let _ = std::fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn generate_budget_error_message_contains_budget_and_hint() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-budget-msg-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .env("DECON_MAX_LLM_CALLS", "0")
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("error: generate failed:"))
+        .stderr(predicate::str::contains("budget"))
+        .stderr(predicate::str::contains("hint:"))
+        .stderr(predicate::str::contains("--max-llm-calls"))
+        .stderr(predicate::str::contains("resume"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// --- Verbose and quiet mode content assertions ---
+
+#[test]
+fn generate_verbose_shows_concurrency_and_max_llm_calls() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-detail-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-detail-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--verbose", "--concurrency", "3"])
+        .assert()
+        .success()
+        // The verbose line prints "concurrency=N max-llm-calls=M" together.
+        .stderr(predicate::str::contains("verbose: concurrency=3"))
+        .stderr(predicate::str::contains("max-llm-calls="))
+        .stderr(predicate::str::contains("verbose: llm-calls:"))
+        .stderr(predicate::str::contains("verbose: stage "))
+        .stderr(predicate::str::contains("verbose: checkpoint:"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_quiet_suppresses_all_progress() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-suppress-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-suppress-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let result = decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--quiet"])
+        .assert()
+        .success();
+
+    let stderr = &result.get_output().stderr;
+    let stderr_str = String::from_utf8_lossy(stderr);
+
+    // In quiet mode, no progress or verbose messages should appear.
+    assert!(
+        !stderr_str.contains("generate: completed"),
+        "quiet mode should suppress 'generate: completed', got: {stderr_str}"
+    );
+    assert!(
+        !stderr_str.contains("verbose:"),
+        "quiet mode should suppress verbose messages, got: {stderr_str}"
+    );
+    assert!(
+        !stderr_str.contains("warning:"),
+        "quiet mode should suppress warnings, got: {stderr_str}"
+    );
+
+    // But the output file should still be created.
+    assert!(
+        output_dir.join("index.md").is_file(),
+        "index.md should exist in output dir even in quiet mode"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Per-stage subcommand error message content ---
+
+#[test]
+fn relationships_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["relationships", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-rel-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+#[test]
+fn order_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["order", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-order-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+#[test]
+fn chapters_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["chapters", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-chapters-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+#[test]
+fn setup_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["setup", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-setup-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+#[test]
+fn overview_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["overview", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-overview-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+#[test]
+fn combine_missing_checkpoint_message_contains_checkpoint() {
+    decon()
+        .args(["combine", "--dir"])
+        .arg(fixtures_dir().join("python-lib"))
+        .args(["--checkpoint-dir", "/no/such/decon-combine-msg-ckpt"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "does not exist or is not a directory",
+        ));
+}
+
+// --- Config error message content ---
+
+#[test]
+fn config_invalid_yaml_exits_config() {
+    let cfg_dir = temp_dir("cfg-bad-yaml");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    let bad = cfg_dir.join(".decon.yaml");
+    std::fs::write(&bad, b"root: [invalid: yaml: content\n").unwrap();
+
+    decon()
+        .args(["--config"])
+        .arg(&bad)
+        .args(["crawl"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: config:"));
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+#[test]
+fn config_unparseable_content_exits_config() {
+    let cfg_dir = temp_dir("cfg-unparseable");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    let bad = cfg_dir.join("decon.cfg");
+    std::fs::write(&bad, b"\x00\x01\x02 binary garbage \x03\x04\n").unwrap();
+
+    decon()
+        .args(["--config"])
+        .arg(&bad)
+        .args(["crawl"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: config:"));
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+// --- Exit code 1: generic failure (structural eval fail) ---
+
+#[test]
+fn eval_broken_mini_exits_fail_code_1() {
+    let dir = fixtures_dir().join("tutorials/broken-mini");
+    decon()
+        .args(["eval", "--out"])
+        .arg(&dir)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("passed=false"));
+}
+
+#[test]
+fn eval_broken_mini_text_format_contains_reasons() {
+    let dir = fixtures_dir().join("tutorials/broken-mini");
+    decon()
+        .args(["eval", "--out"])
+        .arg(&dir)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("score="))
+        .stdout(predicate::str::contains("passed=false"))
+        .stdout(predicate::str::contains("- "));
+}
+
+// --- Init error paths ---
+
+#[test]
+fn init_nonexistent_parent_dir_exits_config() {
+    decon()
+        .args(["init", "--dir", "/no/such/parent/decon-init-test/sub"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: create"));
+}
+
+// --- Generate with --each-app verbose mode ---
+
+#[test]
+fn generate_each_app_verbose_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-each-app-verb-out-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--each-app", "--no-setup", "--verbose"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("verbose: concurrency="))
+        .stderr(predicate::str::contains("each-app completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let alpha_ckpt =
+        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-alpha"));
+    let beta_ckpt =
+        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-beta"));
+    let gamma_ckpt =
+        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-gamma"));
+    let _ = std::fs::remove_dir_all(&alpha_ckpt);
+    let _ = std::fs::remove_dir_all(&beta_ckpt);
+    let _ = std::fs::remove_dir_all(&gamma_ckpt);
+}
+
+// ---------------------------------------------------------------------------
+// Per-stage subcommand success paths (improves main.rs coverage).
+//
+// These exercise the cmd_relationships, cmd_order, cmd_chapters, cmd_setup,
+// and cmd_overview functions end-to-end with pre-populated checkpoints.
+// ---------------------------------------------------------------------------
+
+/// Seed a checkpoint with Fetch + DryRun + Identify complete.
+fn seed_identify_checkpoint(ckpt_dir: &std::path::Path) {
+    use decon_core::{
+        Abstraction, AbstractionKind, CheckpointV1, IdentifyResult, RunConfig, StageId, Tier,
+    };
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
+    meta.mark_stage_complete(StageId::DryRun, "2026-07-24T00:02:00Z");
+
+    let abstractions = vec![Abstraction {
+        name: "Router".into(),
+        description: "Routes requests".into(),
+        file_indices: vec![0],
+        tier: Tier::S,
+        kind: AbstractionKind::new("module"),
+        apps: vec!["web".into()],
+        entry_files: vec!["src/router.rs".into()],
+    }];
+    let identify = IdentifyResult::new(abstractions);
+    meta.abstractions = Some(identify.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Identify, "t3");
+
+    let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
+    CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+}
+
+/// Seed a checkpoint with Fetch + DryRun + Identify + Relationships complete.
+fn seed_relationships_checkpoint(ckpt_dir: &std::path::Path) {
+    use decon_core::{
+        Abstraction, AbstractionKind, CheckpointV1, IdentifyResult, Relationship,
+        RelationshipsResult, RunConfig, StageId, Tier,
+    };
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "t1");
+    meta.mark_stage_complete(StageId::DryRun, "t2");
+
+    let abstractions = vec![Abstraction {
+        name: "Router".into(),
+        description: "Routes requests".into(),
+        file_indices: vec![0],
+        tier: Tier::S,
+        kind: AbstractionKind::new("module"),
+        apps: vec!["web".into()],
+        entry_files: vec!["src/router.rs".into()],
+    }];
+    let identify = IdentifyResult::new(abstractions);
+    meta.abstractions = Some(identify.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Identify, "t3");
+
+    let rels = RelationshipsResult::new(
+        "A web framework.".to_string(),
+        vec![Relationship::new(
+            0,
+            0,
+            "self".to_string(),
+            "self".to_string(),
+        )],
+    );
+    meta.relationships = Some(rels.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Relationships, "t4");
+
+    let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
+    CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+}
+
+/// Seed a checkpoint with Fetch + DryRun + Identify + Relationships + Order.
+fn seed_order_checkpoint(ckpt_dir: &std::path::Path) {
+    use decon_core::{
+        Abstraction, AbstractionKind, ChapterOrder, CheckpointV1, IdentifyResult, Relationship,
+        RelationshipsResult, RunConfig, StageId, Tier,
+    };
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "t1");
+    meta.mark_stage_complete(StageId::DryRun, "t2");
+
+    let abstractions = vec![Abstraction {
+        name: "Router".into(),
+        description: "Routes requests".into(),
+        file_indices: vec![0],
+        tier: Tier::S,
+        kind: AbstractionKind::new("module"),
+        apps: vec!["web".into()],
+        entry_files: vec!["src/router.rs".into()],
+    }];
+    let identify = IdentifyResult::new(abstractions);
+    meta.abstractions = Some(identify.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Identify, "t3");
+
+    let rels = RelationshipsResult::new(
+        "A web framework.".to_string(),
+        vec![Relationship::new(
+            0,
+            0,
+            "self".to_string(),
+            "self".to_string(),
+        )],
+    );
+    meta.relationships = Some(rels.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Relationships, "t4");
+
+    let order = ChapterOrder::new(vec![0]);
+    meta.order = Some(order.to_checkpoint_value().unwrap());
+    meta.mark_stage_complete(StageId::Order, "t5");
+
+    let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
+    CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
+}
+
+#[test]
+fn relationships_stage_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-rel-stage-ok-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_identify_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["relationships", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("relationships: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn order_stage_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-order-stage-ok-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_relationships_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["order", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("order: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn chapters_stage_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-chapters-stage-ok-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-chapters-stage-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_order_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["chapters", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("chapters: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn setup_stage_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-setup-stage-ok-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_identify_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["setup", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--force"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("setup: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn overview_stage_runs_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-overview-stage-ok-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    seed_relationships_checkpoint(&ckpt_dir);
+
+    decon()
+        .args(["overview", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("overview: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// --- Per-stage subcommand error: missing identify in checkpoint ---
+
+#[test]
+fn relationships_stage_without_identify_exits_config() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-rel-no-identify-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    // Create a checkpoint with only Fetch + DryRun (no Identify).
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "t1");
+    meta.mark_stage_complete(StageId::DryRun, "t2");
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+
+    decon()
+        .args(["relationships", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .assert()
+        .failure()
+        .code(2);
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn chapters_stage_without_identify_exits_config() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-chap-no-identify-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-chap-no-identify-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "t1");
+    meta.mark_stage_complete(StageId::DryRun, "t2");
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
+
+    decon()
+        .args(["chapters", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("identify result not found"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Generate with --language flag ---
+
+#[test]
+fn generate_with_language_flag_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-lang-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-lang-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--language", "es", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("locale=es"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Generate with --diagram-level flag ---
+
+#[test]
+fn generate_with_rich_diagram_level_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-rich-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-rich-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--diagram-level", "rich", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn generate_with_minimal_diagram_level_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-min-diagram-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-min-diagram-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--diagram-level", "minimal", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Generate with --apps flag ---
+
+#[test]
+fn generate_with_apps_flag_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-apps-ckpt-{n}"));
+    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-apps-out-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--apps", "apps/alpha", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// --- Identify with map+reduce (non-single-shot) mode ---
+
+#[test]
+fn identify_map_reduce_completes_successfully() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-mapreduce-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("identify: completed"));
+
+    assert!(
+        ckpt_dir.join("checkpoint.json").is_file(),
+        "checkpoint.json should exist"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// --- Identify with --max-abstractions flag ---
+
+#[test]
+fn identify_with_max_abstractions_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-maxabs-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot", "--max-abstractions", "5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("identify: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+// ---------------------------------------------------------------------------
 // Issue #185: decon init wizard, --non-interactive, --check
 // ---------------------------------------------------------------------------
 

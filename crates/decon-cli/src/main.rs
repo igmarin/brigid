@@ -1663,6 +1663,17 @@ fn cmd_identify(
                 return ExitCode::from(EXIT_FAIL);
             }
         };
+        // Debug/test-only affordance: immediately cancel the token so the
+        // pipeline returns `Cancelled` without needing a real signal. This
+        // lets us test exit code 5 in process-boundary tests.
+        #[cfg(debug_assertions)]
+        if env::var("DECON_MOCK_CANCEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            cancel.cancel();
+        }
 
         let outcome = decon_pipeline::identify_with_cancellation(
             client.as_ref(),
@@ -1976,7 +1987,10 @@ fn cmd_generate(
     if !checkpoint.is_stage_complete(decon_core::StageId::DryRun) {
         checkpoint.mark_stage_complete(decon_core::StageId::DryRun, "0Z");
     }
-    let _ = store.save(checkpoint.clone(), &existing_files);
+    if let Err(e) = store.save(checkpoint.clone(), &existing_files) {
+        eprintln!("error: generate: checkpoint save failed: {e}");
+        return ExitCode::from(EXIT_CONFIG);
+    }
 
     let mut progress = decon_core::ProgressTracker::new(
         run_config
@@ -2003,6 +2017,17 @@ fn cmd_generate(
                 return ExitCode::from(EXIT_FAIL);
             }
         };
+        // Debug/test-only affordance: immediately cancel the token so the
+        // pipeline returns `Cancelled` without needing a real signal. This
+        // lets us test exit code 5 in process-boundary tests.
+        #[cfg(debug_assertions)]
+        if env::var("DECON_MOCK_CANCEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            cancel.cancel();
+        }
 
         let gen_config = decon_pipeline::GenerateConfig {
             dir: dir.to_path_buf(),
@@ -2309,6 +2334,17 @@ fn cmd_generate_each_app(
                 return ExitCode::from(EXIT_FAIL);
             }
         };
+        // Debug/test-only affordance: immediately cancel the token so the
+        // pipeline returns `Cancelled` without needing a real signal. This
+        // lets us test exit code 5 in process-boundary tests.
+        #[cfg(debug_assertions)]
+        if env::var("DECON_MOCK_CANCEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            cancel.cancel();
+        }
 
         let outcome =
             decon_pipeline::run_generate_each_app(client.as_ref(), &renderer, &cancel, &gen_config)
