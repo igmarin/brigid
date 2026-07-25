@@ -255,6 +255,9 @@ pub struct CheckpointV1 {
     /// Relationship results (opaque JSON until domain types land).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relationships: Option<serde_json::Value>,
+    /// Chapter ordering results (opaque JSON until domain types land).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<serde_json::Value>,
     /// File-based stage output manifest for M4 stages (chapters, setup,
     /// overview, combine). Additive — no schema version bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,6 +302,7 @@ impl CheckpointV1 {
             manifest: ManifestPointer::new(DEFAULT_MANIFEST_REL_PATH, "", 0),
             abstractions: None,
             relationships: None,
+            order: None,
             stage_outputs: None,
             metadata: CheckpointMeta {
                 created_at: created.clone(),

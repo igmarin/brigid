@@ -50,6 +50,27 @@ impl ChapterOrder {
         Self { ordered_indices }
     }
 
+    /// Serialize to a [`serde_json::Value`] for checkpoint storage.
+    ///
+    /// # Errors
+    ///
+    /// Propagates serde_json serialization errors. In practice
+    /// [`ChapterOrder`] is always serializable, but the `Result` return
+    /// keeps the API panic-free and symmetric with
+    /// [`ChapterOrder::from_checkpoint_value`].
+    pub fn to_checkpoint_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::to_value(self)
+    }
+
+    /// Deserialize from a [`serde_json::Value`] stored in a checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Propagates serde_json deserialization errors.
+    pub fn from_checkpoint_value(v: serde_json::Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(v)
+    }
+
     /// Validate that every abstraction appears exactly once, with no
     /// duplicates and no out-of-bounds indices.
     ///
