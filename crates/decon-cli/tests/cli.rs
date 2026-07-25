@@ -3088,3 +3088,137 @@ fn manpage_does_not_require_config() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// `decon completions` — shell completion script generation (M5-DIST-1)
+// ---------------------------------------------------------------------------
+
+/// Subcommand names that must appear in every generated completion script.
+const COMPLETION_SUBCOMMANDS: &[&str] = &[
+    "crawl",
+    "dry-run",
+    "eval",
+    "resume",
+    "init",
+    "identify",
+    "generate",
+    "relationships",
+    "order",
+    "chapters",
+    "setup",
+    "overview",
+    "combine",
+    "completions",
+];
+
+#[test]
+fn completions_bash_produces_nonempty_output_with_subcommands() {
+    let output = decon()
+        .args(["completions", "--shell", "bash"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    refute_empty_and_check_subcommands(&output, "bash");
+}
+
+#[test]
+fn completions_zsh_produces_nonempty_output_with_subcommands() {
+    let output = decon()
+        .args(["completions", "--shell", "zsh"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    refute_empty_and_check_subcommands(&output, "zsh");
+}
+
+#[test]
+fn completions_fish_produces_nonempty_output_with_subcommands() {
+    let output = decon()
+        .args(["completions", "--shell", "fish"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    refute_empty_and_check_subcommands(&output, "fish");
+}
+
+#[test]
+fn completions_powershell_produces_nonempty_output_with_subcommands() {
+    let output = decon()
+        .args(["completions", "--shell", "powershell"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    refute_empty_and_check_subcommands(&output, "powershell");
+}
+
+#[test]
+fn completions_invalid_shell_exits_nonzero() {
+    decon()
+        .args(["completions", "--shell", "tcsh"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn completions_missing_shell_flag_exits_nonzero() {
+    decon().args(["completions"]).assert().failure();
+}
+
+#[test]
+fn completions_output_flag_writes_file() {
+    let dir = temp_dir("completions-output");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("decon.bash");
+    decon()
+        .args(["completions", "--shell", "bash", "--output"])
+        .arg(&path)
+        .assert()
+        .success();
+    assert!(path.is_file(), "completion file should exist");
+    let content = std::fs::read_to_string(&path).expect("read completion file");
+    assert!(!content.is_empty(), "completion file should not be empty");
+    assert!(
+        content.contains("_decon"),
+        "bash completion should define _decon function"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn completions_works_without_config_file() {
+    // The completions subcommand must not require a decon.toml or any run-time
+    // argument. Run it from a temp dir with no config to prove this.
+    let dir = temp_dir("completions-no-config");
+    std::fs::create_dir_all(&dir).unwrap();
+    decon()
+        .current_dir(&dir)
+        .args(["completions", "--shell", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_decon"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Assert the completion output is non-empty and contains every expected
+/// subcommand name.
+fn refute_empty_and_check_subcommands(output: &[u8], shell: &str) {
+    assert!(
+        !output.is_empty(),
+        "{shell} completion output must not be empty"
+    );
+    let text = String::from_utf8_lossy(output);
+    for sub in COMPLETION_SUBCOMMANDS {
+        assert!(
+            text.contains(sub),
+            "{shell} completion should mention subcommand '{sub}'"
+        );
+    }
+}

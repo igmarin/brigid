@@ -389,6 +389,46 @@ enum Commands {
         #[arg(long = "output", value_name = "PATH")]
         output: Option<PathBuf>,
     },
+    /// Print shell completion script for bash, zsh, fish, or PowerShell.
+    ///
+    /// The script is written to stdout by default. Use `--output PATH` to
+    /// write directly to a file. This subcommand does not require `--dir` or
+    /// any other run-time argument.
+    Completions {
+        /// Target shell.
+        #[arg(long = "shell", value_enum)]
+        shell: ShellKind,
+        /// Optional file path. When set, the completion script is written
+        /// there instead of stdout.
+        #[arg(long = "output", value_name = "PATH")]
+        output: Option<PathBuf>,
+    },
+}
+
+/// Supported shells for `decon completions`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ShellKind {
+    /// Bourne-again shell.
+    Bash,
+    /// Z shell.
+    Zsh,
+    /// Friendly interactive shell.
+    Fish,
+    /// PowerShell.
+    #[value(name = "powershell")]
+    PowerShell,
+}
+
+impl ShellKind {
+    /// Convert to the matching `clap_complete::Shell` variant.
+    fn to_completion_shell(self) -> clap_complete::Shell {
+        match self {
+            ShellKind::Bash => clap_complete::Shell::Bash,
+            ShellKind::Zsh => clap_complete::Shell::Zsh,
+            ShellKind::Fish => clap_complete::Shell::Fish,
+            ShellKind::PowerShell => clap_complete::Shell::PowerShell,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -689,12 +729,19 @@ fn main() -> ExitCode {
         return cmd_manpage(output);
     }
 
-    let cfg = match load_merged_config(cli.config.as_deref(), &RunConfig::empty()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: config: {e}");
-            return ExitCode::from(EXIT_CONFIG);
+    // The `completions` subcommand is a pure help/utility command: it must
+    // work even when no `decon.toml` is present or the cwd contains a broken
+    // config file, so skip loading the merged config for it entirely.
+    let cfg = if !matches!(cli.command, Commands::Completions { .. }) {
+        match load_merged_config(cli.config.as_deref(), &RunConfig::empty()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: config: {e}");
+                return ExitCode::from(EXIT_CONFIG);
+            }
         }
+    } else {
+        RunConfig::empty()
     };
 
     match cli.command {
@@ -890,6 +937,7 @@ fn main() -> ExitCode {
         // `Manpage` is handled before config loading (see top of `main`),
         // so this arm is unreachable.
         Commands::Manpage { .. } => unreachable!("manpage handled before config load"),
+        Commands::Completions { shell, output } => cmd_completions(shell, output),
     }
 }
 
@@ -3089,6 +3137,51 @@ fn cmd_combine(
     }
 }
 
+/// Generate and emit a shell completion script for the `decon` CLI.
+///
+/// When `output` is `Some(path)` the script is written to that file; otherwise
+/// it is written to stdout. The completions are generated from the live
+/// `clap::Command` built via [`Cli::command`] so every subcommand and flag is
+/// covered automatically.
+fn cmd_completions(shell: ShellKind, output: Option<PathBuf>) -> ExitCode {
+    let mut cmd = Cli::command();
+    let completion_shell = shell.to_completion_shell();
+    match output {
+        Some(path) => {
+            let file = match fs::File::create(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("error: completions: cannot create {}: {e}", path.display());
+                    return ExitCode::from(EXIT_CONFIG);
+                }
+            };
+            let mut writer = std::io::BufWriter::new(file);
+            clap_complete::generate(completion_shell, &mut cmd, "decon", &mut writer);
+            eprintln!(
+                "completions: wrote {} script to {}",
+                shell_name(shell),
+                path.display()
+            );
+            ExitCode::from(EXIT_OK)
+        }
+        None => {
+            let mut stdout = std::io::stdout();
+            clap_complete::generate(completion_shell, &mut cmd, "decon", &mut stdout);
+            ExitCode::from(EXIT_OK)
+        }
+    }
+}
+
+/// Human-readable shell name for status messages.
+fn shell_name(shell: ShellKind) -> &'static str {
+    match shell {
+        ShellKind::Bash => "bash",
+        ShellKind::Zsh => "zsh",
+        ShellKind::Fish => "fish",
+        ShellKind::PowerShell => "powershell",
+    }
+}
+
 fn load_tutorial_markdown(root: &Path) -> Result<Vec<TutorialFile>, String> {
     if !root.is_dir() {
         return Err(format!("not a directory: {}", root.display()));
@@ -3674,5 +3767,61 @@ mod tests {
             "written man page should be valid troff"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_kind_to_completion_shell_maps_all_variants() {
+        assert!(matches!(
+            ShellKind::Bash.to_completion_shell(),
+            clap_complete::Shell::Bash
+        ));
+        assert!(matches!(
+            ShellKind::Zsh.to_completion_shell(),
+            clap_complete::Shell::Zsh
+        ));
+        assert!(matches!(
+            ShellKind::Fish.to_completion_shell(),
+            clap_complete::Shell::Fish
+        ));
+        assert!(matches!(
+            ShellKind::PowerShell.to_completion_shell(),
+            clap_complete::Shell::PowerShell
+        ));
+    }
+
+    #[test]
+    fn shell_name_returns_lowercase_identifiers() {
+        assert_eq!(shell_name(ShellKind::Bash), "bash");
+        assert_eq!(shell_name(ShellKind::Zsh), "zsh");
+        assert_eq!(shell_name(ShellKind::Fish), "fish");
+        assert_eq!(shell_name(ShellKind::PowerShell), "powershell");
+    }
+
+    #[test]
+    fn cmd_completions_bash_to_stdout_succeeds() {
+        let code = cmd_completions(ShellKind::Bash, None);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+    }
+
+    #[test]
+    fn cmd_completions_writes_file_when_output_given() {
+        let dir = temp_dir("completions-unit-output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("decon.bash");
+        let code = cmd_completions(ShellKind::Bash, Some(path.clone()));
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        assert!(path.is_file());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.is_empty());
+        assert!(content.contains("_decon"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_completions_output_to_unwritable_path_exits_config() {
+        // A path whose parent directory does not exist cannot be created.
+        let path = PathBuf::from("/nonexistent-dir-xyz/decon.bash");
+        let code = cmd_completions(ShellKind::Bash, Some(path));
+        assert_eq!(code, ExitCode::from(EXIT_CONFIG));
     }
 }

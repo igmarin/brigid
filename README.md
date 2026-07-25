@@ -119,8 +119,64 @@ cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
 ### What does not work yet
 
 Product polish items land in M5: native installers (`brew`, `cargo install`,
-GitHub releases), man page, shell completions (bash/zsh/fish), concurrency
-limits, improved error UX, and deprecation of the Python entrypoint.
+GitHub releases), man page, concurrency limits, improved error UX, and
+deprecation of the Python entrypoint.
+
+---
+
+## Shell completions
+
+`decon` can generate completion scripts for bash, zsh, fish, and PowerShell.
+The scripts cover every subcommand and flag automatically.
+
+```bash
+# Print a script to stdout
+decon completions --shell bash
+decon completions --shell zsh
+decon completions --shell fish
+decon completions --shell powershell
+
+# Write directly to a file
+decon completions --shell bash --output ~/.decon-completions.bash
+```
+
+### Installation
+
+**bash** — install into the system completions directory (or source it from
+your `.bashrc`):
+
+```bash
+decon completions --shell bash --output /etc/bash_completion.d/decon
+# or, for a user-level install:
+decon completions --shell bash --output ~/.local/share/bash-completion/completions/decon
+```
+
+**zsh** — place the script on your `$fpath` (commonly `~/.zsh/completions`):
+
+```bash
+mkdir -p ~/.zsh/completions
+decon completions --shell zsh --output ~/.zsh/completions/_decon
+```
+
+Make sure `~/.zsh/completions` is on your `fpath` (add
+`fpath=(~/.zsh/completions $fpath)` to `~/.zshrc`) and run `compinit`.
+
+**fish** — drop the script into the fish completions directory:
+
+```bash
+mkdir -p ~/.config/fish/completions
+decon completions --shell fish --output ~/.config/fish/completions/decon.fish
+```
+
+**PowerShell** — add the script to your PowerShell profile:
+
+```powershell
+decon completions --shell powershell --output $PROFILE
+# or append to an existing profile:
+decon completions --shell powershell | Add-Content $PROFILE
+```
+
+Reload your shell (or open a new terminal) after installing.
 
 ---
 
