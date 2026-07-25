@@ -80,7 +80,7 @@ is next.
   gate (good-mini + broken-mini), nightly LLM smoke, rs-guard PR review.
 - **Prompt catalog** (`prompts/`) and **ADR 0001** checkpoint schema (used from M2+).
 
-### Quick start (M1 + M4)
+### Usage examples
 
 ```bash
 cargo build -p decon-cli
@@ -96,9 +96,10 @@ cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini
 
 # Config + checkpoint status
 cargo run -p decon-cli -- init --dir /tmp/decon-demo
-# cargo run -p decon-cli -- resume --checkpoint PATH --format json
+cargo run -p decon-cli -- resume --checkpoint /tmp/decon-demo --format json
 
-# Full generate pipeline (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY)
+# Full generate pipeline (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY; see
+# [API key setup](#api-key-setup) below)
 cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
   --output-dir /tmp/tutorial --language en
 
@@ -178,6 +179,83 @@ Use `--write` to regenerate after an intentional fixture change.
 
 ---
 
+## API key setup
+
+The `generate` and `identify` stages call an LLM. `decon` uses an
+OpenAI-compatible HTTP client, so any provider that exposes that API works.
+
+### DeepSeek (default / primary)
+
+DeepSeek is the default provider — no extra configuration beyond the API key.
+
+1. Create an account at <https://platform.deepseek.com> and generate an API
+   key.
+2. Export it before running `decon`:
+
+   ```bash
+   export DEEPSEEK_API_KEY="sk-your-key-here"
+   # or use the generic name (checked first):
+   export DECON_LLM_API_KEY="sk-your-key-here"
+   ```
+
+`DECON_LLM_API_KEY` takes precedence over `DEEPSEEK_API_KEY`; either is
+accepted. The key is **never** written to `decon.toml` — only read from the
+environment.
+
+### OpenAI
+
+Point the client at the OpenAI endpoint and pick a model:
+
+```bash
+export DECON_LLM_API_KEY="sk-your-openai-key"
+export DECON_LLM_BASE_URL="https://api.openai.com/v1"
+export DECON_LLM_MODEL="gpt-4o"
+```
+
+`api.openai.com` is in the built-in host allowlist, so no extra host
+configuration is needed.
+
+### Local providers (Ollama, LM Studio)
+
+Any OpenAI-compatible local server works. Set the base URL to the local
+endpoint and add the host to the allowlist if it is not already covered by
+the `localhost` / `127.0.0.1` defaults.
+
+```bash
+# Ollama (default port 11434)
+export DECON_LLM_API_KEY="ollama"          # any non-empty string
+export DECON_LLM_BASE_URL="http://localhost:11434/v1"
+export DECON_LLM_MODEL="llama3"
+
+# LM Studio (default port 1234)
+export DECON_LLM_API_KEY="lm-studio"
+export DECON_LLM_BASE_URL="http://localhost:1234/v1"
+export DECON_LLM_MODEL="local-model"
+```
+
+For a non-loopback host, extend the allowlist with
+`DECON_LLM_ALLOWED_HOSTS` (comma-separated) or the `[[allowed_hosts]]` table
+in `decon.toml`:
+
+```bash
+export DECON_LLM_ALLOWED_HOSTS="my-proxy.internal,10.0.0.5"
+```
+
+### Relevant environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DECON_LLM_API_KEY` | — | API key (checked first; falls back to `DEEPSEEK_API_KEY`) |
+| `DEEPSEEK_API_KEY` | — | API key (fallback) |
+| `DECON_LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
+| `DECON_LLM_MODEL` | `deepseek-chat` | Model identifier sent in requests |
+| `DECON_LLM_ALLOWED_HOSTS` | — | Extra hosts for the Authorization-header allowlist (comma-separated) |
+| `DECON_LLM_CACHE_DIR` | platform cache `/decon/llm-cache` | Disk cache root for LLM responses |
+| `DECON_NO_CACHE` | — | Set to `1` / `true` to disable the disk cache |
+| `DECON_FORCE_MOCK` | — | Set to any non-empty value to force the mock client (offline) |
+
+---
+
 ## Pipeline overview
 
 ```
@@ -229,6 +307,78 @@ CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
 generates a tutorial with a live DeepSeek key, evals the output, and compares
 the score against the frozen `llm-generated` fixture — opening a GitHub issue
 on regression.
+
+---
+
+## Troubleshooting
+
+### Exit codes
+
+`decon` maps outcomes to stable exit codes so CI and scripts can branch on
+them:
+
+| Code | Meaning | What to do |
+|------|---------|------------|
+| `0` | Success | — |
+| `1` | Generic failure | Check stderr for the error message; usually an unexpected pipeline error |
+| `2` | Config / path / I/O error | Verify `--dir` exists, `decon.toml` is valid TOML, checkpoint path is correct |
+| `3` | Budget exhausted | The `max_llm_calls` limit was hit; raise it in `decon.toml` |
+| `4` | LLM provider error | Network, timeout, rate-limit, or parse error from the provider; see [LLM provider issues](#llm-provider-issues) |
+| `5` | Cancelled (Ctrl+C / SIGTERM) | A partial checkpoint was saved; re-run the same command to resume |
+
+### Checkpoint recovery
+
+Every expensive stage is checkpointed. If a run is interrupted (exit 5) or
+fails (exit 1/3/4), re-running the same command resumes from the last
+completed stage — completed stages are skipped automatically.
+
+To inspect progress without re-running anything:
+
+```bash
+decon resume --checkpoint /path/to/checkpoint-dir --format json
+```
+
+The checkpoint lives in the `--checkpoint-dir` (default: a temp dir under the
+output directory) and consists of `checkpoint.json` + `files.ndjson.gz`. See
+[ADR 0001](docs/adr/0001-checkpoint-schema-v1.md) and
+[ADR 0006](docs/adr/0006-file-based-checkpoint-output-storage.md) for the
+format. To start fresh, delete the checkpoint directory and re-run.
+
+### LLM provider issues
+
+- **`DECON_LLM_API_KEY (or DEEPSEEK_API_KEY) not set`** — No API key found.
+  See [API key setup](#api-key-setup). Without a key, `decon` falls back to a
+  mock client (useful for offline tests, not for real generation).
+- **`host '…' is not in the allowed hosts list`** — The `base_url` host is not
+  approved to receive the `Authorization` header. Add it via
+  `DECON_LLM_ALLOWED_HOSTS` or the `[[allowed_hosts]]` table in `decon.toml`.
+- **Rate limits / timeouts (exit 4)** — The client retries with backoff, but
+  sustained rate limiting will surface as exit 4. Wait and retry, or switch to
+  a provider/model with a higher rate limit.
+- **`DECON_FORCE_MOCK`** — Setting this to any non-empty value forces the mock
+  client even when a real key is present, for offline reproducibility.
+
+### Cache problems
+
+LLM responses are cached on disk (keyed by hash(prompt)+model+provider) so
+re-runs with an unchanged prompt are free.
+
+- **Stale / wrong responses** — Clear the cache by deleting the cache dir
+  (default: platform cache `/decon/llm-cache`) or set `DECON_NO_CACHE=1` to
+  bypass it for a single run.
+- **Custom cache location** — Set `DECON_LLM_CACHE_DIR=/some/path`.
+- **Disk full** — The cache enforces a size limit (default 100 MB) and evicts
+  oldest entries; if writes fail, check permissions and free space.
+
+### Budget exhaustion (exit 3)
+
+The `max_llm_calls` budget caps total LLM calls per run (fail-closed). If a
+large monorepo run hits the limit mid-pipeline:
+
+1. Check the checkpoint with `decon resume` to see which stages completed.
+2. Raise the budget in `decon.toml` (`max_llm_calls = 500`) or via CLI flag.
+3. Re-run the same command — completed stages are skipped, so only the
+   remaining calls count against the new budget.
 
 ---
 
