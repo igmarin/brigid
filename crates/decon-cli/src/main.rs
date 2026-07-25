@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use decon_core::{
     DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
     custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
-    resolve_config,
+    resolve_config, validate_config_for_check,
 };
 use decon_crawl::crawl_local;
 use decon_pipeline::{
@@ -168,6 +168,12 @@ enum Commands {
         /// Directory for the config file (default: `.`).
         #[arg(long = "dir", value_name = "PATH", default_value = ".")]
         dir: PathBuf,
+        /// Write defaults without prompting (for CI/scripts).
+        #[arg(long = "non-interactive", default_value_t = false)]
+        non_interactive: bool,
+        /// Validate an existing `decon.toml` and report issues.
+        #[arg(long = "check", default_value_t = false)]
+        check: bool,
     },
     /// List relative file inventory under a directory (no LLM).
     Crawl {
@@ -550,7 +556,11 @@ fn main() -> ExitCode {
     };
 
     match cli.command {
-        Commands::Init { dir } => cmd_init(&dir),
+        Commands::Init {
+            dir,
+            non_interactive,
+            check,
+        } => cmd_init(&dir, non_interactive, check),
         Commands::Crawl { dir, format } => {
             let dir = dir
                 .or_else(|| cfg.root.clone())
@@ -797,7 +807,427 @@ fn discover_config_file() -> Option<PathBuf> {
     None
 }
 
-fn cmd_init(dir: &Path) -> ExitCode {
+/// Default values shown in the wizard and used when input is skipped.
+const DEFAULT_LANGUAGE: &str = "en";
+const DEFAULT_DIAGRAM_LEVEL: &str = "standard";
+const DEFAULT_MAX_ABSTRACTIONS: usize = 10;
+const DEFAULT_CONCURRENCY: usize = 4;
+const DEFAULT_CACHE_SIZE_MB: usize = 100;
+
+/// Generate the comprehensive `decon.toml` template with all options commented
+/// out (except the header). When `answers` is provided, the selected options
+/// are uncommented.
+fn generate_config_template(answers: &WizardAnswers) -> String {
+    let mut out = String::new();
+
+    out.push_str("# decon configuration file\n");
+    out_str(&mut out, "#");
+    out_str(
+        &mut out,
+        "# Precedence: CLI flags > this file > DECON_* env vars > built-in defaults.",
+    );
+    out_str(&mut out, "#");
+    out_str(
+        &mut out,
+        "# API keys are read from DECON_LLM_API_KEY env var only — never put them here.",
+    );
+    out_str(&mut out, "#");
+
+    // --- Core paths ---
+    out_str(&mut out, "# Repository root (default: \".\")");
+    maybe_write_str(&mut out, "root", &answers.root, ".");
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Output directory for generated tutorials (default: \"output\")",
+    );
+    maybe_write_str(&mut out, "output", &answers.output, "output");
+    out_str(&mut out, "");
+
+    // --- Language & diagram ---
+    out_str(
+        &mut out,
+        "# Tutorial language / locale code, e.g. \"en\", \"es\", \"fr\" (default: \"en\")",
+    );
+    maybe_write_str(&mut out, "language", &answers.language, DEFAULT_LANGUAGE);
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Diagram richness: \"minimal\", \"standard\", or \"rich\" (default: \"standard\")",
+    );
+    maybe_write_str(
+        &mut out,
+        "diagram_level",
+        &answers.diagram_level,
+        DEFAULT_DIAGRAM_LEVEL,
+    );
+    out_str(&mut out, "");
+
+    // --- Abstractions & concurrency ---
+    out_str(
+        &mut out,
+        "# Maximum number of abstractions (chapters) to identify (default: 10)",
+    );
+    maybe_write_usize(
+        &mut out,
+        "max_abstractions",
+        answers.max_abstractions,
+        DEFAULT_MAX_ABSTRACTIONS,
+    );
+    out_str(&mut out, "");
+    out_str(&mut out, "# Maximum concurrent chapter writes (default: 4)");
+    maybe_write_usize(
+        &mut out,
+        "concurrency",
+        answers.concurrency,
+        DEFAULT_CONCURRENCY,
+    );
+    out_str(&mut out, "");
+
+    // --- Budget ---
+    out_str(
+        &mut out,
+        "# Hard ceiling on LLM calls per run (default: 200)",
+    );
+    maybe_write_opt_u32(&mut out, "max_llm_calls", answers.max_llm_calls);
+    out_str(&mut out, "");
+
+    // --- Provider / model ---
+    out_str(
+        &mut out,
+        "# LLM provider id (optional, e.g. \"openai\", \"deepseek\")",
+    );
+    maybe_write_opt_str(&mut out, "provider", answers.provider.as_deref());
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Model id for the provider (optional, e.g. \"deepseek-chat\")",
+    );
+    maybe_write_opt_str(&mut out, "model", answers.model.as_deref());
+    out_str(&mut out, "");
+
+    // --- Cache ---
+    out_str(
+        &mut out,
+        "# Disk cache directory for LLM responses (default: platform cache dir)",
+    );
+    maybe_write_opt_str(&mut out, "cache_dir", answers.cache_dir.as_deref());
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Disk cache size limit in megabytes (default: 100)",
+    );
+    maybe_write_opt_usize(&mut out, "cache_size_limit_mb", answers.cache_size_limit_mb);
+    out_str(&mut out, "");
+
+    // --- Advanced ---
+    out_str(
+        &mut out,
+        "# Checkpoint directory (default: \".decon-checkpoint\")",
+    );
+    maybe_write_opt_str(
+        &mut out,
+        "checkpoint_dir",
+        answers.checkpoint_dir.as_deref(),
+    );
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Soft per-batch character budget for dry-run packing (optional)",
+    );
+    maybe_write_opt_usize(&mut out, "batch_char_budget", answers.batch_char_budget);
+    out_str(&mut out, "");
+    out_str(
+        &mut out,
+        "# Chars-per-token heuristic for token estimates (default: 4)",
+    );
+    maybe_write_opt_usize(&mut out, "chars_per_token", answers.chars_per_token);
+    out_str(&mut out, "");
+
+    // --- Apps ---
+    out_str(
+        &mut out,
+        "# Monorepo app/module scope keys, e.g. [\"apps/alpha\"] (default: [])",
+    );
+    maybe_write_array(&mut out, "apps", &answers.apps);
+    out_str(&mut out, "");
+
+    // --- Allowed hosts ---
+    out_str(
+        &mut out,
+        "# Additional LLM provider hosts allowed to receive the Authorization header.",
+    );
+    out_str(
+        &mut out,
+        "# Defaults: api.openai.com, api.deepseek.com, localhost, 127.0.0.1.",
+    );
+    out_str(
+        &mut out,
+        "# Also extendable via the DECON_ALLOWED_HOSTS env var (comma-separated).",
+    );
+    if !answers.allowed_hosts.is_empty() {
+        for host in &answers.allowed_hosts {
+            out_str(&mut out, &format!("[[allowed_hosts]]\n# host = \"{host}\""));
+        }
+    } else {
+        out_str(&mut out, "# [[allowed_hosts]]");
+        out_str(&mut out, "# host = \"my-proxy.internal\"");
+    }
+
+    out
+}
+
+fn out_str(buf: &mut String, s: &str) {
+    buf.push_str(s);
+    buf.push('\n');
+}
+
+fn maybe_write_str(buf: &mut String, key: &str, value: &str, default: &str) {
+    if value == default {
+        out_str(buf, &format!("# {key} = \"{value}\""));
+    } else {
+        out_str(buf, &format!("{key} = \"{value}\""));
+    }
+}
+
+fn maybe_write_usize(buf: &mut String, key: &str, value: usize, default: usize) {
+    if value == default {
+        out_str(buf, &format!("# {key} = {value}"));
+    } else {
+        out_str(buf, &format!("{key} = {value}"));
+    }
+}
+
+fn maybe_write_opt_u32(buf: &mut String, key: &str, value: Option<u32>) {
+    match value {
+        None => out_str(buf, &format!("# {key} = 200")),
+        Some(v) => out_str(buf, &format!("{key} = {v}")),
+    }
+}
+
+fn maybe_write_opt_str(buf: &mut String, key: &str, value: Option<&str>) {
+    match value {
+        None => out_str(buf, &format!("# {key} = \"...\"")),
+        Some(v) => out_str(buf, &format!("{key} = \"{v}\"")),
+    }
+}
+
+fn maybe_write_opt_usize(buf: &mut String, key: &str, value: Option<usize>) {
+    match value {
+        None => out_str(buf, &format!("# {key} = ...")),
+        Some(v) => out_str(buf, &format!("{key} = {v}")),
+    }
+}
+
+fn maybe_write_array(buf: &mut String, key: &str, value: &[String]) {
+    if value.is_empty() {
+        out_str(buf, &format!("# {key} = []"));
+    } else {
+        let items: Vec<String> = value.iter().map(|s| format!("\"{s}\"")).collect();
+        out_str(buf, &format!("{key} = [{}]", items.join(", ")));
+    }
+}
+
+/// Answers collected from the interactive wizard.
+#[derive(Clone, Debug, Default)]
+struct WizardAnswers {
+    root: String,
+    output: String,
+    language: String,
+    diagram_level: String,
+    max_abstractions: usize,
+    concurrency: usize,
+    max_llm_calls: Option<u32>,
+    provider: Option<String>,
+    model: Option<String>,
+    cache_dir: Option<String>,
+    cache_size_limit_mb: Option<usize>,
+    checkpoint_dir: Option<String>,
+    batch_char_budget: Option<usize>,
+    chars_per_token: Option<usize>,
+    apps: Vec<String>,
+    allowed_hosts: Vec<String>,
+}
+
+impl WizardAnswers {
+    /// Default answers (all fields at their built-in defaults).
+    fn defaults() -> Self {
+        Self {
+            root: ".".to_owned(),
+            output: "output".to_owned(),
+            language: DEFAULT_LANGUAGE.to_owned(),
+            diagram_level: DEFAULT_DIAGRAM_LEVEL.to_owned(),
+            max_abstractions: DEFAULT_MAX_ABSTRACTIONS,
+            concurrency: DEFAULT_CONCURRENCY,
+            max_llm_calls: None,
+            provider: None,
+            model: None,
+            cache_dir: None,
+            cache_size_limit_mb: None,
+            checkpoint_dir: None,
+            batch_char_budget: None,
+            chars_per_token: None,
+            apps: Vec::new(),
+            allowed_hosts: Vec::new(),
+        }
+    }
+}
+
+/// Read a single line from stdin, trimming whitespace. Returns `None` on EOF
+/// or read error (caller falls back to the default).
+fn read_line_trimmed() -> Option<String> {
+    let mut buf = String::new();
+    match std::io::stdin().read_line(&mut buf) {
+        Ok(0) => None, // EOF
+        Ok(_) => {
+            let trimmed = buf.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Prompt for a string value with a default. Returns the default when the
+/// user presses Enter or EOF is reached.
+fn prompt_string(label: &str, default: &str) -> String {
+    eprint!("{label} [{default}]: ");
+    match read_line_trimmed() {
+        Some(s) => s,
+        None => default.to_owned(),
+    }
+}
+
+/// Prompt for a usize value with a default.
+fn prompt_usize(label: &str, default: usize) -> usize {
+    eprint!("{label} [{default}]: ");
+    match read_line_trimmed() {
+        Some(s) => s.parse::<usize>().unwrap_or(default),
+        None => default,
+    }
+}
+
+/// Prompt for a choice from a list of valid values (case-insensitive).
+fn prompt_choice(label: &str, choices: &[&str], default: &str) -> String {
+    let choices_str = choices.join(", ");
+    eprint!("{label} ({choices_str}) [{default}]: ");
+    match read_line_trimmed() {
+        Some(s) => {
+            let lower = s.to_ascii_lowercase();
+            for c in choices {
+                if *c == lower {
+                    return lower;
+                }
+            }
+            default.to_owned()
+        }
+        None => default.to_owned(),
+    }
+}
+
+/// Run the interactive wizard, collecting answers from stdin.
+///
+/// When stdin is not a terminal (e.g. piped in CI), the wizard still runs but
+/// each prompt gets EOF immediately and falls back to defaults — effectively
+/// behaving like `--non-interactive`.
+fn run_wizard() -> WizardAnswers {
+    let mut a = WizardAnswers::defaults();
+
+    eprintln!("decon init — interactive configuration wizard");
+    eprintln!("(Press Enter to accept the default for each prompt)");
+    eprintln!();
+
+    a.language = prompt_string("Output language", DEFAULT_LANGUAGE);
+    a.diagram_level = prompt_choice(
+        "Diagram level",
+        &["minimal", "standard", "rich"],
+        DEFAULT_DIAGRAM_LEVEL,
+    );
+    a.max_abstractions = prompt_usize("Max abstractions", DEFAULT_MAX_ABSTRACTIONS);
+    a.concurrency = prompt_usize("Concurrency (chapter writes)", DEFAULT_CONCURRENCY);
+
+    // Cache settings
+    eprintln!();
+    eprintln!("Cache settings:");
+    let cache_dir = prompt_string("Cache directory (blank = platform default)", "");
+    a.cache_dir = if cache_dir.is_empty() {
+        None
+    } else {
+        Some(cache_dir)
+    };
+    eprint!("Cache size limit (MB) [{DEFAULT_CACHE_SIZE_MB}]: ");
+    a.cache_size_limit_mb =
+        read_line_trimmed().map(|s| s.parse::<usize>().unwrap_or(DEFAULT_CACHE_SIZE_MB));
+
+    a
+}
+
+/// Run `decon init --check`: validate an existing `decon.toml` and report
+/// issues. Exits with code 2 on any error-level issue.
+fn cmd_init_check(dir: &Path) -> ExitCode {
+    let path = dir.join("decon.toml");
+    if !path.is_file() {
+        eprintln!("error: {} does not exist", path.display());
+        return ExitCode::from(EXIT_CONFIG);
+    }
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", path.display());
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    // Try parsing as TOML. If that fails, try YAML (the file might have a
+    // .toml extension but YAML content — unlikely but consistent with the
+    // "try both" fallback in load_file_config).
+    let cfg = match parse_toml_config(&text) {
+        Ok(c) => c,
+        Err(toml_err) => match parse_yaml_config(&text) {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("error: invalid decon.toml: {toml_err}");
+                return ExitCode::from(EXIT_CONFIG);
+            }
+        },
+    };
+
+    let issues = validate_config_for_check(&cfg);
+    if issues.is_empty() {
+        println!("{}: OK — no issues found", path.display());
+        return ExitCode::from(EXIT_OK);
+    }
+
+    let has_errors = issues.iter().any(|i| i.severity == "error");
+    for issue in &issues {
+        println!("[{}] {}", issue.severity, issue.message);
+    }
+    if has_errors {
+        eprintln!(
+            "error: {} has {} error(s) and {} warning(s)",
+            path.display(),
+            issues.iter().filter(|i| i.severity == "error").count(),
+            issues.iter().filter(|i| i.severity == "warning").count(),
+        );
+        ExitCode::from(EXIT_CONFIG)
+    } else {
+        eprintln!(
+            "warning: {} has {} warning(s)",
+            path.display(),
+            issues.iter().filter(|i| i.severity == "warning").count(),
+        );
+        ExitCode::from(EXIT_OK)
+    }
+}
+
+fn cmd_init(dir: &Path, non_interactive: bool, check: bool) -> ExitCode {
+    if check {
+        return cmd_init_check(dir);
+    }
+
     if let Err(e) = fs::create_dir_all(dir) {
         eprintln!("error: create {}: {e}", dir.display());
         return ExitCode::from(EXIT_CONFIG);
@@ -807,21 +1237,20 @@ fn cmd_init(dir: &Path) -> ExitCode {
         eprintln!("error: {} already exists", path.display());
         return ExitCode::from(EXIT_CONFIG);
     }
-    let sample = r#"# decon configuration (CLI > this file > DECON_* env > defaults)
-# root = "."
-# output = "output"
-# language = "en"
-# max_llm_calls = 200
-# apps = []
-# API keys are read from DECON_LLM_API_KEY env var only — never put them here.
-#
-# Additional LLM provider hosts allowed to receive the Authorization header.
-# Defaults: api.openai.com, api.deepseek.com, localhost, 127.0.0.1.
-# Also extendable via the DECON_ALLOWED_HOSTS env var (comma-separated).
-# [[allowed_hosts]]
-# host = "my-proxy.internal"
-"#;
-    match fs::write(&path, sample) {
+
+    // Determine answers: interactive wizard, or defaults.
+    // When --non-interactive is set, skip the wizard entirely.
+    // Otherwise, run the wizard which reads from stdin. If stdin is piped
+    // with data, the wizard reads the answers. If stdin is EOF (e.g. /dev/null
+    // or closed in CI), each prompt falls back to its default.
+    let answers = if non_interactive {
+        WizardAnswers::defaults()
+    } else {
+        run_wizard()
+    };
+
+    let template = generate_config_template(&answers);
+    match fs::write(&path, template) {
         Ok(()) => {
             println!("wrote {}", path.display());
             ExitCode::from(EXIT_OK)
@@ -1421,8 +1850,10 @@ fn cmd_generate(
             .max_llm_calls
             .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
     }
-    // CLI --concurrency overrides the default chapter concurrency (4).
-    let chapter_concurrency = concurrency.unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
+    // CLI --concurrency overrides config, which overrides the default (4).
+    let chapter_concurrency = concurrency
+        .or(cfg.concurrency)
+        .unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
 
     verbose_msg(
         verbosity,
@@ -1760,8 +2191,10 @@ fn cmd_generate_each_app(
             .max_llm_calls
             .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
     }
-    // CLI --concurrency overrides the default chapter concurrency (4).
-    let chapter_concurrency = concurrency.unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
+    // CLI --concurrency overrides config, which overrides the default (4).
+    let chapter_concurrency = concurrency
+        .or(cfg.concurrency)
+        .unwrap_or(decon_pipeline::DEFAULT_CHAPTERS_CONCURRENCY);
 
     verbose_msg(
         verbosity,
@@ -2776,5 +3209,201 @@ mod tests {
             hint.contains("dry-run"),
             "config hint should suggest dry-run: {hint}"
         );
+    }
+
+    // --- Issue #185: init wizard, template, --check unit tests ---
+
+    #[test]
+    fn wizard_defaults_have_expected_values() {
+        let a = WizardAnswers::defaults();
+        assert_eq!(a.language, "en");
+        assert_eq!(a.diagram_level, "standard");
+        assert_eq!(a.max_abstractions, 10);
+        assert_eq!(a.concurrency, 4);
+        assert_eq!(a.max_llm_calls, None);
+        assert_eq!(a.cache_dir, None);
+        assert_eq!(a.cache_size_limit_mb, None);
+        assert!(a.apps.is_empty());
+        assert!(a.allowed_hosts.is_empty());
+    }
+
+    #[test]
+    fn template_with_defaults_is_all_comments() {
+        let a = WizardAnswers::defaults();
+        let template = generate_config_template(&a);
+        // Every non-empty, non-comment line should be a comment.
+        for line in template.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                assert!(
+                    trimmed.starts_with('#'),
+                    "expected all lines to be comments, got: {trimmed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn template_with_defaults_is_valid_toml() {
+        let a = WizardAnswers::defaults();
+        let template = generate_config_template(&a);
+        // The template should parse as valid TOML (all comments = empty doc).
+        let cfg = parse_toml_config(&template).expect("template should be valid TOML");
+        // All fields should be None/empty since everything is commented out.
+        assert_eq!(cfg.language, None);
+        assert_eq!(cfg.concurrency, None);
+        assert_eq!(cfg.max_abstractions, None);
+    }
+
+    #[test]
+    fn template_with_custom_answers_uncomments_selected() {
+        let mut a = WizardAnswers::defaults();
+        a.language = "es".to_owned();
+        a.diagram_level = "rich".to_owned();
+        a.max_abstractions = 15;
+        a.concurrency = 8;
+        let template = generate_config_template(&a);
+        // The custom values should be uncommented.
+        assert!(
+            template.contains("language = \"es\""),
+            "template should uncomment language: {template}"
+        );
+        assert!(
+            template.contains("diagram_level = \"rich\""),
+            "template should uncomment diagram_level: {template}"
+        );
+        assert!(
+            template.contains("max_abstractions = 15"),
+            "template should uncomment max_abstractions: {template}"
+        );
+        assert!(
+            template.contains("concurrency = 8"),
+            "template should uncomment concurrency: {template}"
+        );
+        // Default values should still be commented (start with #).
+        assert!(
+            !template
+                .lines()
+                .any(|l| l.trim_start().starts_with("root =")),
+            "template should keep root commented (it's the default)"
+        );
+    }
+
+    #[test]
+    fn template_with_custom_answers_is_valid_toml() {
+        let mut a = WizardAnswers::defaults();
+        a.language = "es".to_owned();
+        a.diagram_level = "rich".to_owned();
+        a.max_abstractions = 15;
+        a.concurrency = 8;
+        a.max_llm_calls = Some(300);
+        let template = generate_config_template(&a);
+        let cfg = parse_toml_config(&template).expect("custom template should be valid TOML");
+        assert_eq!(cfg.language.as_deref(), Some("es"));
+        assert_eq!(cfg.diagram_level.as_deref(), Some("rich"));
+        assert_eq!(cfg.max_abstractions, Some(15));
+        assert_eq!(cfg.concurrency, Some(8));
+        assert_eq!(cfg.max_llm_calls, Some(300));
+    }
+
+    #[test]
+    fn template_includes_all_m5_options() {
+        let a = WizardAnswers::defaults();
+        let template = generate_config_template(&a);
+        // All M5 options should be mentioned in the template.
+        for option in &[
+            "language",
+            "diagram_level",
+            "max_abstractions",
+            "concurrency",
+            "max_llm_calls",
+            "cache_dir",
+            "cache_size_limit_mb",
+            "allowed_hosts",
+        ] {
+            assert!(
+                template.contains(option),
+                "template should mention {option}"
+            );
+        }
+    }
+
+    #[test]
+    fn template_includes_secret_warning() {
+        let a = WizardAnswers::defaults();
+        let template = generate_config_template(&a);
+        assert!(
+            template.contains("API keys") || template.contains("DECON_LLM_API_KEY"),
+            "template should warn about API keys"
+        );
+    }
+
+    #[test]
+    fn cmd_init_non_interactive_writes_valid_config() {
+        let dir = temp_dir("init-non-interactive");
+        std::fs::create_dir_all(&dir).unwrap();
+        let code = cmd_init(&dir, true, false);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        let path = dir.join("decon.toml");
+        assert!(path.is_file());
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Should parse as valid TOML.
+        let cfg = parse_toml_config(&content).expect("non-interactive config should be valid TOML");
+        // All fields should be None since everything is commented out.
+        assert_eq!(cfg.language, None);
+        // Should contain key option comments.
+        assert!(content.contains("language"));
+        assert!(content.contains("concurrency"));
+        assert!(content.contains("diagram_level"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_init_check_valid_config_exits_zero() {
+        let dir = temp_dir("init-check-valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("decon.toml"), b"language = \"en\"\n").unwrap();
+        let code = cmd_init(&dir, false, true);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_init_check_invalid_config_exits_two() {
+        let dir = temp_dir("init-check-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("decon.toml"), b"concurrency = 0\n").unwrap();
+        let code = cmd_init(&dir, false, true);
+        assert_eq!(code, ExitCode::from(EXIT_CONFIG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_init_check_missing_file_exits_two() {
+        let dir = temp_dir("init-check-missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let code = cmd_init(&dir, false, true);
+        assert_eq!(code, ExitCode::from(EXIT_CONFIG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_init_check_secret_field_exits_two() {
+        let dir = temp_dir("init-check-secret");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("decon.toml"), b"api_key = \"xxx\"\n").unwrap();
+        let code = cmd_init(&dir, false, true);
+        assert_eq!(code, ExitCode::from(EXIT_CONFIG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_init_refuses_overwrite() {
+        let dir = temp_dir("init-overwrite-unit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("decon.toml"), b"# pre-existing").unwrap();
+        let code = cmd_init(&dir, true, false);
+        assert_eq!(code, ExitCode::from(EXIT_CONFIG));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

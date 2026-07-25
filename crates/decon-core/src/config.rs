@@ -103,6 +103,16 @@ pub struct RunConfig {
     /// Disk cache size limit in megabytes (default 100 when resolved).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_size_limit_mb: Option<usize>,
+    /// Maximum concurrent chapter writes (default 4 when resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<usize>,
+    /// Maximum number of abstractions to identify (default 10 when resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_abstractions: Option<usize>,
+    /// Diagram richness level: `minimal`, `standard`, or `rich`
+    /// (default `standard` when resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagram_level: Option<String>,
     /// Additional LLM provider hosts allowed to receive the `Authorization`
     /// header, beyond the built-in allowlist. Sourced from
     /// `DECON_ALLOWED_HOSTS` (comma-separated) and `[[allowed_hosts]]` config
@@ -130,6 +140,9 @@ impl Default for RunConfig {
             batch_char_budget: None,
             chars_per_token: Some(DEFAULT_CONFIG_CHARS_PER_TOKEN),
             cache_size_limit_mb: None,
+            concurrency: None,
+            max_abstractions: None,
+            diagram_level: None,
             allowed_hosts: None,
         }
     }
@@ -152,6 +165,9 @@ impl RunConfig {
             batch_char_budget: None,
             chars_per_token: None,
             cache_size_limit_mb: None,
+            concurrency: None,
+            max_abstractions: None,
+            diagram_level: None,
             allowed_hosts: None,
         }
     }
@@ -175,6 +191,12 @@ impl RunConfig {
             batch_char_budget: overlay.batch_char_budget.or(self.batch_char_budget),
             chars_per_token: overlay.chars_per_token.or(self.chars_per_token),
             cache_size_limit_mb: overlay.cache_size_limit_mb.or(self.cache_size_limit_mb),
+            concurrency: overlay.concurrency.or(self.concurrency),
+            max_abstractions: overlay.max_abstractions.or(self.max_abstractions),
+            diagram_level: overlay
+                .diagram_level
+                .clone()
+                .or_else(|| self.diagram_level.clone()),
             allowed_hosts: merge_host_layers(&self.allowed_hosts, &overlay.allowed_hosts),
         }
     }
@@ -249,7 +271,8 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// - `DECON_LANGUAGE`, `DECON_MAX_LLM_CALLS`, `DECON_PROVIDER`, `DECON_MODEL`,
 /// - `DECON_CACHE_DIR`, `DECON_CHECKPOINT_DIR`,
 /// - `DECON_BATCH_CHAR_BUDGET`, `DECON_CHARS_PER_TOKEN`,
-/// - `DECON_CACHE_SIZE_LIMIT_MB`
+/// - `DECON_CACHE_SIZE_LIMIT_MB`, `DECON_CONCURRENCY`,
+/// - `DECON_MAX_ABSTRACTIONS`, `DECON_DIAGRAM_LEVEL`,
 ///
 /// **Blank values are ignored** (treated as unset). Non-blank values that fail
 /// numeric parse return [`ConfigError::InvalidEnvValue`].
@@ -301,6 +324,15 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
     }
     if let Some(v) = nonblank(vars.get("DECON_CACHE_SIZE_LIMIT_MB")) {
         cfg.cache_size_limit_mb = Some(parse_env_usize("DECON_CACHE_SIZE_LIMIT_MB", v)?);
+    }
+    if let Some(v) = nonblank(vars.get("DECON_CONCURRENCY")) {
+        cfg.concurrency = Some(parse_env_usize("DECON_CONCURRENCY", v)?);
+    }
+    if let Some(v) = nonblank(vars.get("DECON_MAX_ABSTRACTIONS")) {
+        cfg.max_abstractions = Some(parse_env_usize("DECON_MAX_ABSTRACTIONS", v)?);
+    }
+    if let Some(v) = nonblank(vars.get("DECON_DIAGRAM_LEVEL")) {
+        cfg.diagram_level = Some(v.to_owned());
     }
     if let Some(v) = nonblank(vars.get("DECON_ALLOWED_HOSTS")) {
         let hosts: Vec<String> = v
@@ -401,6 +433,94 @@ fn validate_config_hosts(cfg: &RunConfig) -> Result<(), ConfigError> {
         }
     }
     Ok(())
+}
+
+/// A single issue found by [`validate_config_for_check`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigIssue {
+    /// Human-readable severity: `"error"` or `"warning"`.
+    pub severity: &'static str,
+    /// A clear, actionable description of the issue.
+    pub message: String,
+}
+
+/// Validate a parsed [`RunConfig`] for `decon init --check`.
+///
+/// Returns a list of [`ConfigIssue`]s. An empty list means the config is
+/// valid. Issues include:
+///
+/// - **error**: `max_llm_calls` is zero (would block every run).
+/// - **error**: `concurrency` is zero (would deadlock chapter writes).
+/// - **error**: `max_abstractions` is zero (no chapters would be generated).
+/// - **error**: `diagram_level` is not one of `minimal`, `standard`, `rich`.
+/// - **error**: `cache_size_limit_mb` is zero.
+/// - **warning**: `language` is empty.
+/// - **warning**: `provider` is set but `model` is not (or vice-versa).
+#[must_use]
+pub fn validate_config_for_check(cfg: &RunConfig) -> Vec<ConfigIssue> {
+    let mut issues = Vec::new();
+
+    if let Some(0) = cfg.max_llm_calls {
+        issues.push(ConfigIssue {
+            severity: "error",
+            message: "max_llm_calls is 0 — every run would immediately exhaust the budget."
+                .to_owned(),
+        });
+    }
+    if let Some(0) = cfg.concurrency {
+        issues.push(ConfigIssue {
+            severity: "error",
+            message: "concurrency is 0 — chapter writes would deadlock. Use a positive integer."
+                .to_owned(),
+        });
+    }
+    if let Some(0) = cfg.max_abstractions {
+        issues.push(ConfigIssue {
+            severity: "error",
+            message: "max_abstractions is 0 — no chapters would be generated.".to_owned(),
+        });
+    }
+    if let Some(0) = cfg.cache_size_limit_mb {
+        issues.push(ConfigIssue {
+            severity: "error",
+            message: "cache_size_limit_mb is 0 — the cache would be unusable.".to_owned(),
+        });
+    }
+    if let Some(level) = &cfg.diagram_level {
+        let lower = level.to_ascii_lowercase();
+        if lower != "minimal" && lower != "standard" && lower != "rich" {
+            issues.push(ConfigIssue {
+                severity: "error",
+                message: format!(
+                    "diagram_level is {level:?} — expected one of: minimal, standard, rich"
+                ),
+            });
+        }
+    }
+    if let Some(lang) = &cfg.language {
+        if lang.trim().is_empty() {
+            issues.push(ConfigIssue {
+                severity: "warning",
+                message: "language is empty — the default 'en' will be used.".to_owned(),
+            });
+        }
+    }
+    if cfg.provider.is_some() && cfg.model.is_none() {
+        issues.push(ConfigIssue {
+            severity: "warning",
+            message: "provider is set but model is not — consider specifying a model id."
+                .to_owned(),
+        });
+    }
+    if cfg.model.is_some() && cfg.provider.is_none() {
+        issues.push(ConfigIssue {
+            severity: "warning",
+            message: "model is set but provider is not — consider specifying a provider id."
+                .to_owned(),
+        });
+    }
+
+    issues
 }
 
 /// Combine two optional host layers (self + overlay), deduplicating
@@ -1164,5 +1284,205 @@ host = "llm-gateway.corp.example"
             resolved.allowed_hosts.as_deref(),
             Some(["env-host.local".to_owned(), "file-host.local".to_owned()].as_slice())
         );
+    }
+
+    // --- Issue #185: concurrency, max_abstractions, diagram_level config ---
+
+    #[test]
+    fn concurrency_from_toml() {
+        let cfg = parse_toml_config("concurrency = 8\n").expect("toml");
+        assert_eq!(cfg.concurrency, Some(8));
+    }
+
+    #[test]
+    fn concurrency_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CONCURRENCY".into(), "8".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.concurrency, Some(8));
+    }
+
+    #[test]
+    fn concurrency_blank_env_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CONCURRENCY".into(), "".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.concurrency, None);
+    }
+
+    #[test]
+    fn concurrency_merge_layer() {
+        let env = RunConfig {
+            concurrency: Some(2),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            concurrency: Some(4),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &RunConfig::empty());
+        assert_eq!(resolved.concurrency, Some(4));
+    }
+
+    #[test]
+    fn max_abstractions_from_toml() {
+        let cfg = parse_toml_config("max_abstractions = 15\n").expect("toml");
+        assert_eq!(cfg.max_abstractions, Some(15));
+    }
+
+    #[test]
+    fn max_abstractions_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_MAX_ABSTRACTIONS".into(), "20".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.max_abstractions, Some(20));
+    }
+
+    #[test]
+    fn diagram_level_from_toml() {
+        let cfg = parse_toml_config("diagram_level = \"rich\"\n").expect("toml");
+        assert_eq!(cfg.diagram_level.as_deref(), Some("rich"));
+    }
+
+    #[test]
+    fn diagram_level_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_DIAGRAM_LEVEL".into(), "minimal".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.diagram_level.as_deref(), Some("minimal"));
+    }
+
+    #[test]
+    fn diagram_level_merge_layer() {
+        let env = RunConfig {
+            diagram_level: Some("minimal".into()),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            diagram_level: Some("rich".into()),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &RunConfig::empty());
+        assert_eq!(resolved.diagram_level.as_deref(), Some("rich"));
+    }
+
+    // --- Issue #185: validate_config_for_check ---
+
+    #[test]
+    fn check_valid_config_no_issues() {
+        let cfg = RunConfig::default();
+        let issues = validate_config_for_check(&cfg);
+        assert!(issues.is_empty(), "default config should have no issues");
+    }
+
+    #[test]
+    fn check_max_llm_calls_zero_is_error() {
+        let cfg = RunConfig {
+            max_llm_calls: Some(0),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "error");
+        assert!(issues[0].message.contains("max_llm_calls"));
+    }
+
+    #[test]
+    fn check_concurrency_zero_is_error() {
+        let cfg = RunConfig {
+            concurrency: Some(0),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "error");
+        assert!(issues[0].message.contains("concurrency"));
+    }
+
+    #[test]
+    fn check_max_abstractions_zero_is_error() {
+        let cfg = RunConfig {
+            max_abstractions: Some(0),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "error");
+        assert!(issues[0].message.contains("max_abstractions"));
+    }
+
+    #[test]
+    fn check_invalid_diagram_level_is_error() {
+        let cfg = RunConfig {
+            diagram_level: Some("ultra".into()),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "error");
+        assert!(issues[0].message.contains("diagram_level"));
+    }
+
+    #[test]
+    fn check_valid_diagram_levels_pass() {
+        for level in &["minimal", "standard", "rich", "MINIMAL", "Standard"] {
+            let cfg = RunConfig {
+                diagram_level: Some((*level).to_owned()),
+                ..RunConfig::empty()
+            };
+            let issues = validate_config_for_check(&cfg);
+            assert!(
+                issues.is_empty(),
+                "diagram_level {level:?} should be valid, got issues: {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_cache_size_zero_is_error() {
+        let cfg = RunConfig {
+            cache_size_limit_mb: Some(0),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "error");
+        assert!(issues[0].message.contains("cache_size_limit_mb"));
+    }
+
+    #[test]
+    fn check_empty_language_is_warning() {
+        let cfg = RunConfig {
+            language: Some("".into()),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "warning");
+        assert!(issues[0].message.contains("language"));
+    }
+
+    #[test]
+    fn check_provider_without_model_is_warning() {
+        let cfg = RunConfig {
+            provider: Some("openai".into()),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "warning");
+        assert!(issues[0].message.contains("model"));
+    }
+
+    #[test]
+    fn check_model_without_provider_is_warning() {
+        let cfg = RunConfig {
+            model: Some("gpt-4".into()),
+            ..RunConfig::empty()
+        };
+        let issues = validate_config_for_check(&cfg);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, "warning");
+        assert!(issues[0].message.contains("provider"));
     }
 }
