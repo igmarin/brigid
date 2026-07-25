@@ -14,12 +14,14 @@
 
 pub mod abstraction;
 pub mod budget;
+pub mod chapter;
 pub mod checkpoint;
 pub mod config;
 pub mod diagrams;
 pub mod eval;
 pub mod extract;
 pub mod generate;
+pub mod i18n;
 pub mod mermaid;
 pub mod module;
 pub mod progress;
@@ -29,7 +31,8 @@ pub mod setup;
 
 // Re-exports inherit rustdoc from `budget` (no extra crate-root docs required).
 pub use abstraction::{
-    Abstraction, AbstractionKind, IdentifyResult, Relationship, Tier, TierParseError,
+    Abstraction, AbstractionKind, IdentifyResult, Relationship, RelationshipsResult, Tier,
+    TierParseError,
 };
 pub use budget::{
     BudgetConfig, BudgetEstimate, DEFAULT_BATCH_CHAR_BUDGET, DEFAULT_CHARS_PER_TOKEN,
@@ -37,6 +40,7 @@ pub use budget::{
     TRUNCATION_MARKER, TruncateResult, capped_file_chars, estimate_budget, path_stub,
     path_stub_chars, truncate_content,
 };
+pub use chapter::{Chapter, ChapterOrder, ChapterOrderError, ChapterResult};
 pub use checkpoint::{
     CHECKPOINT_SCHEMA_VERSION, CheckpointError, CheckpointMeta, CheckpointV1,
     DEFAULT_MANIFEST_REL_PATH, ENCODING_BASE64, FileBundleRecord, ManifestPointer, StageId,
@@ -58,6 +62,7 @@ pub use eval::{
 };
 pub use extract::{ExtractError, extract_json_block, extract_yaml_block};
 pub use generate::{ArchitectureOverview, CombinedTutorial, SetupGuide};
+pub use i18n::{ChromeStrings, Locale};
 pub use mermaid::{
     MAX_LABEL_CHARS, MAX_SEQUENCE_PARTICIPANTS, ValidateResult, participant_line, sanitize_label,
     sanitize_markdown_mermaid_blocks, sanitize_mermaid, sequence_participant_lines, stable_node_id,
