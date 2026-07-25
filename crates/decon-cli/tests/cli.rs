@@ -136,7 +136,7 @@ fn init_writes_decon_toml() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("decon-cli-init-{n}"));
+    let dir = temp_base().join(format!("decon-cli-init-{n}"));
     std::fs::create_dir_all(&dir).unwrap();
     decon()
         .args(["init", "--dir"])
@@ -162,13 +162,8 @@ fn resume_missing_checkpoint_exits_config() {
 fn resume_valid_checkpoint_json() {
     use decon_core::{CheckpointV1, RunConfig, StageId};
     use decon_pipeline::{CheckpointStore, records_from_files};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("decon-cli-resume-{n}"));
+    let dir = temp_dir("resume-json");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = RunConfig::default();
     let mut meta = CheckpointV1::new(
@@ -181,7 +176,6 @@ fn resume_valid_checkpoint_json() {
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
-    wait_for_dir(&dir);
 
     decon()
         .args(["resume", "--checkpoint"])
@@ -204,30 +198,27 @@ fn resume_valid_checkpoint_json() {
 // init overwrite refusal, recursive tutorial walks).
 // ---------------------------------------------------------------------------
 
-/// Build a unique temporary directory name (no `tempfile` dev-dep required).
+/// Build a unique temporary directory path (no `tempfile` dev-dep required).
+///
+/// Prefers `CARGO_TARGET_TMPDIR` (inside the cargo target directory, same
+/// drive as the test binary) over `temp_base()` to avoid Windows
+/// 8.3 short-name resolution issues (e.g. `RUNNER~1`) and macOS symlink
+/// resolution issues (e.g. `/var` → `/private/var`).  The base directory
+/// is canonicalised so subprocesses receive a fully-resolved path.
+fn temp_base() -> PathBuf {
+    let base = std::env::var("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    std::fs::canonicalize(&base).unwrap_or(base)
+}
+
 fn temp_dir(label: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("decon-cli-{label}-{n}"))
-}
-
-/// Wait for a directory to be visible to other processes.
-///
-/// On Windows, newly created directories may not be immediately visible to
-/// subprocesses due to filesystem caching. This helper retries `is_dir()`
-/// a few times with a short sleep before giving up.
-fn wait_for_dir(path: &Path) {
-    for _ in 0..10 {
-        if path.is_dir() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    // Final check – if still not visible, let the test fail with its
-    // normal assertion rather than panicking here.
+    temp_base().join(format!("decon-cli-{label}-{n}"))
 }
 
 /// Escape a filesystem path for embedding in a TOML or YAML double-quoted
@@ -349,7 +340,6 @@ fn resume_text_format_on_valid_checkpoint() {
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&dir).save(meta, &files).unwrap();
-    wait_for_dir(&dir);
 
     decon()
         .args(["resume", "--checkpoint"])
@@ -595,7 +585,7 @@ fn identify_single_shot_completes_and_writes_checkpoint() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-ok-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-ok-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -624,7 +614,7 @@ fn identify_empty_dir_exits_config() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let empty = std::env::temp_dir().join(format!("decon-cli-identify-empty-{n}"));
+    let empty = temp_base().join(format!("decon-cli-identify-empty-{n}"));
     std::fs::create_dir_all(&empty).unwrap();
 
     decon()
@@ -692,7 +682,7 @@ fn identify_budget_exceeded_exits_budget_code_3() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-budget-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-budget-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -718,7 +708,7 @@ fn identify_llm_error_exits_llm_code_4() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-llm-err-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-llm-err-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -793,7 +783,7 @@ fn generate_empty_dir_exits_config() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let empty = std::env::temp_dir().join(format!("decon-cli-generate-empty-{n}"));
+    let empty = temp_base().join(format!("decon-cli-generate-empty-{n}"));
     std::fs::create_dir_all(&empty).unwrap();
 
     decon()
@@ -813,7 +803,7 @@ fn generate_budget_exceeded_exits_budget_code_3() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-generate-budget-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-generate-budget-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -838,8 +828,8 @@ fn generate_completes_and_writes_output() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-generate-ok-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-generate-ok-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-generate-ok-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-generate-ok-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -883,8 +873,8 @@ fn generate_each_app_completes_and_writes_per_app_output() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-each-app-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-each-app-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-each-app-out-{n}"));
     let dir = fixtures_dir().join("umbrella");
 
     decon()
@@ -906,9 +896,9 @@ fn generate_each_app_completes_and_writes_per_app_output() {
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
-    let alpha_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-alpha"));
-    let beta_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-beta"));
-    let gamma_ckpt = std::env::temp_dir().join(format!("decon-cli-each-app-ckpt-{n}-apps-gamma"));
+    let alpha_ckpt = temp_base().join(format!("decon-cli-each-app-ckpt-{n}-apps-alpha"));
+    let beta_ckpt = temp_base().join(format!("decon-cli-each-app-ckpt-{n}-apps-beta"));
+    let gamma_ckpt = temp_base().join(format!("decon-cli-each-app-ckpt-{n}-apps-gamma"));
     let _ = std::fs::remove_dir_all(&alpha_ckpt);
     let _ = std::fs::remove_dir_all(&beta_ckpt);
     let _ = std::fs::remove_dir_all(&gamma_ckpt);
@@ -1193,8 +1183,8 @@ fn combine_with_prepopulated_checkpoint_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-ok-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-combine-stage-ok-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-combine-stage-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     seed_full_checkpoint(&ckpt_dir);
@@ -1229,9 +1219,8 @@ fn combine_with_incomplete_checkpoint_errors_about_prerequisites() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-combine-stage-incomplete-{n}"));
-    let output_dir =
-        std::env::temp_dir().join(format!("decon-cli-combine-stage-incomplete-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-combine-stage-incomplete-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-combine-stage-incomplete-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     let cfg = RunConfig::default();
@@ -1247,7 +1236,6 @@ fn combine_with_incomplete_checkpoint_errors_about_prerequisites() {
     meta.mark_stage_complete(StageId::Identify, "t3");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["combine", "--dir"])
@@ -1329,7 +1317,7 @@ fn generate_budget_flag_respected_exits_budget_code_3() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-budget-flag-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-budget-flag-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     // --max-llm-calls 1 should exhaust the budget quickly (identify alone
@@ -1355,8 +1343,8 @@ fn generate_concurrency_flag_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-concurrency-ok-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-concurrency-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-concurrency-ok-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-concurrency-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1387,8 +1375,8 @@ fn generate_verbose_output_contains_detail_lines() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verbose-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verbose-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-verbose-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-verbose-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1419,8 +1407,8 @@ fn generate_quiet_mode_suppresses_progress_output() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-quiet-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-quiet-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     let result = decon()
@@ -1464,7 +1452,7 @@ fn generate_error_includes_actionable_hint() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-hint-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-hint-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     // Budget exhaustion should produce a "hint:" line with an actionable
@@ -1503,7 +1491,7 @@ fn identify_cancelled_exits_partial_code_5() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-cancel-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-cancel-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     // DECON_MOCK_CANCEL causes the cancel token to fire immediately, so the
@@ -1533,8 +1521,8 @@ fn generate_cancelled_exits_partial_code_5() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-cancel-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-cancel-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-cancel-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-cancel-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1567,7 +1555,7 @@ fn generate_llm_error_exits_llm_code_4() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-llm-err-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-llm-err-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1594,7 +1582,7 @@ fn generate_llm_error_includes_hint_about_api_key() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-llm-hint-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-llm-hint-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1622,8 +1610,8 @@ fn generate_review_chapters_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-review-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-review-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-review-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-review-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1654,8 +1642,8 @@ fn generate_no_setup_no_overview_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-nosetup-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-nosetup-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-nosetup-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-nosetup-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1686,8 +1674,8 @@ fn generate_force_setup_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-force-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-force-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-force-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-force-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1718,8 +1706,8 @@ fn generate_verbose_with_concurrency_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-conc-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-conc-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-verb-conc-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-verb-conc-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1746,8 +1734,8 @@ fn generate_max_llm_calls_flag_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-maxcalls-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-maxcalls-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-maxcalls-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-maxcalls-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     // Provide a generous budget so the pipeline completes.
@@ -1930,7 +1918,7 @@ fn generate_empty_dir_error_message_contains_no_files() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let empty = std::env::temp_dir().join(format!("decon-cli-gen-empty-msg-{n}"));
+    let empty = temp_base().join(format!("decon-cli-gen-empty-msg-{n}"));
     std::fs::create_dir_all(&empty).unwrap();
 
     decon()
@@ -1951,7 +1939,7 @@ fn generate_budget_error_message_contains_budget_and_hint() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-budget-msg-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-budget-msg-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -1982,8 +1970,8 @@ fn generate_verbose_shows_concurrency_and_max_llm_calls() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-detail-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-verb-detail-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-verb-detail-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-verb-detail-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -2014,8 +2002,8 @@ fn generate_quiet_suppresses_all_progress() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-suppress-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-quiet-suppress-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-quiet-suppress-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-quiet-suppress-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     let result = decon()
@@ -2240,8 +2228,8 @@ fn generate_each_app_verbose_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-each-app-verb-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-each-app-verb-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-each-app-verb-out-{n}"));
     let dir = fixtures_dir().join("umbrella");
 
     decon()
@@ -2259,12 +2247,9 @@ fn generate_each_app_verbose_completes() {
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
-    let alpha_ckpt =
-        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-alpha"));
-    let beta_ckpt =
-        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-beta"));
-    let gamma_ckpt =
-        std::env::temp_dir().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-gamma"));
+    let alpha_ckpt = temp_base().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-alpha"));
+    let beta_ckpt = temp_base().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-beta"));
+    let gamma_ckpt = temp_base().join(format!("decon-cli-each-app-verb-ckpt-{n}-apps-gamma"));
     let _ = std::fs::remove_dir_all(&alpha_ckpt);
     let _ = std::fs::remove_dir_all(&beta_ckpt);
     let _ = std::fs::remove_dir_all(&gamma_ckpt);
@@ -2310,7 +2295,6 @@ fn seed_identify_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(ckpt_dir);
 }
 
 /// Seed a checkpoint with Fetch + DryRun + Identify + Relationships complete.
@@ -2359,7 +2343,6 @@ fn seed_relationships_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(ckpt_dir);
 }
 
 /// Seed a checkpoint with Fetch + DryRun + Identify + Relationships + Order.
@@ -2412,7 +2395,6 @@ fn seed_order_checkpoint(ckpt_dir: &std::path::Path) {
 
     let files = records_from_files(&[("src/router.rs", b"fn route() {}" as &[u8])]);
     CheckpointStore::new(ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(ckpt_dir);
 }
 
 #[test]
@@ -2422,7 +2404,7 @@ fn relationships_stage_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-rel-stage-ok-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-rel-stage-ok-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     seed_identify_checkpoint(&ckpt_dir);
@@ -2446,7 +2428,7 @@ fn order_stage_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-order-stage-ok-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-order-stage-ok-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     seed_relationships_checkpoint(&ckpt_dir);
@@ -2470,8 +2452,8 @@ fn chapters_stage_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-chapters-stage-ok-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-chapters-stage-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-chapters-stage-ok-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-chapters-stage-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     seed_order_checkpoint(&ckpt_dir);
@@ -2498,7 +2480,7 @@ fn setup_stage_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-setup-stage-ok-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-setup-stage-ok-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     seed_identify_checkpoint(&ckpt_dir);
@@ -2523,7 +2505,7 @@ fn overview_stage_runs_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-overview-stage-ok-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-overview-stage-ok-{n}"));
     let dir = fixtures_dir().join("umbrella");
 
     seed_relationships_checkpoint(&ckpt_dir);
@@ -2551,7 +2533,7 @@ fn relationships_stage_without_identify_exits_config() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-rel-no-identify-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-rel-no-identify-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     // Create a checkpoint with only Fetch + DryRun (no Identify).
@@ -2567,7 +2549,6 @@ fn relationships_stage_without_identify_exits_config() {
     meta.mark_stage_complete(StageId::DryRun, "t2");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["relationships", "--dir"])
@@ -2590,8 +2571,8 @@ fn chapters_stage_without_identify_exits_config() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-chap-no-identify-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-chap-no-identify-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-chap-no-identify-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-chap-no-identify-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     let cfg = RunConfig::default();
@@ -2606,7 +2587,6 @@ fn chapters_stage_without_identify_exits_config() {
     meta.mark_stage_complete(StageId::DryRun, "t2");
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
     CheckpointStore::new(&ckpt_dir).save(meta, &files).unwrap();
-    wait_for_dir(&ckpt_dir);
 
     decon()
         .args(["chapters", "--dir"])
@@ -2633,8 +2613,8 @@ fn generate_with_language_flag_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-lang-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-lang-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-lang-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-lang-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -2662,8 +2642,8 @@ fn generate_with_rich_diagram_level_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-rich-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-rich-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-rich-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-rich-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -2689,8 +2669,8 @@ fn generate_with_minimal_diagram_level_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-min-diagram-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-min-diagram-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-min-diagram-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-min-diagram-out-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -2718,8 +2698,8 @@ fn generate_with_apps_flag_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-gen-apps-ckpt-{n}"));
-    let output_dir = std::env::temp_dir().join(format!("decon-cli-gen-apps-out-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-apps-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-apps-out-{n}"));
     let dir = fixtures_dir().join("umbrella");
 
     decon()
@@ -2747,7 +2727,7 @@ fn identify_map_reduce_completes_successfully() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-mapreduce-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-mapreduce-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
@@ -2776,7 +2756,7 @@ fn identify_with_max_abstractions_completes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ckpt_dir = std::env::temp_dir().join(format!("decon-cli-identify-maxabs-{n}"));
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-maxabs-{n}"));
     let dir = fixtures_dir().join("python-lib");
 
     decon()
