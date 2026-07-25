@@ -19,12 +19,15 @@ full migration design.
 
 ## Current status
 
-**Milestone 4 (Full Generate) — complete.**
+**Milestone 5 (Product Polish) — complete.**
 The full `decon generate` pipeline (relationships → order → chapters → setup →
 overview → combine) is working, with i18n chrome (English + Spanish),
 `--each-app` monorepo fan-out, `--review-chapters` polishing, file-based
-checkpoint output storage, and an eval regression CI gate. M5 (product polish)
-is next.
+checkpoint output storage, and an eval regression CI gate. M5 added native
+installers (Homebrew, `cargo install`, GitHub Releases), shell completions, a
+man page, disk cache by default with LRU eviction, concurrency/budget/verbose
+flags, symlink cycle detection, host allowlist, criterion benchmarks, an
+`init` wizard, Windows CI, and Python entrypoint deprecation.
 
 | Milestone | Goal | Status |
 |-----------|------|--------|
@@ -33,7 +36,7 @@ is next.
 | **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `decon.toml`; ≥85% coverage gate | ✅ Done |
 | **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
 | **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app`; `--review-chapters`; eval regression gate | ✅ Done |
-| **M5** — Product Polish | Installers, man page, shell completions, concurrency, error UX, Python deprecation | 🔜 In progress |
+| **M5** — Product Polish | Installers, man page, shell completions, disk cache, concurrency flags, benchmarks, init wizard, Windows CI, Python deprecation | ✅ Done |
 
 ### What works today
 
@@ -60,6 +63,14 @@ is next.
     pass per chapter)
   - i18n chrome: `--language es` localizes index/footer headings and labels
     (English + Spanish locales)
+- **CLI (M5):**
+  - `decon completions --shell bash|zsh|fish|powershell` — generate shell
+    completion scripts for every subcommand and flag
+  - `decon manpage` — generate a troff-formatted man page covering all
+    subcommands
+  - `decon init` wizard with `--check` validation for starter `decon.toml`
+  - Concurrency (`--concurrency`), budget (`--max-llm-calls`), verbose
+    (`--verbose` / `-v`), and quiet (`--quiet` / `-q`) flags
 - **`decon-core` pure helpers:** module keys, monorepo scope, setup scoring,
   context budget, Mermaid sanitize/validate, index diagram builders, structural
   eval, `RunConfig` layering, checkpoint schema v1 types, progress budget,
@@ -71,15 +82,19 @@ is next.
   `files.ndjson.gz`, stage-skip / partial regenerate helpers, file-based stage
   output storage with SHA-256 verification (ADR 0006).
 - **LLM provider client** (`decon-llm`): `OpenAiCompatibleClient` with
-  retry/backoff/timeout, host allowlist validation, disk cache
+  retry/backoff/timeout, host allowlist validation, disk cache enabled by
+  default with LRU eviction and size limits
   (key = hash(prompt)+model+provider), and bounded-concurrency map batches.
+- **Symlink cycle detection** (`decon-crawl`): prevents infinite recursion
+  when crawling directories with symlink loops.
 - **CI coverage hard gate:** ≥85% workspace line coverage.
 - **Parity fixtures:** `tests/fixtures/{python-lib,umbrella,js-lib}` + frozen
   `baseline.json`; tutorial goldens under `tests/fixtures/tutorials/`
   (hand-crafted `good-mini` + `broken-mini`, LLM-generated `llm-generated`).
-- **CI pipeline:** fmt, clippy (`-D warnings`), test, coverage report, doc,
-  `cargo audit`, `cargo deny check`, fixture baseline check, eval regression
-  gate (good-mini + broken-mini), nightly LLM smoke, rs-guard PR review.
+- **CI pipeline:** fmt, clippy (`-D warnings`), test (Ubuntu + macOS + Windows
+  matrix), coverage report, doc, `cargo audit`, `cargo deny check`, fixture
+  baseline check, eval regression gate (good-mini + broken-mini), criterion
+  benchmarks, nightly LLM smoke, rs-guard PR review.
 - **Prompt catalog** (`prompts/`) and **ADR 0001** checkpoint schema (used from M2+).
 
 ### Usage examples
@@ -120,11 +135,16 @@ cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
 
 ### What does not work yet
 
-Remaining M5 items: concurrency limits and improved error UX. Native
-installers (Homebrew, `cargo install`, GitHub Releases), the man page, and
-shell completions are now available — see
-[Installation](#installation) below. The Python entrypoint has been deprecated
-— see [`docs/migrating-from-python.md`](docs/migrating-from-python.md) for the
+Phase 5 items (optional / advanced — not on the current roadmap):
+
+- **git-diff incremental tutorials** — only re-explain modules changed since a
+  tag or commit.
+- **JSON structured outputs** — machine-readable pipeline output beyond
+  dry-run.
+- **Plugin ecosystem** — custom "kind" detectors or pipeline extensions.
+
+The Python entrypoint has been deprecated — see
+[`docs/migrating-from-python.md`](docs/migrating-from-python.md) for the
 migration guide.
 
 ---
@@ -281,16 +301,16 @@ man -l decon.1
 decon-rs/
 ├── crates/
 │   ├── decon-core/       # Pure domain models, traits, budgeting, mermaid sanitize
-│   ├── decon-crawl/      # Local + GitHub crawling (gitignore-aware)
-│   ├── decon-llm/        # LlmClient trait, provider clients, caching, retries
-│   ├── decon-pipeline/   # Stage orchestration, checkpoint/resume, dry-run
-│   └── decon-cli/        # Thin binary — clap args → pipeline wiring
+│   ├── decon-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
+│   ├── decon-llm/        # LlmClient trait, provider clients, disk cache, retries
+│   ├── decon-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
+│   └── decon-cli/        # Thin binary — clap args, completions, man page, exit codes
 ├── prompts/              # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 ├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
-│   └── adr/              # Architecture Decision Records
+│   └── adr/              # Architecture Decision Records (0001–0011)
 ├── homebrew/             # Homebrew formula template (decon.rb)
 ├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
@@ -453,7 +473,13 @@ rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
   /tmp/regen_baseline tests/fixtures/ --check
 # Eval regression gate (good-mini passes, broken-mini fails at threshold 80)
 cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
+# Benchmarks (criterion — run locally, not a CI gate)
+cargo bench -p decon-pipeline
 ```
+
+CI runs the **test and clippy** jobs on a three-OS matrix (Ubuntu, macOS,
+Windows) to catch platform-specific regressions. Coverage, docs, audit, deny,
+baseline, and eval regression run on Ubuntu only.
 
 CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
 generates a tutorial with a live DeepSeek key, evals the output, and compares
@@ -575,6 +601,9 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 | [`docs/adr/0006-file-based-checkpoint-output-storage.md`](docs/adr/0006-file-based-checkpoint-output-storage.md) | File-based stage output storage with SHA-256 verification |
 | [`docs/adr/0007-i18n-chrome-design.md`](docs/adr/0007-i18n-chrome-design.md) | Generic localization framework for tutorial chrome strings |
 | [`docs/adr/0008-two-tier-golden-fixture-strategy.md`](docs/adr/0008-two-tier-golden-fixture-strategy.md) | Two-tier golden fixture strategy for eval regression |
+| [`docs/adr/0009-disk-cache-default-lru-eviction.md`](docs/adr/0009-disk-cache-default-lru-eviction.md) | Disk cache enabled by default with LRU eviction and size limits |
+| [`docs/adr/0010-release-strategy.md`](docs/adr/0010-release-strategy.md) | Release strategy: GitHub Releases, Homebrew, cargo install, cargo-binstall |
+| [`docs/adr/0011-python-deprecation-approach.md`](docs/adr/0011-python-deprecation-approach.md) | Python deprecation: migration guide over wrapper (Option B) |
 | [`prompts/README.md`](prompts/README.md) | Prompt catalog: 10 templates, variable schema, integration notes |
 | [`tests/fixtures/README.md`](tests/fixtures/README.md) | Fixture set, baseline regenerator, parity strategy |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | TDD workflow, coverage gate, CI checks, PR process |

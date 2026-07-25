@@ -108,11 +108,11 @@ done, enabling resume from any point without re-running expensive LLM calls.
 | `decon-core` | `abstraction` | `Abstraction`, `Relationship`, `IdentifyResult`, `RelationshipsResult` |
 | `decon-core` | `generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
 | `decon-core` | `extract` | Robust YAML/JSON block extraction from messy LLM output |
-| `decon-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker) |
+| `decon-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker, symlink cycle detection) |
 | `decon-llm` | `client` | `LlmClient` async trait (ADR 0002) |
 | `decon-llm` | `mock` | `MockClient` test double |
 | `decon-llm` | `openai_client` | OpenAI-compatible HTTP client with retry/backoff/timeout |
-| `decon-llm` | `cache` | Disk response cache keyed by hash(prompt)+model+provider |
+| `decon-llm` | `cache` | Disk response cache keyed by hash(prompt)+model+provider; enabled by default with LRU eviction (ADR 0009) |
 | `decon-llm` | `concurrency` | Bounded-concurrency map batches via `tokio::sync::Semaphore` (ADR 0003) |
 | `decon-pipeline` | `dry_run` | Dry-run plan assembly with baseline parity |
 | `decon-pipeline` | `identify` | Map/reduce + single-shot identify stages |
@@ -269,6 +269,9 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0006](docs/adr/0006-file-based-checkpoint-output-storage.md) | File-based stage output storage with SHA-256 verification |
 | [0007](docs/adr/0007-i18n-chrome-design.md) | Generic localization framework for tutorial chrome strings |
 | [0008](docs/adr/0008-two-tier-golden-fixture-strategy.md) | Two-tier golden fixture strategy for eval regression |
+| [0009](docs/adr/0009-disk-cache-default-lru-eviction.md) | Disk cache enabled by default with LRU eviction and size limits |
+| [0010](docs/adr/0010-release-strategy.md) | Release strategy: GitHub Releases, Homebrew, cargo install, cargo-binstall |
+| [0011](docs/adr/0011-python-deprecation-approach.md) | Python deprecation: migration guide over wrapper (Option B) |
 
 ---
 

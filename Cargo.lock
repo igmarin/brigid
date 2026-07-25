@@ -435,7 +435,7 @@ checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
 name = "decon-cli"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "decon-core"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "hex",
  "proptest",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "decon-crawl"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "serial_test",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "decon-llm"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "decon-core",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "decon-pipeline"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "async-trait",

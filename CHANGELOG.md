@@ -12,19 +12,63 @@ tracks the latest.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.5.0] - 2026-07-25
+
+Milestone 5 — Product Polish. The `decon` CLI is now a distributable product:
+native installers, shell completions, a man page, disk cache by default,
+concurrency flags, benchmarks, an init wizard, Windows CI, and Python
+entrypoint deprecation.
+
 ### Added
 
+- Symlink cycle detection in `decon-crawl` to prevent infinite recursion
+  (#196).
+- Configurable LLM host allowlist via `DECON_LLM_ALLOWED_HOSTS` env var and
+  `[[allowed_hosts]]` table in `decon.toml` (#194).
+- Disk cache enabled by default with LRU eviction and size limits (100 MB
+  default); bypass with `DECON_NO_CACHE=1` (#197, ADR 0009).
+- `CHANGELOG.md` and `ARCHITECTURE.md` documentation (#193).
+- Batch file writes and dev profile optimizations in the pipeline (#200).
+- Reduced lock contention in chapter summary collection (#199).
+- Reduced excessive cloning in pipeline hot paths (#195).
+- Concurrent checkpoint and filesystem edge case tests (#202).
+- Concurrency (`--concurrency`), budget (`--max-llm-calls`), verbose
+  (`--verbose` / `-v`), and quiet (`--quiet` / `-q`) CLI flags (#201).
+- Criterion benchmarks for seven critical pipeline paths: template rendering,
+  file context selection, checkpoint roundtrip, budget estimation, chapter
+  generation, combine index, mermaid sanitization (#205).
+- `decon init` wizard with `--check` validation for starter `decon.toml`
+  (#203).
+- CLI error path tests with `assert_cmd` improving `main.rs` coverage (#204).
+- Shell completions for bash, zsh, fish, and PowerShell via `clap_complete`
+  (#206).
+- Man page generation via `clap_mangen` — `decon manpage` produces a
+  troff-formatted man page covering all subcommands (#207).
+- Release workflow with native installers for Linux (x86_64, aarch64), macOS
+  (x86_64, aarch64), and Windows (x86_64), plus a Homebrew formula template
+  (#209, ADR 0010).
+- Windows and macOS added to the CI test and clippy matrix (#208).
 - Python entrypoint deprecation guide
   ([`docs/migrating-from-python.md`](docs/migrating-from-python.md)) with
   command mapping, environment variable changes, feature parity table, and FAQ
-  (#191).
+  (#191, ADR 0011).
+- ADRs 0009–0011: disk cache default + LRU eviction, release strategy, Python
+  deprecation approach (#192).
 
 ### Changed
 
-- [`docs/move-to-rust.md`](docs/move-to-rust.md) Phase 4 updated to mark Python
-  deprecation as complete (#191).
-- [`README.md`](README.md) updated to mention Python deprecation and link to
-  the migration guide (#191).
+- Documentation updated for M5 completion: README, CONTRIBUTING, ADRs,
+  milestone table, tech stack (#192).
+- [`docs/move-to-rust.md`](docs/move-to-rust.md) Phase 4 marked complete;
+  Phase 5 clearly marked as optional/advanced (#192).
+
+### Deprecated
+
+- Python entrypoint (`pip install decon`) — deprecated in favor of the Rust
+  CLI. No new features will be added to the Python implementation. See
+  [`docs/migrating-from-python.md`](docs/migrating-from-python.md) (#191).
 
 ## [0.4.0] - 2026-07-25
 
@@ -192,7 +236,8 @@ assessment, and the structural eval port. Includes the M0 spec-freeze work
 
 - Mapped path/load errors to exit code 2 (config) in the CLI (#27).
 
-[Unreleased]: https://github.com/igmarin/decon-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/igmarin/decon-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.5.0
 [0.4.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.4.0
 [0.3.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.3.0
 [0.2.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.2.0
