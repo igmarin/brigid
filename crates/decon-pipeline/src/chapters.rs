@@ -588,12 +588,7 @@ async fn generate_chapters_internal(
         let completed = Arc::clone(&completed);
         let meta = &metas[pos];
         let abstraction = &abstractions[meta.abs_idx];
-        let listing = full_chapter_listing.clone();
-        let prev_link = meta.prev_link.clone();
-        let next_link = meta.next_link.clone();
-        let project_name = config.project_name.clone();
-        let language_instruction = config.language_instruction.clone();
-        let lang = config.lang.clone();
+        let listing = &full_chapter_listing;
         let diagram_level = config.diagram_level;
         let budget = config.budget;
         let max_file_chars = config.max_file_chars;
@@ -622,14 +617,14 @@ async fn generate_chapters_internal(
                 abstraction,
                 meta.abs_idx,
                 meta.chapter_num,
-                &prev_link,
-                &next_link,
-                &listing,
+                &meta.prev_link,
+                &meta.next_link,
+                listing,
                 &summary,
                 &file_context,
-                &project_name,
-                &language_instruction,
-                &lang,
+                &config.project_name,
+                &config.language_instruction,
+                &config.lang,
                 diagram_level,
             )
             .await?;
@@ -650,9 +645,9 @@ async fn generate_chapters_internal(
         generated.push(result?);
     }
 
-    let mut all_chapters: Vec<Chapter> = {
-        let guard = completed.lock().await;
-        guard.clone()
+    let mut all_chapters: Vec<Chapter> = match Arc::try_unwrap(completed) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(arc) => arc.lock().await.clone(),
     };
     all_chapters.sort_by_key(|c| c.chapter_num);
 

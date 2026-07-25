@@ -187,8 +187,8 @@ pub async fn run_generate(
             renderer,
             store,
             checkpoint,
-            files.clone(),
-            sizes.clone(),
+            files,
+            sizes,
             &config.run_config,
             progress,
         )
@@ -625,6 +625,8 @@ pub async fn run_generate_each_app(
                 .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS),
         );
 
+        let scoped_score = scoped_plan.setup.score;
+        let scoped_gaps = scoped_plan.setup.gaps;
         let result = run_generate(
             client,
             renderer,
@@ -634,10 +636,10 @@ pub async fn run_generate_each_app(
             cancel,
             &scoped_config,
             &scoped_file_contents,
-            scoped_plan.files.clone(),
+            scoped_plan.files,
             scoped_sizes,
-            scoped_plan.setup.score,
-            &scoped_plan.setup.gaps,
+            scoped_score,
+            &scoped_gaps,
             &setup_context,
             &modules,
         )

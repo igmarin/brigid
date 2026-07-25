@@ -206,6 +206,9 @@ workspace `members` list.
 
 - User-facing docs live in `README.md`, `docs/best-practices.md`, and
   `docs/move-to-rust.md`.
+- Crate structure, pipeline data flow, key types, and checkpoint/resume design
+  are documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- Release history is tracked in [`CHANGELOG.md`](CHANGELOG.md).
 - Architecture decisions are recorded in `docs/adr/` when they affect the
   checkpoint format, crate boundaries, or provider contract.
 - Every public function, type, and module should have a rustdoc comment.

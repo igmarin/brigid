@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use decon_core::{
     DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
-    evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content, resolve_config,
+    custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
+    resolve_config,
 };
 use decon_crawl::crawl_local;
 use decon_pipeline::{
@@ -119,6 +120,7 @@ fn print_cache_stats(cache: Option<&decon_llm::DiskCache>) {
 /// mock client for offline/test runs.
 fn build_real_llm_client(
     cache: Option<decon_llm::DiskCache>,
+    custom_hosts: &[String],
 ) -> Option<Box<dyn decon_llm::LlmClient>> {
     if env::var("DECON_FORCE_MOCK")
         .ok()
@@ -131,7 +133,13 @@ fn build_real_llm_client(
     if !key_ok("DECON_LLM_API_KEY") && !key_ok("DEEPSEEK_API_KEY") {
         return None;
     }
+    if let Some(msg) = custom_host_warning(custom_hosts) {
+        eprintln!("{msg}");
+    }
     let config = decon_llm::OpenAiClientConfig::from_env().ok()?;
+    let config = custom_hosts
+        .iter()
+        .fold(config, |acc, h| acc.with_allowed_host(h));
     let client = decon_llm::OpenAiCompatibleClient::new(config).ok()?;
     let client = if let Some(cache) = cache {
         client.with_cache(cache)
@@ -598,6 +606,12 @@ fn cmd_init(dir: &Path) -> ExitCode {
 # max_llm_calls = 200
 # apps = []
 # API keys are read from DECON_LLM_API_KEY env var only — never put them here.
+#
+# Additional LLM provider hosts allowed to receive the Authorization header.
+# Defaults: api.openai.com, api.deepseek.com, localhost, 127.0.0.1.
+# Also extendable via the DECON_ALLOWED_HOSTS env var (comma-separated).
+# [[allowed_hosts]]
+# host = "my-proxy.internal"
 "#;
     match fs::write(&path, sample) {
         Ok(()) => {
@@ -1179,7 +1193,10 @@ fn cmd_generate(
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(cache.clone()) {
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        cache.clone(),
+        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+    ) {
         Some(c) => {
             eprintln!("generate: using live LLM provider");
             c
@@ -1286,7 +1303,7 @@ fn cmd_generate(
             .unwrap();
             meta.mark_stage_complete(decon_core::StageId::Fetch, "0Z");
             meta.mark_stage_complete(decon_core::StageId::DryRun, "0Z");
-            (meta, records.clone())
+            (meta, records)
         }
     };
     if !checkpoint.is_stage_complete(decon_core::StageId::Fetch) {
@@ -1350,8 +1367,8 @@ fn cmd_generate(
             &cancel,
             &gen_config,
             &file_contents,
-            crawl_result.files.clone(),
-            crawl_result.sizes.clone(),
+            crawl_result.files,
+            crawl_result.sizes,
             dry_run_plan.setup.score,
             &dry_run_plan.setup.gaps,
             &setup_context,
@@ -1465,7 +1482,10 @@ fn cmd_generate_each_app(
         .or_else(|| Some(default_max_llm_calls(max_abstractions, review_chapters)));
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(cache.clone()) {
+    let client: Box<dyn decon_llm::LlmClient> = match build_real_llm_client(
+        cache.clone(),
+        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+    ) {
         Some(c) => {
             eprintln!("generate: using live LLM provider");
             c
@@ -1813,7 +1833,7 @@ fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> Exit
                     result.relationships.len()
                 );
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -1874,7 +1894,7 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
                     result.ordered_indices.len()
                 );
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -1979,7 +1999,7 @@ fn cmd_chapters(
                 eprintln!("chapters: completed (chapters={})", result.chapters.len());
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
                 eprintln!("output: {}", output_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -2037,7 +2057,7 @@ fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) ->
             Ok(_guide) => {
                 eprintln!("setup: completed (forced={force})");
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -2109,7 +2129,7 @@ fn cmd_overview(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode 
             Ok(_overview) => {
                 eprintln!("overview: completed");
                 eprintln!("checkpoint: {}", checkpoint_dir.display());
-                let _ = store.save(checkpoint.clone(), &files);
+                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
@@ -2161,7 +2181,7 @@ fn cmd_combine(
             );
             eprintln!("output: {}", output_dir.display());
             eprintln!("checkpoint: {}", checkpoint_dir.display());
-            let _ = store.save(checkpoint.clone(), &files);
+            let _ = store.save(checkpoint, &files);
             ExitCode::from(EXIT_OK)
         }
         Err(e) => {

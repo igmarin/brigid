@@ -130,12 +130,18 @@ impl OpenAiClientConfig {
             .map(|s| s.to_string())
             .collect();
         if let Some(extra) = nonblank_env("DECON_LLM_ALLOWED_HOSTS") {
-            allowed_hosts.extend(
-                extra
-                    .split(',')
-                    .map(|h| h.trim().to_lowercase())
-                    .filter(|h| !h.is_empty()),
-            );
+            for h in extra
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+            {
+                decon_core::validate_hostname(&h).map_err(|err| {
+                    LlmError::network(format!("invalid DECON_LLM_ALLOWED_HOSTS entry: {err}"))
+                })?;
+                if !allowed_hosts.iter().any(|existing| existing == &h) {
+                    allowed_hosts.push(h);
+                }
+            }
         }
         Ok(Self {
             base_url,
@@ -178,7 +184,10 @@ impl OpenAiClientConfig {
     /// The host is compared case-insensitively.
     #[must_use]
     pub fn with_allowed_host(mut self, host: &str) -> Self {
-        self.allowed_hosts.push(host.to_lowercase());
+        let lower = host.to_lowercase();
+        if !self.allowed_hosts.iter().any(|h| h == &lower) {
+            self.allowed_hosts.push(lower);
+        }
         self
     }
 
@@ -1031,6 +1040,69 @@ mod tests {
                 .contains(&"my-custom-llm.local".to_string())
         );
         assert!(cfg.allowed_hosts.contains(&"another.host.com".to_string()));
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DECON_LLM_ALLOWED_HOSTS");
+        }
+    }
+
+    #[test]
+    fn with_allowed_host_dedups_existing_entries() {
+        let config = OpenAiClientConfig::new("https://api.deepseek.com/v1", "k", "m")
+            .with_allowed_host("api.deepseek.com")
+            .with_allowed_host("my-proxy.internal")
+            .with_allowed_host("MY-PROXY.INTERNAL");
+        let deepseek_count = config
+            .allowed_hosts
+            .iter()
+            .filter(|h| h == &"api.deepseek.com")
+            .count();
+        assert_eq!(deepseek_count, 1, "default host should not duplicate");
+        let proxy_count = config
+            .allowed_hosts
+            .iter()
+            .filter(|h| h == &"my-proxy.internal")
+            .count();
+        assert_eq!(
+            proxy_count, 1,
+            "case-variant duplicate host should be deduplicated"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_allowed_hosts_rejects_wildcard() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "sk-x");
+            env::remove_var("DECON_LLM_BASE_URL");
+            env::remove_var("DECON_LLM_MODEL");
+            env::set_var("DECON_LLM_ALLOWED_HOSTS", "*.evil.com");
+        }
+        let err = OpenAiClientConfig::from_env().unwrap_err();
+        assert!(
+            matches!(err, LlmError::Network { .. }),
+            "expected Network error for invalid host, got: {err:?}"
+        );
+        unsafe {
+            env::remove_var("DECON_LLM_API_KEY");
+            env::remove_var("DECON_LLM_ALLOWED_HOSTS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_allowed_hosts_rejects_path() {
+        unsafe {
+            env::set_var("DECON_LLM_API_KEY", "sk-x");
+            env::remove_var("DECON_LLM_BASE_URL");
+            env::remove_var("DECON_LLM_MODEL");
+            env::set_var("DECON_LLM_ALLOWED_HOSTS", "evil.com/path");
+        }
+        let err = OpenAiClientConfig::from_env().unwrap_err();
+        assert!(
+            matches!(err, LlmError::Network { .. }),
+            "expected Network error for path host, got: {err:?}"
+        );
         unsafe {
             env::remove_var("DECON_LLM_API_KEY");
             env::remove_var("DECON_LLM_ALLOWED_HOSTS");
