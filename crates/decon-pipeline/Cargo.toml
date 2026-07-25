@@ -38,6 +38,7 @@ tempfile = "3.20"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
 async-trait = "0.1"
 assert_cmd = "2.2.2"
+serial_test = "3.5.0"
 
 [features]
 # Opt-in live LLM smoke tests. When enabled, the `tests/live_smoke.rs` and

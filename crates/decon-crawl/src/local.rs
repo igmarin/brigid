@@ -643,4 +643,170 @@ mod tests {
         assert!(result.files.contains(&"target.txt".to_owned()));
         assert!(result.files.contains(&"alias.txt".to_owned()));
     }
+
+    // ------------------------------------------------------------------
+    // Issue #181: Deep nesting and long filename edge cases
+    // ------------------------------------------------------------------
+
+    /// Crawl a tree with 120 levels of nested directories and a file at the
+    /// bottom.  The iterative walker (stack-based, no recursion) must handle
+    /// this without stack overflow or errors.
+    #[test]
+    fn deep_nesting_120_levels_crawled_gracefully() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Use single-character dir names to stay well under PATH_MAX (1024
+        // on macOS).  120 levels × 2 chars (name + '/') = 240 char relative
+        // path, plus the temp-dir prefix keeps the absolute path under 1024.
+        let depth = 120;
+        let mut current = root.to_path_buf();
+        for _ in 0..depth {
+            current = current.join("d");
+            fs::create_dir(&current).expect("create nested dir");
+        }
+        // Place a file at the bottom.
+        let deep_file = current.join("leaf.txt");
+        File::create(&deep_file)
+            .and_then(|mut f| f.write_all(b"deep content\n"))
+            .expect("deep file");
+
+        // Also place a file at a shallow level for sanity.
+        File::create(root.join("shallow.txt"))
+            .and_then(|mut f| f.write_all(b"shallow\n"))
+            .expect("shallow file");
+
+        let result = crawl_local(root).expect("crawl deep tree");
+        assert!(
+            result.file_count() >= 2,
+            "should find at least 2 files, got {}",
+            result.file_count()
+        );
+
+        // Build the expected relative path for the deep file.
+        let mut expected_rel = String::new();
+        for _ in 0..depth {
+            expected_rel.push_str("d/");
+        }
+        expected_rel.push_str("leaf.txt");
+
+        assert!(
+            result.files.contains(&expected_rel),
+            "deep file should be in inventory: {expected_rel}"
+        );
+        assert!(
+            result.files.contains(&"shallow.txt".to_owned()),
+            "shallow file should be in inventory"
+        );
+
+        // Verify sizes are parallel.
+        assert_eq!(result.files.len(), result.sizes.len());
+    }
+
+    /// A file with a 255-character name (the POSIX max per component) must
+    /// be crawled successfully.  Attempting to create a file with a 256+
+    /// character name must fail with a clear OS error (ENAMETOOLONG),
+    /// demonstrating the filesystem enforces the limit.
+    #[test]
+    fn long_filename_255_chars_crawled_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // 255-char filename (max on most POSIX filesystems).
+        let long_name = "a".repeat(255);
+        let long_path = root.join(&long_name);
+        match File::create(&long_path) {
+            Ok(mut f) => {
+                f.write_all(b"long name file\n").expect("write");
+                let result = crawl_local(root).expect("crawl");
+                assert!(
+                    result.files.contains(&long_name),
+                    "255-char filename should be crawled"
+                );
+            }
+            Err(e) => {
+                // Some filesystems may not support 255 chars; skip gracefully.
+                eprintln!("skipping 255-char test: filesystem limit: {e}");
+            }
+        }
+    }
+
+    /// A filename exceeding 255 characters cannot be created on most
+    /// POSIX filesystems.  The OS returns ENAMETOOLONG — a clear, actionable
+    /// error.  This test verifies the error is propagated (not silently
+    /// ignored) and that the crawl of the surrounding directory still works.
+    #[test]
+    fn filename_over_255_chars_os_rejects_gracefully() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Create a normal file alongside.
+        File::create(root.join("normal.txt"))
+            .and_then(|mut f| f.write_all(b"ok\n"))
+            .expect("normal file");
+
+        // Attempt to create a file with a 300-char name.
+        let too_long = "x".repeat(300);
+        let too_long_path = root.join(&too_long);
+        let create_result = File::create(&too_long_path);
+
+        if let Err(e) = &create_result {
+            // OS rejected the long name — verify it's a clear I/O error
+            // (not a silent success or panic).  The exact error kind varies
+            // by platform (InvalidFilename on macOS, InvalidInput on Linux).
+            let msg = e.to_string();
+            assert!(
+                msg.contains("too long")
+                    || msg.contains("file name")
+                    || e.raw_os_error() == Some(36), // ENAMETOOLONG
+                "expected a filename-length error, got: {e} (kind={:?})",
+                e.kind()
+            );
+        }
+        // If the OS *did* allow it (unusual FS), that's fine too — the crawl
+        // should still work.
+
+        // Crawl must succeed regardless.
+        let result = crawl_local(root).expect("crawl");
+        assert!(
+            result.files.contains(&"normal.txt".to_owned()),
+            "normal file must be crawled even if long-name creation failed"
+        );
+    }
+
+    /// Total relative path exceeding 255 chars (via many nested components)
+    /// must be crawled without issues.  This is distinct from individual
+    /// component length — the OS allows long total paths (PATH_MAX=1024).
+    #[test]
+    fn total_path_over_255_chars_crawled_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // 30 dirs × 10 chars each = 300+ char relative path.
+        let mut current = root.to_path_buf();
+        let mut expected_rel = String::new();
+        for i in 0..30 {
+            let comp = format!("d{i:02}_5678"); // 10 chars each
+            current = current.join(&comp);
+            fs::create_dir(&current).expect("create dir");
+            expected_rel.push_str(&comp);
+            expected_rel.push('/');
+        }
+        expected_rel.push_str("file.txt");
+        File::create(current.join("file.txt"))
+            .and_then(|mut f| f.write_all(b"deep\n"))
+            .expect("deep file");
+
+        assert!(
+            expected_rel.len() > 255,
+            "test setup: relative path should exceed 255 chars, got {}",
+            expected_rel.len()
+        );
+
+        let result = crawl_local(root).expect("crawl");
+        assert!(
+            result.files.contains(&expected_rel),
+            "file with >255 char relative path should be crawled"
+        );
+    }
 }

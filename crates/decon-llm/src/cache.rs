@@ -412,6 +412,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn eviction_removes_oldest_first() {
         let root = temp_root();
         let cache = DiskCache::with_size_limit_bytes(&root, 7);
@@ -470,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn eviction_respects_size_limit_config() {
         let root = temp_root();
         let limit_bytes: u64 = 20;
@@ -545,5 +547,107 @@ mod tests {
         let cache = DiskCache::with_size_limit(&root, 50);
         assert_eq!(cache.size_limit_bytes(), 50 * 1024 * 1024);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #181: Permission denied on cache directory
+    // ------------------------------------------------------------------
+
+    /// When the cache directory is read-only, `put` must return a graceful
+    /// error (not panic), and `get` must return `None` for missing entries
+    /// (not crash).  This simulates a deployment where the cache partition
+    /// is mounted read-only or permissions are misconfigured.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn permission_denied_cache_dir_graceful_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+
+        // Write an entry while the dir is still writable.
+        let cache = DiskCache::new(&root);
+        let input = CacheKeyInput {
+            prompt: "perm-test",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        cache.put_for(&input, r#"{"ok":true}"#).unwrap();
+
+        // Make the directory read-only.
+        let original_perms = fs::metadata(&root).unwrap().permissions();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+
+        // put on a *new* key must fail gracefully (cannot create new tmp file).
+        let input_new = CacheKeyInput {
+            prompt: "perm-test-new",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        let put_result = cache.put_for(&input_new, r#"{"new":true}"#);
+        assert!(
+            put_result.is_err(),
+            "put to read-only cache dir should return error, not panic"
+        );
+        assert!(
+            matches!(put_result.unwrap_err(), CacheError::Io { .. }),
+            "should be an I/O error"
+        );
+
+        // get on the existing entry should still work (read is allowed).
+        let existing = cache.get_for(&input).unwrap();
+        assert_eq!(existing.as_deref(), Some(r#"{"ok":true}"#));
+
+        // get on a missing key returns None (not an error, not a panic).
+        let missing = cache.get_for(&input_new).unwrap();
+        assert!(missing.is_none(), "missing key should return None");
+
+        // Restore permissions for cleanup.
+        fs::set_permissions(&root, original_perms).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// When the cache root cannot be created at all (parent is a file),
+    /// both `put` and `get` must handle it gracefully — `put` returns an
+    /// error, `get` returns `None` or a graceful I/O error (not a panic).
+    /// The pipeline can continue without a working cache (degraded mode).
+    #[test]
+    #[serial_test::serial]
+    fn unwritable_cache_root_get_returns_none() {
+        let blocker = std::env::temp_dir().join(format!(
+            "decon-llm-cache-blocker2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&blocker, b"blocker").unwrap();
+        let root = blocker.join("subdir");
+
+        let cache = DiskCache::new(&root);
+        let input = CacheKeyInput {
+            prompt: "no-cache",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+
+        // put fails gracefully.
+        let put_result = cache.put_for(&input, "data");
+        assert!(put_result.is_err(), "put should fail when root is a file");
+
+        // get returns None or a graceful I/O error — either way, no panic.
+        // (When the parent path is a file, the OS may return NotADirectory
+        // instead of NotFound; both are graceful.)
+        let get_result = cache.get_for(&input);
+        assert!(
+            get_result.is_ok() || matches!(get_result, Err(CacheError::Io { .. })),
+            "get should return None or a graceful I/O error, got: {get_result:?}"
+        );
+
+        let _ = fs::remove_file(&blocker);
     }
 }
