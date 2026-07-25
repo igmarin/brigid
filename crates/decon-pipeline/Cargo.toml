@@ -39,6 +39,35 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", 
 async-trait = "0.1"
 assert_cmd = "2.2.2"
 serial_test = "3.5.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "chapter_generation"
+harness = false
+
+[[bench]]
+name = "checkpoint_roundtrip"
+harness = false
+
+[[bench]]
+name = "file_context_selection"
+harness = false
+
+[[bench]]
+name = "template_rendering"
+harness = false
+
+[[bench]]
+name = "mermaid_sanitization"
+harness = false
+
+[[bench]]
+name = "combine_index"
+harness = false
+
+[[bench]]
+name = "budget_estimation"
+harness = false
 
 [features]
 # Opt-in live LLM smoke tests. When enabled, the `tests/live_smoke.rs` and
