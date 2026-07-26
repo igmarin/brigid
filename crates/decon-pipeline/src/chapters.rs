@@ -30,7 +30,7 @@ use decon_core::{
 use decon_llm::{LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -577,15 +577,33 @@ async fn generate_chapters_internal(
 
     let max_concurrency = config.max_concurrency.max(1);
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
-    let completed: Arc<RwLock<Vec<Chapter>>> = Arc::new(RwLock::new(
+
+    // Lightweight summary store: (chapter_num, summary_string) pairs.
+    //
+    // The lock is held only briefly for synchronous clone/insert and is
+    // never held across `.await` points. This eliminates the contention
+    // caused by the former `Arc<RwLock<Vec<Chapter>>>` which held a read
+    // guard across string-allocating `extract_chapter_summary` calls and
+    // required cloning the entire `Vec<Chapter>` on `try_unwrap` fallback.
+    let summaries: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(
         existing
-            .map(|m| m.values().cloned().collect())
+            .map(|m| {
+                m.values()
+                    .map(|c| (c.chapter_num, extract_chapter_summary(&c.markdown)))
+                    .collect()
+            })
             .unwrap_or_default(),
     ));
 
+    // Channel-based collection: each chapter task sends its result through
+    // an mpsc channel. This replaces the `Arc<RwLock<Vec<Chapter>>>` and
+    // avoids cloning the entire Vec on `try_unwrap` fallback.
+    let (tx, mut rx) = mpsc::unbounded_channel::<Result<Chapter, ChaptersError>>();
+
     let futures = positions_to_generate.iter().map(|&pos| {
         let sem = Arc::clone(&semaphore);
-        let completed = Arc::clone(&completed);
+        let summaries = Arc::clone(&summaries);
+        let tx = tx.clone();
         let meta = &metas[pos];
         let abstraction = &abstractions[meta.abs_idx];
         let listing = &full_chapter_listing;
@@ -593,62 +611,80 @@ async fn generate_chapters_internal(
         let budget = config.budget;
         let max_file_chars = config.max_file_chars;
         async move {
-            let _permit = sem
-                .acquire_owned()
-                .await
-                .map_err(|_| LlmError::network("chapter semaphore closed unexpectedly"))?;
+            let result = async {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| LlmError::network("chapter semaphore closed unexpectedly"))?;
 
-            let summary = {
-                let guard = completed.read().await;
-                guard
-                    .iter()
-                    .filter(|c| c.chapter_num < meta.chapter_num)
-                    .map(|c| extract_chapter_summary(&c.markdown))
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
-            };
+                // Clone summary data under a brief lock, then release
+                // before any async work (no guard held across `.await`).
+                let summary = {
+                    let guard = summaries.lock().await;
+                    guard
+                        .iter()
+                        .filter(|(num, _)| *num < meta.chapter_num)
+                        .map(|(_, s)| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                };
 
-            let file_context =
-                select_chapter_file_context(abstraction, file_contents, budget, max_file_chars);
+                let file_context =
+                    select_chapter_file_context(abstraction, file_contents, budget, max_file_chars);
 
-            let chapter = write_single_chapter(
-                client,
-                renderer,
-                abstraction,
-                meta.abs_idx,
-                meta.chapter_num,
-                &meta.prev_link,
-                &meta.next_link,
-                listing,
-                &summary,
-                &file_context,
-                &config.project_name,
-                &config.language_instruction,
-                &config.lang,
-                diagram_level,
-            )
-            .await?;
+                let chapter = write_single_chapter(
+                    client,
+                    renderer,
+                    abstraction,
+                    meta.abs_idx,
+                    meta.chapter_num,
+                    &meta.prev_link,
+                    &meta.next_link,
+                    listing,
+                    &summary,
+                    &file_context,
+                    &config.project_name,
+                    &config.language_instruction,
+                    &config.lang,
+                    diagram_level,
+                )
+                .await?;
 
-            {
-                let mut guard = completed.write().await;
-                guard.push(chapter.clone());
+                // Update the summary store for subsequent chapters.
+                {
+                    let mut guard = summaries.lock().await;
+                    guard.push((meta.chapter_num, extract_chapter_summary(&chapter.markdown)));
+                }
+
+                Ok::<Chapter, ChaptersError>(chapter)
             }
+            .await;
 
-            Ok::<Chapter, ChaptersError>(chapter)
+            // Send result through the channel (no shared lock for collection).
+            let _ = tx.send(result);
         }
     });
 
-    let results = join_all(futures).await;
+    // Collect futures into a Vec so each closure's `tx.clone()` executes,
+    // releasing the borrow on the original `tx`.
+    let futures: Vec<_> = futures.collect();
 
+    // Drop the last sender so `rx.recv()` completes after all tasks finish.
+    drop(tx);
+
+    join_all(futures).await;
+
+    // Collect all generated chapters from the channel.
     let mut generated: Vec<Chapter> = Vec::with_capacity(gen_count);
-    for result in results {
+    while let Some(result) = rx.recv().await {
         generated.push(result?);
     }
 
-    let mut all_chapters: Vec<Chapter> = match Arc::try_unwrap(completed) {
-        Ok(rwlock) => rwlock.into_inner(),
-        Err(arc) => arc.read().await.clone(),
-    };
+    // Merge generated chapters with pre-existing ones (from checkpoint resume).
+    let mut all_chapters: Vec<Chapter> = existing
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default();
+    all_chapters.extend(generated);
     all_chapters.sort_by_key(|c| c.chapter_num);
 
     for chapter in &all_chapters {
@@ -1649,6 +1685,125 @@ We learned routing.\n";
             assert_eq!(ch.chapter_num, i + 1, "chapters should be in order");
         }
         assert_eq!(tracker.call_count(), 20);
+    }
+
+    // --- channel-based collection (M6-HARD-3) ---
+
+    #[tokio::test]
+    async fn eight_chapters_high_concurrency_all_collected() {
+        // Verify that 8 chapters generated with concurrency=8 are all
+        // collected via the mpsc channel without deadlock or loss.
+        let tracker = ConcurrencyTracker::new(Duration::from_millis(5));
+        let renderer = PromptRenderer::new().unwrap();
+        let abstractions: Vec<Abstraction> = (0..8)
+            .map(|i| Abstraction::new(format!("Abs{i}"), "desc", Tier::S, "module"))
+            .collect();
+        let identify = IdentifyResult::new(abstractions);
+        let order = ChapterOrder::new((0..8).collect());
+        let mut config = sample_config();
+        config.max_concurrency = 8;
+        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
+            .await
+            .expect("8-chapter high-concurrency generation should succeed");
+        assert_eq!(
+            result.chapters.len(),
+            8,
+            "all 8 chapters should be collected"
+        );
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(
+                ch.chapter_num,
+                i + 1,
+                "chapters should be sorted by chapter_num"
+            );
+        }
+        assert_eq!(tracker.call_count(), 8);
+    }
+
+    #[tokio::test]
+    async fn sequential_summaries_include_all_previous_chapters() {
+        // With concurrency=1, chapter 3's prompt should contain summaries
+        // of BOTH chapter 1 and chapter 2 (not just the immediately
+        // preceding one). This verifies the summary store accumulates
+        // correctly across chapters.
+        struct CapturingClient {
+            captured: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+        #[async_trait::async_trait]
+        impl LlmClient for CapturingClient {
+            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+                let idx = {
+                    let mut caps = self.captured.lock().unwrap();
+                    caps.push(prompt.to_string());
+                    caps.len()
+                };
+                Ok(canned_chapter(&format!("Abs{}", idx - 1), idx))
+            }
+        }
+        let captured: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let client = CapturingClient {
+            captured: captured.clone(),
+        };
+        let renderer = PromptRenderer::new().unwrap();
+        let abstractions: Vec<Abstraction> = (0..3)
+            .map(|i| Abstraction::new(format!("Abs{i}"), "desc", Tier::S, "module"))
+            .collect();
+        let identify = IdentifyResult::new(abstractions);
+        let order = ChapterOrder::new(vec![0, 1, 2]);
+        let mut config = sample_config();
+        config.max_concurrency = 1;
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+            .await
+            .expect("should succeed");
+        assert_eq!(result.chapters.len(), 3);
+        let prompts = captured.lock().unwrap();
+        assert_eq!(prompts.len(), 3, "should have 3 prompts");
+        let third_prompt = &prompts[2];
+        // Third chapter should have summaries of both chapter 1 and chapter 2.
+        assert!(
+            third_prompt.contains("# Chapter 1: Abs0"),
+            "third prompt should contain summary of chapter 1: {third_prompt}"
+        );
+        assert!(
+            third_prompt.contains("# Chapter 2: Abs1"),
+            "third prompt should contain summary of chapter 2: {third_prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn all_chapters_collected_and_sorted_after_generation() {
+        // Verify that all chapters are collected and sorted after generation,
+        // even with moderate concurrency. This confirms the channel-based
+        // collection does not drop results.
+        let responses: Vec<String> = (0..6)
+            .map(|i| canned_chapter(&format!("Abs{i}"), i + 1))
+            .collect();
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let abstractions: Vec<Abstraction> = (0..6)
+            .map(|i| Abstraction::new(format!("Abs{i}"), "desc", Tier::S, "module"))
+            .collect();
+        let identify = IdentifyResult::new(abstractions);
+        let order = ChapterOrder::new((0..6).collect());
+        let mut config = sample_config();
+        config.max_concurrency = 3;
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+            .await
+            .expect("should succeed");
+        assert_eq!(
+            result.chapters.len(),
+            6,
+            "all 6 chapters should be collected"
+        );
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(
+                ch.chapter_num,
+                i + 1,
+                "chapters should be sorted by chapter_num"
+            );
+        }
+        assert_eq!(client.call_count(), 6);
     }
 
     // --- checkpoint integration ---
