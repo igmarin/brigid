@@ -2072,6 +2072,12 @@ fn cmd_identify(
             cancel.cancel();
         }
 
+        // Build the plugin registry for custom kind detectors (issue #228 /
+        // ADR 0014). Today the registry always includes the built-in
+        // [`DefaultKindDetector`] as a fallback; `plugin_dirs` from the
+        // resolved config is reserved for future dynamic loading.
+        let registry = decon_core::PluginRegistry::with_default();
+
         let outcome = decon_pipeline::identify_with_cancellation(
             client.as_ref(),
             &renderer,
@@ -2079,6 +2085,7 @@ fn cmd_identify(
             &mut progress,
             &cancel,
             &store,
+            Some(&registry),
         )
         .await;
 

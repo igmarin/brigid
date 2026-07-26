@@ -193,7 +193,13 @@ pub async fn identify_with_cancellation(
     progress: &mut ProgressTracker,
     cancel: &CancelToken,
     checkpoint_store: &CheckpointStore,
+    registry: Option<&decon_core::plugin::PluginRegistry>,
 ) -> Result<IdentifyRunOutcome, IdentifyError> {
+    // Extract the file paths from the strategy for kind enrichment.
+    let strategy_files: Vec<String> = match &run_cfg.strategy {
+        IdentifyStrategy::SingleShot(input) => input.files.clone(),
+        IdentifyStrategy::MapReduce(map_input) => map_input.files.clone(),
+    };
     match &run_cfg.strategy {
         IdentifyStrategy::SingleShot(input) => {
             // Check cancellation before the single call.
@@ -204,7 +210,17 @@ pub async fn identify_with_cancellation(
                     candidates_collected: 0,
                 });
             }
-            let result = identify_single_shot(client, renderer, input, Some(progress)).await?;
+            let mut result = identify_single_shot(client, renderer, input, Some(progress)).await?;
+            // Enrich empty kinds via the plugin registry (issue #228).
+            if let Some(reg) = registry {
+                let empty_contents: Vec<String> = vec![String::new(); strategy_files.len()];
+                crate::identify::enrich_identify_kinds(
+                    &mut result,
+                    &strategy_files,
+                    &empty_contents,
+                    reg,
+                );
+            }
             write_completed_checkpoint(checkpoint_store, run_cfg, &result)?;
             Ok(IdentifyRunOutcome::Completed(result))
         }
@@ -259,15 +275,25 @@ pub async fn identify_with_cancellation(
             if let Some(mut reduce_input) = run_cfg.reduce_input.clone() {
                 let candidates = flatten_candidates(&all_batches);
                 reduce_input.candidates = candidates;
-                let result =
+                let mut result =
                     identify_reduce(client, renderer, &reduce_input, Some(progress)).await?;
+                // Enrich empty kinds via the plugin registry (issue #228).
+                if let Some(reg) = registry {
+                    let empty_contents: Vec<String> = vec![String::new(); strategy_files.len()];
+                    crate::identify::enrich_identify_kinds(
+                        &mut result,
+                        &strategy_files,
+                        &empty_contents,
+                        reg,
+                    );
+                }
                 write_completed_checkpoint(checkpoint_store, run_cfg, &result)?;
                 Ok(IdentifyRunOutcome::Completed(result))
             } else {
                 // No reduce input — treat map completion as the result. This
                 // branch is used by tests that only exercise the map stage.
                 let candidates = flatten_candidates(&all_batches);
-                let result = IdentifyResult::new(
+                let mut result = IdentifyResult::new(
                     candidates
                         .iter()
                         .map(|c| {
@@ -280,6 +306,16 @@ pub async fn identify_with_cancellation(
                         })
                         .collect(),
                 );
+                // Enrich empty kinds via the plugin registry (issue #228).
+                if let Some(reg) = registry {
+                    let empty_contents: Vec<String> = vec![String::new(); strategy_files.len()];
+                    crate::identify::enrich_identify_kinds(
+                        &mut result,
+                        &strategy_files,
+                        &empty_contents,
+                        reg,
+                    );
+                }
                 write_completed_checkpoint(checkpoint_store, run_cfg, &result)?;
                 Ok(IdentifyRunOutcome::Completed(result))
             }
@@ -460,10 +496,17 @@ mod tests {
         let cancel = CancelToken::new();
         let cfg = run_cfg_map(files, sizes, true);
 
-        let outcome =
-            identify_with_cancellation(&client, &renderer, &cfg, &mut progress, &cancel, &store)
-                .await
-                .expect("should complete");
+        let outcome = identify_with_cancellation(
+            &client,
+            &renderer,
+            &cfg,
+            &mut progress,
+            &cancel,
+            &store,
+            None,
+        )
+        .await
+        .expect("should complete");
 
         match outcome {
             IdentifyRunOutcome::Completed(result) => {
@@ -520,10 +563,17 @@ mod tests {
         let mut progress = ProgressTracker::new(100);
         let cfg = run_cfg_map(files, sizes, true);
 
-        let outcome =
-            identify_with_cancellation(&client, &renderer, &cfg, &mut progress, &cancel, &store)
-                .await
-                .expect("cancelled is Ok");
+        let outcome = identify_with_cancellation(
+            &client,
+            &renderer,
+            &cfg,
+            &mut progress,
+            &cancel,
+            &store,
+            None,
+        )
+        .await
+        .expect("cancelled is Ok");
 
         match outcome {
             IdentifyRunOutcome::Cancelled {
@@ -565,10 +615,17 @@ mod tests {
         cancel.cancel();
         let cfg = run_cfg_single(files);
 
-        let outcome =
-            identify_with_cancellation(&client, &renderer, &cfg, &mut progress, &cancel, &store)
-                .await
-                .expect("cancelled is Ok");
+        let outcome = identify_with_cancellation(
+            &client,
+            &renderer,
+            &cfg,
+            &mut progress,
+            &cancel,
+            &store,
+            None,
+        )
+        .await
+        .expect("cancelled is Ok");
 
         match outcome {
             IdentifyRunOutcome::Cancelled {
@@ -637,10 +694,17 @@ mod tests {
             calls: std::sync::atomic::AtomicUsize::new(0),
         };
 
-        let outcome =
-            identify_with_cancellation(&client, &renderer, &cfg, &mut progress, &cancel, &store)
-                .await
-                .expect("should not error");
+        let outcome = identify_with_cancellation(
+            &client,
+            &renderer,
+            &cfg,
+            &mut progress,
+            &cancel,
+            &store,
+            None,
+        )
+        .await
+        .expect("should not error");
 
         match outcome {
             IdentifyRunOutcome::Cancelled {
@@ -680,10 +744,17 @@ mod tests {
         let cancel = CancelToken::new();
         let cfg = run_cfg_single(files);
 
-        let outcome =
-            identify_with_cancellation(&client, &renderer, &cfg, &mut progress, &cancel, &store)
-                .await
-                .expect("should complete");
+        let outcome = identify_with_cancellation(
+            &client,
+            &renderer,
+            &cfg,
+            &mut progress,
+            &cancel,
+            &store,
+            None,
+        )
+        .await
+        .expect("should complete");
 
         assert!(matches!(outcome, IdentifyRunOutcome::Completed(_)));
         let (meta, _) = store.load().unwrap();
