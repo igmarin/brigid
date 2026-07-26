@@ -296,7 +296,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Build a [`BudgetConfig`] from a [`RunConfig`], falling back to defaults
 /// for unset fields.
-fn budget_config_from_run(config: &RunConfig) -> BudgetConfig {
+pub(crate) fn budget_config_from_run(config: &RunConfig) -> BudgetConfig {
     let mut bc = BudgetConfig::default();
     if let Some(b) = config.batch_char_budget {
         bc.batch_char_budget = b;
@@ -309,7 +309,7 @@ fn budget_config_from_run(config: &RunConfig) -> BudgetConfig {
 
 /// Derive a project name from the run config root, falling back to
 /// `"project"`.
-fn project_name_from_config(config: &RunConfig) -> String {
+pub(crate) fn project_name_from_config(config: &RunConfig) -> String {
     config
         .root
         .as_ref()
@@ -320,7 +320,7 @@ fn project_name_from_config(config: &RunConfig) -> String {
 
 /// Derive a language instruction string from the run config (e.g.
 /// `"Use English"`), or empty if unset.
-fn language_instruction_from_config(config: &RunConfig) -> String {
+pub(crate) fn language_instruction_from_config(config: &RunConfig) -> String {
     match config.language.as_deref() {
         Some(lang) if !lang.is_empty() => format!("Use {lang}"),
         _ => String::new(),
@@ -333,7 +333,7 @@ fn language_instruction_from_config(config: &RunConfig) -> String {
 /// Uses [`RunConfig::max_llm_calls`] as a rough upper bound when set (a run
 /// capped at N LLM calls should not request more than N abstractions), falling
 /// back to [`DEFAULT_MAX_ABSTRACTIONS`] when unset.
-fn max_abstractions_from_config(config: &RunConfig) -> usize {
+pub(crate) fn max_abstractions_from_config(config: &RunConfig) -> usize {
     config
         .max_llm_calls
         .map(|n| n as usize)
@@ -342,7 +342,7 @@ fn max_abstractions_from_config(config: &RunConfig) -> usize {
 
 /// Build a comma-separated module summary from the file inventory (for the
 /// reduce prompt).
-fn module_summary_from_files(files: &[String]) -> String {
+pub(crate) fn module_summary_from_files(files: &[String]) -> String {
     let modules: BTreeSet<String> = files.iter().map(|f| module_key(f).to_string()).collect();
     modules.into_iter().collect::<Vec<_>>().join(", ")
 }

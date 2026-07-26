@@ -87,6 +87,70 @@ impl From<GitDiffError> for CrawlError {
 /// }
 /// ```
 pub fn changed_files_since(repo_root: &Path, ref_name: &str) -> Result<Vec<PathBuf>, GitDiffError> {
+    // Run the raw diff and keep only files that still exist on disk.
+    let raw = diff_name_only(repo_root, ref_name)?;
+    let mut paths: Vec<PathBuf> = raw
+        .into_iter()
+        .filter(|p| repo_root.join(p).is_file())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Detect files that have been **deleted** since `ref_name` in the repository
+/// at `repo_root`.
+///
+/// The mirror of [`changed_files_since`]: it runs the same
+/// `git diff --name-only <ref>...HEAD` but keeps only paths that **no longer
+/// exist** on disk (i.e. deletions). This is used by incremental identify
+/// (issue #227) to drop abstractions whose backing files were removed since
+/// the reference.
+///
+/// The returned paths are:
+///
+/// - Relative to `repo_root` (as `git diff --name-only` reports them).
+/// - Normalised to use `/` separators.
+/// - Filtered to **non-existing** files (deletions only).
+/// - Sorted and de-duplicated.
+///
+/// # Errors
+///
+/// Same as [`changed_files_since`]: [`GitDiffError::GitNotFound`],
+/// [`GitDiffError::NotARepository`], [`GitDiffError::RefNotFound`], or
+/// [`GitDiffError::CommandFailed`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use decon_crawl::git_diff::deleted_files_since;
+///
+/// let deleted = deleted_files_since(Path::new("."), "v0.5.0")
+///     .expect("deleted files since tag");
+/// for f in &deleted {
+///     println!("deleted: {}", f.display());
+/// }
+/// ```
+pub fn deleted_files_since(repo_root: &Path, ref_name: &str) -> Result<Vec<PathBuf>, GitDiffError> {
+    // Run the raw diff and keep only files that no longer exist on disk.
+    let raw = diff_name_only(repo_root, ref_name)?;
+    let mut paths: Vec<PathBuf> = raw
+        .into_iter()
+        .filter(|p| !repo_root.join(p).is_file())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Run `git diff --name-only <ref>...HEAD` and return the raw list of changed
+/// paths (no existence filtering), sorted and de-duplicated.
+///
+/// Shared backing for [`changed_files_since`] and [`deleted_files_since`].
+/// Performs the git availability / repository / ref validation, then runs the
+/// triple-dot diff (merge-base semantics for branch workflows).
+fn diff_name_only(repo_root: &Path, ref_name: &str) -> Result<Vec<PathBuf>, GitDiffError> {
     // 1. Validate that git is available.
     ensure_git_available()?;
 
@@ -120,12 +184,7 @@ pub fn changed_files_since(repo_root: &Path, ref_name: &str) -> Result<Vec<PathB
         .map(|line| line.trim())
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
-        .filter(|p| {
-            // Only keep files that still exist on disk.
-            repo_root.join(p).is_file()
-        })
         .collect();
-
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -414,5 +473,51 @@ mod tests {
 
         let changed = changed_files_since(root, "v1").expect("diff since v1");
         assert_eq!(changed, vec![PathBuf::from("a.txt")]);
+    }
+
+    #[test]
+    fn deleted_files_since_returns_only_deletions() {
+        require_git();
+        let dir = init_repo();
+        let root = dir.path();
+
+        fs::write(root.join("keep.txt"), "keep\n").expect("write keep.txt");
+        fs::write(root.join("gone.txt"), "gone\n").expect("write gone.txt");
+        commit_all(root, "initial");
+        git(root, &["tag", "v1"]);
+
+        // Delete gone.txt and modify keep.txt.
+        fs::remove_file(root.join("gone.txt")).expect("remove gone.txt");
+        fs::write(root.join("keep.txt"), "changed\n").expect("modify keep.txt");
+        commit_all(root, "second");
+
+        let deleted = deleted_files_since(root, "v1").expect("deleted since v1");
+        assert_eq!(deleted, vec![PathBuf::from("gone.txt")]);
+
+        // changed_files_since must NOT include the deleted file (it filters
+        // to existing files), confirming the two helpers partition the diff.
+        let changed = changed_files_since(root, "v1").expect("changed since v1");
+        assert!(
+            !changed.iter().any(|p| p == &PathBuf::from("gone.txt")),
+            "deleted file should not appear in changed: {changed:?}"
+        );
+        assert!(changed.iter().any(|p| p == &PathBuf::from("keep.txt")));
+    }
+
+    #[test]
+    fn deleted_files_since_empty_when_no_deletions() {
+        require_git();
+        let dir = init_repo();
+        let root = dir.path();
+
+        fs::write(root.join("a.txt"), "data\n").expect("write a.txt");
+        commit_all(root, "initial");
+        git(root, &["tag", "v1"]);
+
+        fs::write(root.join("a.txt"), "changed\n").expect("modify a.txt");
+        commit_all(root, "second");
+
+        let deleted = deleted_files_since(root, "v1").expect("deleted since v1");
+        assert!(deleted.is_empty(), "no deletions: {deleted:?}");
     }
 }

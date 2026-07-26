@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 
 use decon_core::{
     ChapterOrder, ChapterResult, CheckpointV1, CombinedTutorial, IdentifyResult, Locale, ModuleKey,
-    ProgressTracker, RelationshipsResult, RunConfig, StageId, config_hash,
+    ProgressTracker, RelationshipsResult, RunConfig, StageId, config_hash, current_git_head,
 };
 use decon_crawl::crawl_local;
+use decon_crawl::git_diff::{changed_files_since, deleted_files_since};
 
 use crate::cancellation::CancelToken;
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError, records_from_files};
@@ -23,10 +24,14 @@ use crate::prompts::PromptRenderer;
 
 use crate::chapters::{ChaptersConfig, DiagramLevel, chapters_and_checkpoint};
 use crate::combine::combine_and_checkpoint;
-use crate::identify_checkpoint::{identify_and_checkpoint, should_run_identify};
+use crate::identify::incremental_identify;
+use crate::identify_checkpoint::{
+    identify_and_checkpoint, load_identify_result, save_identify_result, should_run_identify,
+};
 use crate::order::{OrderConfig, order_and_checkpoint};
 use crate::overview::{OverviewInput, overview_and_checkpoint, should_generate_overview};
 use crate::relationships::{RelationshipsConfig, relationships_and_checkpoint};
+use crate::resume::is_checkpoint_stale;
 use crate::setup_guide::{
     WriteSetupGuideInput, should_generate_setup, write_setup_guide_and_checkpoint,
 };
@@ -171,11 +176,77 @@ pub async fn run_generate(
     };
 
     // --- Stage 1: Identify ---
-    if should_run_identify(
-        checkpoint,
-        &config_hash(&config.run_config)
-            .map_err(|e| GenerateError::Config(format!("config hash: {e}")))?,
-    ) {
+    let current_hash = config_hash(&config.run_config)
+        .map_err(|e| GenerateError::Config(format!("config hash: {e}")))?;
+
+    // Incremental identify (issue #227): when `--since` is set and a valid
+    // (non-stale) checkpoint with existing abstractions exists, re-run the
+    // identify map/reduce only for modules containing changed files and merge
+    // with the preserved abstractions. Falls back to full identify when there
+    // is no checkpoint, no existing abstractions, or the checkpoint is stale
+    // (new commits landed since it was created).
+    let current_head = current_git_head(&config.dir);
+    let stale = config.run_config.since.is_some()
+        && current_head
+            .as_deref()
+            .is_some_and(|head| is_checkpoint_stale(checkpoint, head));
+    let incremental_existing = if config.run_config.since.is_some() && !stale {
+        load_identify_result(checkpoint)
+    } else {
+        None
+    };
+    let do_incremental = incremental_existing.is_some();
+
+    // When incremental identify runs, the merged abstractions reference the
+    // full current file inventory (not just the changed-files crawl), so the
+    // downstream stages must use the full inventory too. This owns the
+    // rebuilt file contents for that case.
+    let mut full_file_contents_owned: Vec<(String, String)> = Vec::new();
+    let mut files = files;
+    let mut sizes = sizes;
+
+    if let Some(existing) = incremental_existing {
+        if cancel.is_cancelled() {
+            return Ok(GenerateOutcome::Cancelled {
+                checkpoint_path: config.checkpoint_dir.clone(),
+            });
+        }
+        progress.set_stage("identify");
+        // Full crawl for the merge inventory.
+        let full = crawl_local(&config.dir).map_err(|e| GenerateError::Crawl(e.to_string()))?;
+        files = full.files;
+        sizes = full.sizes;
+        let since = config.run_config.since.as_deref().unwrap_or_default();
+        let changed = changed_files_since(&config.dir, since)
+            .map_err(|e| GenerateError::Crawl(format!("git diff (changed): {e}")))?;
+        let deleted = deleted_files_since(&config.dir, since)
+            .map_err(|e| GenerateError::Crawl(format!("git diff (deleted): {e}")))?;
+        let changed_strs: Vec<String> = changed
+            .into_iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let deleted_strs: Vec<String> = deleted
+            .into_iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let result = incremental_identify(
+            client,
+            renderer,
+            &existing,
+            &changed_strs,
+            &deleted_strs,
+            &files,
+            &sizes,
+            &config.run_config,
+            Some(progress),
+        )
+        .await?;
+        save_identify_result(store, checkpoint, &result)?;
+        progress.complete_stage();
+        // Rebuild file contents for downstream stages from the full inventory
+        // (empty bodies match the CLI's current placeholder behaviour).
+        full_file_contents_owned = files.iter().map(|f| (f.clone(), String::new())).collect();
+    } else if should_run_identify(checkpoint, &current_hash) || stale {
         if cancel.is_cancelled() {
             return Ok(GenerateOutcome::Cancelled {
                 checkpoint_path: config.checkpoint_dir.clone(),
@@ -195,6 +266,14 @@ pub async fn run_generate(
         .await?;
         progress.complete_stage();
     }
+
+    // Use the full inventory for downstream stages when incremental identify
+    // ran; otherwise keep the caller-provided (crawl) file contents.
+    let file_contents: &[(String, String)] = if do_incremental {
+        &full_file_contents_owned
+    } else {
+        file_contents
+    };
 
     let identify = load_identify(checkpoint)?;
 
@@ -2524,5 +2603,300 @@ mod tests {
         let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
         let _ = fs::remove_dir_all(&alpha_ckpt);
         let _ = fs::remove_dir_all(&beta_ckpt);
+    }
+
+    // --- Incremental identify wiring (issue #227) -----------------------
+
+    /// Skip a test if `git` is not installed on this machine.
+    fn require_git() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping test: git not installed");
+        }
+    }
+
+    /// Run a `git` command in `dir`, panicking on failure.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-C", &dir.to_string_lossy()])
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
+    }
+
+    /// Create a temp git repo (kept alive for the test body).
+    fn init_git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        git(dir.path(), &["init", "--quiet"]);
+        git(dir.path(), &["config", "user.name", "Test"]);
+        git(dir.path(), &["config", "user.email", "test@example.com"]);
+        git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        git(dir, &["add", "--all"]);
+        git(dir, &["commit", "--quiet", "-m", msg]);
+    }
+
+    /// A gen_config with `--since` set, setup/overview skipped, single-shot
+    /// disabled (so full identify would use map+reduce too), and a tiny batch
+    /// budget so each affected file is its own map batch.
+    fn incremental_gen_config(dir: PathBuf, output_dir: PathBuf, since: &str) -> GenerateConfig {
+        let mut cfg = gen_config(dir, output_dir);
+        cfg.no_setup = true;
+        cfg.no_overview = true;
+        cfg.single_shot = false;
+        cfg.run_config.since = Some(since.to_string());
+        cfg.run_config.batch_char_budget = Some(1);
+        cfg
+    }
+
+    /// Canned map response: one candidate backed by sub-list `file_index`.
+    fn inc_map_yaml(name: &str, file_index: usize) -> String {
+        format!(
+            "```yaml\n- name: \"{name}\"\n  description: \"{name} desc\"\n  \
+             file_indices: [{file_index}]\n  tier: \"S\"\n  kind: \"module\"\n  \
+             apps: []\n  entry_files: []\n```\n"
+        )
+    }
+
+    /// Canned reduce response: final abstractions backed by full-inventory
+    /// indices.
+    fn inc_reduce_yaml(items: &[(&str, usize)]) -> String {
+        let mut body = String::new();
+        for (name, idx) in items {
+            body.push_str(&format!(
+                "- name: \"{name}\"\n  description: \"{name} desc\"\n  \
+                 file_indices: [{idx}]\n  tier: \"S\"\n  kind: \"module\"\n  \
+                 apps: []\n  entry_files: []\n"
+            ));
+        }
+        format!("```yaml\n{body}```\n")
+    }
+
+    #[tokio::test]
+    async fn generate_uses_incremental_identify_when_valid_checkpoint() {
+        require_git();
+        let repo = init_git_repo();
+        let root = repo.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        // Initial commit with three src files; tag v1.
+        fs::write(root.join("src/router.rs"), "fn route() {}\n").unwrap();
+        fs::write(root.join("src/store.rs"), "fn store() {}\n").unwrap();
+        fs::write(root.join("src/worker.rs"), "fn work() {}\n").unwrap();
+        commit_all(root, "initial");
+        git(root, &["tag", "v1"]);
+
+        // Modify router.rs and add new.rs; commit (HEAD advances past v1).
+        fs::write(root.join("src/router.rs"), "fn route() { changed }\n").unwrap();
+        fs::write(root.join("src/new.rs"), "fn new() {}\n").unwrap();
+        commit_all(root, "second");
+
+        // Seed a checkpoint mimicking a previous FULL run: identify complete
+        // with abstractions for all three files, since_ref unset (full run),
+        // git_commit = current HEAD.
+        let ckpt_dir = temp_dir("inc-valid-ckpt");
+        let output_dir = temp_dir("inc-valid-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = fresh_checkpoint();
+        cp.mark_stage_complete(StageId::Fetch, "t1");
+        cp.mark_stage_complete(StageId::DryRun, "t2");
+        cp.mark_stage_complete(StageId::Identify, "t3");
+        let head = current_git_head(root).unwrap();
+        cp.git_commit = Some(head.clone());
+        // since_ref stays None (previous run was a full run).
+        cp.abstractions = Some(
+            IdentifyResult::new(three_abstractions())
+                .to_checkpoint_value()
+                .unwrap(),
+        );
+        let file_records = records_from_files(&[
+            ("src/router.rs", b""),
+            ("src/store.rs", b""),
+            ("src/worker.rs", b""),
+        ]);
+        store.save(cp.clone(), &file_records).unwrap();
+
+        // Full inventory (sorted): src/new.rs(0), src/router.rs(1),
+        // src/store.rs(2), src/worker.rs(3). Affected files (changed, in src):
+        // src/new.rs, src/router.rs → 2 map batches (one per file, budget=1).
+        // Reduce returns 3 merged abstractions. Then downstream:
+        // relationships, order, 3 chapters (setup/overview skipped).
+        let responses = vec![
+            inc_map_yaml("New", 0),
+            inc_map_yaml("Router", 1),
+            inc_reduce_yaml(&[("Router", 1), ("Store", 2), ("Worker", 3)]),
+            canned_relationships(),
+            canned_order(),
+            canned_chapter("Router", 1),
+            canned_chapter("Store", 2),
+            canned_chapter("Worker", 3),
+        ];
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let mut progress = ProgressTracker::new(200);
+        let cancel = CancelToken::new();
+        let (files, sizes) = files_and_sizes();
+        let fc = file_contents_for();
+        let cfg = incremental_gen_config(PathBuf::from(root), output_dir.clone(), "v1");
+
+        let outcome = run_generate(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &mut progress,
+            &cancel,
+            &cfg,
+            &fc,
+            files,
+            sizes,
+            20,
+            &["gap1".to_string()],
+            "README",
+            &two_modules(),
+        )
+        .await
+        .expect("incremental generate should complete");
+
+        assert!(matches!(outcome, GenerateOutcome::Completed(_)));
+
+        // The merged identify result must be persisted to the checkpoint and
+        // contain the preserved abstractions (Store, Worker were NOT changed).
+        let (reloaded, _) = store.load().unwrap();
+        let identify = load_identify_result(&reloaded).expect("abstractions present");
+        let names: Vec<String> = identify
+            .abstractions
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"Store".to_string()),
+            "Store preserved: {names:?}"
+        );
+        assert!(
+            names.contains(&"Worker".to_string()),
+            "Worker preserved: {names:?}"
+        );
+        assert!(
+            names.contains(&"Router".to_string()),
+            "Router present: {names:?}"
+        );
+
+        // 2 map batches + 1 reduce + relationships + order + 3 chapters = 8.
+        // (A full single-shot identify would have been 1 identify call, but
+        // single_shot=false here; the point is map only ran on the 2 affected
+        // files, not all 4.)
+        assert_eq!(
+            client.call_count(),
+            8,
+            "incremental identify + downstream call count"
+        );
+
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_falls_back_to_full_identify_when_checkpoint_stale() {
+        require_git();
+        let repo = init_git_repo();
+        let root = repo.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        fs::write(root.join("src/router.rs"), "fn route() {}\n").unwrap();
+        fs::write(root.join("src/store.rs"), "fn store() {}\n").unwrap();
+        fs::write(root.join("src/worker.rs"), "fn work() {}\n").unwrap();
+        commit_all(root, "initial");
+        git(root, &["tag", "v1"]);
+        // A second commit so HEAD != the recorded git_commit below.
+        fs::write(root.join("src/router.rs"), "fn route() { changed }\n").unwrap();
+        commit_all(root, "second");
+
+        // Seed a STALE incremental checkpoint: since_ref set, git_commit is an
+        // old head that no longer matches current HEAD.
+        let ckpt_dir = temp_dir("inc-stale-ckpt");
+        let output_dir = temp_dir("inc-stale-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = fresh_checkpoint();
+        cp.mark_stage_complete(StageId::Fetch, "t1");
+        cp.mark_stage_complete(StageId::DryRun, "t2");
+        cp.mark_stage_complete(StageId::Identify, "t3");
+        cp.since_ref = Some("v1".to_string());
+        cp.git_commit = Some("0000000000000000000000000000000000000000".to_string());
+        cp.abstractions = Some(
+            IdentifyResult::new(three_abstractions())
+                .to_checkpoint_value()
+                .unwrap(),
+        );
+        let file_records = records_from_files(&[
+            ("src/router.rs", b""),
+            ("src/store.rs", b""),
+            ("src/worker.rs", b""),
+        ]);
+        store.save(cp.clone(), &file_records).unwrap();
+
+        // Stale → full identify fallback. Use single-shot identify (1 call)
+        // on the passed-in file inventory, then downstream stages.
+        // 1 identify + relationships + order + 3 chapters = 6.
+        let mut cfg = incremental_gen_config(PathBuf::from(root), output_dir.clone(), "v1");
+        cfg.single_shot = true;
+        let responses = vec![
+            canned_identify(),
+            canned_relationships(),
+            canned_order(),
+            canned_chapter("Router", 1),
+            canned_chapter("Store", 2),
+            canned_chapter("Worker", 3),
+        ];
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let mut progress = ProgressTracker::new(200);
+        let cancel = CancelToken::new();
+        let (files, sizes) = files_and_sizes();
+        let fc = file_contents_for();
+
+        let outcome = run_generate(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &mut progress,
+            &cancel,
+            &cfg,
+            &fc,
+            files,
+            sizes,
+            20,
+            &["gap1".to_string()],
+            "README",
+            &two_modules(),
+        )
+        .await
+        .expect("stale-fallback generate should complete");
+
+        assert!(matches!(outcome, GenerateOutcome::Completed(_)));
+        // Full identify fallback ran (single-shot, 1 call), NOT incremental
+        // merge (which would have been map+reduce = >=2 identify calls).
+        // call_count = 1 identify + relationships + order + 3 chapters = 6.
+        assert_eq!(
+            client.call_count(),
+            6,
+            "stale checkpoint should fall back to full identify"
+        );
+
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
     }
 }
