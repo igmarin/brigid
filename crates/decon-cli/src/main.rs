@@ -17,9 +17,9 @@ use decon_core::{
     TutorialFile, config_from_env_map, custom_host_warning, evaluate_tutorial, parse_toml_config,
     parse_yaml_config, redact_content, resolve_config, validate_config_for_check,
 };
-use decon_crawl::crawl_local;
+use decon_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
 use decon_pipeline::{
-    CheckpointStore, DryRunError, check_identity, dry_run, next_stage, pending_stages,
+    CheckpointStore, DryRunError, check_identity, dry_run_with_options, next_stage, pending_stages,
 };
 
 /// Success.
@@ -182,6 +182,10 @@ enum Commands {
         /// Repository root to crawl.
         #[arg(long = "dir", value_name = "PATH")]
         dir: Option<PathBuf>,
+        /// Git ref (tag, commit, or branch) to diff against. When set, only
+        /// files changed since this ref are listed (requires a git repo).
+        #[arg(long = "since", value_name = "REF")]
+        since: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -194,6 +198,10 @@ enum Commands {
         /// Optional app/module scope keys (repeatable), e.g. `apps/alpha`.
         #[arg(long = "apps", value_name = "MODULE")]
         apps: Vec<String>,
+        /// Git ref (tag, commit, or branch) to diff against. When set, only
+        /// files changed since this ref are included (requires a git repo).
+        #[arg(long = "since", value_name = "REF")]
+        since: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -236,6 +244,10 @@ enum Commands {
         /// Maximum abstractions to return.
         #[arg(long = "max-abstractions", default_value_t = 10)]
         max_abstractions: usize,
+        /// Git ref (tag, commit, or branch) to diff against. When set, only
+        /// files changed since this ref are crawled (requires a git repo).
+        #[arg(long = "since", value_name = "REF")]
+        since: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -299,6 +311,10 @@ enum Commands {
         /// config/env).
         #[arg(long = "max-llm-calls", value_name = "N")]
         max_llm_calls: Option<u32>,
+        /// Git ref (tag, commit, or branch) to diff against. When set, only
+        /// files changed since this ref are crawled (requires a git repo).
+        #[arg(long = "since", value_name = "REF")]
+        since: Option<String>,
         /// Detailed progress output: stage timing, LLM call count, cache
         /// stats, checkpoint path. Sent to stderr so stdout piping is
         /// unaffected. Mutually exclusive with `--quiet`.
@@ -675,6 +691,8 @@ DECON_NO_CACHE
   Set to 1 or true to disable the disk cache.
 DECON_FORCE_MOCK
   Set to any non-empty value to force the mock LLM client (offline).
+DECON_SINCE
+  Git ref (tag, commit, or branch) for incremental git-diff crawl.
 ";
 
 /// Troff content for the FILES section of the man page.
@@ -786,7 +804,13 @@ fn main() -> ExitCode {
     // work even when no `decon.toml` is present or the cwd contains a broken
     // config file, so skip loading the merged config for it entirely.
     let cfg = if !matches!(cli.command, Commands::Completions { .. }) {
-        match load_merged_config(cli.config.as_deref(), &RunConfig::empty()) {
+        // Build a CLI overlay with the `--since` flag so it participates in
+        // config layering (CLI > file > env > defaults).
+        let cli_overlay = RunConfig {
+            since: cli_since(&cli.command),
+            ..RunConfig::empty()
+        };
+        match load_merged_config(cli.config.as_deref(), &cli_overlay) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("error: config: {e}");
@@ -803,13 +827,22 @@ fn main() -> ExitCode {
             non_interactive,
             check,
         } => cmd_init(&dir, non_interactive, check),
-        Commands::Crawl { dir, format } => {
+        Commands::Crawl {
+            dir,
+            since: _,
+            format,
+        } => {
             let dir = dir
                 .or_else(|| cfg.root.clone())
                 .unwrap_or_else(|| PathBuf::from("."));
-            cmd_crawl(&dir, format)
+            cmd_crawl(&dir, cfg.since.as_deref(), format)
         }
-        Commands::DryRun { dir, apps, format } => {
+        Commands::DryRun {
+            dir,
+            apps,
+            since: _,
+            format,
+        } => {
             let dir = dir
                 .or_else(|| cfg.root.clone())
                 .unwrap_or_else(|| PathBuf::from("."));
@@ -818,7 +851,7 @@ fn main() -> ExitCode {
             } else {
                 apps
             };
-            cmd_dry_run(&dir, &apps, format)
+            cmd_dry_run(&dir, &apps, cfg.since.as_deref(), format)
         }
         Commands::Eval {
             out,
@@ -836,6 +869,7 @@ fn main() -> ExitCode {
             checkpoint_dir,
             single_shot,
             max_abstractions,
+            since: _,
             format,
         } => {
             let dir = dir
@@ -868,6 +902,7 @@ fn main() -> ExitCode {
             review_chapters,
             concurrency,
             max_llm_calls,
+            since: _,
             verbose,
             quiet,
             format,
@@ -1008,6 +1043,20 @@ fn main() -> ExitCode {
         // so this arm is unreachable.
         Commands::Manpage { .. } => unreachable!("manpage handled before config load"),
         Commands::Completions { shell, output } => cmd_completions(shell, output),
+    }
+}
+
+/// Extract the `--since` CLI flag value from a subcommand for config layering.
+///
+/// Returns `Some(ref)` when `--since` was passed on the command line, or
+/// `None` when it was absent (so file/env layers can supply it).
+fn cli_since(command: &Commands) -> Option<String> {
+    match command {
+        Commands::Crawl { since, .. }
+        | Commands::DryRun { since, .. }
+        | Commands::Identify { since, .. }
+        | Commands::Generate { since, .. } => since.clone(),
+        _ => None,
     }
 }
 
@@ -1236,6 +1285,19 @@ fn generate_config_template(answers: &WizardAnswers) -> String {
         out_str(&mut out, "# [[allowed_hosts]]");
         out_str(&mut out, "# host = \"my-proxy.internal\"");
     }
+    out_str(&mut out, "");
+
+    // --- Incremental crawl ---
+    out_str(
+        &mut out,
+        "# Git ref (tag, commit, or branch) for incremental git-diff crawl (optional).",
+    );
+    out_str(
+        &mut out,
+        "# When set, only files changed since this ref are crawled. Also settable",
+    );
+    out_str(&mut out, "# via DECON_SINCE env var or --since CLI flag.");
+    maybe_write_opt_str(&mut out, "since", answers.since.as_deref());
 
     out
 }
@@ -1310,6 +1372,8 @@ struct WizardAnswers {
     chars_per_token: Option<usize>,
     apps: Vec<String>,
     allowed_hosts: Vec<String>,
+    /// Git ref for incremental crawl (optional).
+    since: Option<String>,
 }
 
 impl WizardAnswers {
@@ -1332,6 +1396,7 @@ impl WizardAnswers {
             chars_per_token: None,
             apps: Vec::new(),
             allowed_hosts: Vec::new(),
+            since: None,
         }
     }
 }
@@ -1546,8 +1611,11 @@ fn print_stage_json<T: serde::Serialize>(out: &StageOutput<T>) {
     let _ = writeln!(std::io::stdout(), "{json}");
 }
 
-fn cmd_crawl(dir: &Path, format: OutputFormat) -> ExitCode {
-    match crawl_local(dir) {
+fn cmd_crawl(dir: &Path, since: Option<&str>, format: OutputFormat) -> ExitCode {
+    let options = CrawlOptions {
+        since: since.map(str::to_owned),
+    };
+    match crawl_local_with_options(dir, options) {
         Ok(result) => {
             match format {
                 OutputFormat::Text => {
@@ -1573,14 +1641,22 @@ fn cmd_crawl(dir: &Path, format: OutputFormat) -> ExitCode {
     }
 }
 
-fn cmd_dry_run(dir: &Path, apps: &[String], format: OutputFormat) -> ExitCode {
+fn cmd_dry_run(dir: &Path, apps: &[String], since: Option<&str>, format: OutputFormat) -> ExitCode {
     let scope: Option<Vec<ModuleKey>> = if apps.is_empty() {
         None
     } else {
         Some(apps.iter().map(ModuleKey::new).collect())
     };
     let scope_ref = scope.as_deref();
-    match dry_run(dir, scope_ref) {
+    let crawl_options = CrawlOptions {
+        since: since.map(str::to_owned),
+    };
+    match dry_run_with_options(
+        dir,
+        scope_ref,
+        &decon_core::BudgetConfig::default(),
+        crawl_options,
+    ) {
         Ok(plan) => {
             match format {
                 OutputFormat::Text => {
@@ -1797,8 +1873,11 @@ fn cmd_identify(
     cfg: &RunConfig,
     format: OutputFormat,
 ) -> ExitCode {
-    // Crawl the repo to get the file inventory.
-    let crawl_result = match crawl_local(dir) {
+    // Crawl the repo to get the file inventory (incremental when --since is set).
+    let crawl_options = CrawlOptions {
+        since: cfg.since.clone(),
+    };
+    let crawl_result = match crawl_local_with_options(dir, crawl_options) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: identify: crawl failed: {e}");
@@ -2100,7 +2179,10 @@ fn cmd_generate(
         );
     }
 
-    let crawl_result = match crawl_local(dir) {
+    let crawl_options = CrawlOptions {
+        since: cfg.since.clone(),
+    };
+    let crawl_result = match crawl_local_with_options(dir, crawl_options) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: generate: crawl failed: {e}");
@@ -2113,7 +2195,14 @@ fn cmd_generate(
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    let dry_run_plan = match decon_pipeline::dry_run(dir, None) {
+    let dry_run_plan = match decon_pipeline::dry_run_with_options(
+        dir,
+        None,
+        &decon_core::BudgetConfig::default(),
+        CrawlOptions {
+            since: cfg.since.clone(),
+        },
+    ) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: generate: dry-run failed: {e}");

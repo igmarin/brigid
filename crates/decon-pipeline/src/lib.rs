@@ -41,7 +41,7 @@ pub use combine::{
     CombineError, build_index_markdown, combine_and_checkpoint, combine_tutorial,
     slugify_chapter_filename, write_output_directory,
 };
-pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget};
+pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget, dry_run_with_options};
 pub use generate::{
     EachAppOutcome, EachAppSummary, GenerateConfig, GenerateError, GenerateOutcome,
     run_chapters_stage, run_combine_stage, run_generate, run_generate_each_app, run_order_stage,
