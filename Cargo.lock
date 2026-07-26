@@ -456,6 +456,7 @@ dependencies = [
 name = "decon-core"
 version = "0.5.0"
 dependencies = [
+ "assert-json-diff",
  "hex",
  "proptest",
  "serde",

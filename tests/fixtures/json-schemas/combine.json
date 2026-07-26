@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "stage": "combine",
+  "status": "ok",
+  "data": {
+    "index": "# Index\n\n## Chapters",
+    "chapter_count": 5,
+    "setup_present": true,
+    "overview_present": true
+  }
+}

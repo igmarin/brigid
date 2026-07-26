@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "stage": "generate",
+  "status": "ok",
+  "data": {
+    "stages": [
+      {
+        "name": "identify",
+        "status": "ok",
+        "duration_ms": 1000,
+        "llm_calls": 2
+      },
+      {
+        "name": "chapters",
+        "status": "ok",
+        "duration_ms": 5000,
+        "llm_calls": 5
+      }
+    ],
+    "output_dir": "out/tutorial",
+    "checkpoint_path": "out/checkpoint.json",
+    "total_llm_calls": 7,
+    "elapsed_ms": 6000
+  }
+}

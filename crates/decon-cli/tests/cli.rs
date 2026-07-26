@@ -3418,3 +3418,179 @@ fn order_subcommand_help_lists_format_flag() {
         .success()
         .stdout(predicate::str::contains("--format"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #223: `decon generate --format json` — full pipeline JSON output.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generate_format_json_outputs_valid_json_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-json-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-json-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let output = decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--no-setup", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+
+    let v: serde_json::Value =
+        serde_json::from_slice(&output).expect("stdout should be valid JSON");
+    assert_eq!(v["schema_version"], 1, "schema_version should be 1");
+    assert_eq!(v["stage"], "generate", "stage should be 'generate'");
+    assert_eq!(v["status"], "ok", "status should be 'ok'");
+    assert!(
+        v["data"]["stages"].is_array(),
+        "data.stages should be an array"
+    );
+    assert!(
+        v["data"]["output_dir"].is_string(),
+        "data.output_dir should be a string"
+    );
+    assert!(
+        v["data"]["checkpoint_path"].is_string(),
+        "data.checkpoint_path should be a string"
+    );
+    assert!(
+        v["data"]["total_llm_calls"].is_number(),
+        "data.total_llm_calls should be a number"
+    );
+    assert!(
+        v["data"]["elapsed_ms"].is_number(),
+        "data.elapsed_ms should be a number"
+    );
+}
+
+#[test]
+fn generate_format_json_stage_summaries_have_required_fields() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-json-stages-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-json-stages-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let output = decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--no-setup", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+
+    let v: serde_json::Value =
+        serde_json::from_slice(&output).expect("stdout should be valid JSON");
+    let stages = v["data"]["stages"]
+        .as_array()
+        .expect("data.stages should be an array");
+    assert!(
+        !stages.is_empty(),
+        "there should be at least one stage summary"
+    );
+    for stage in stages {
+        assert!(stage["name"].is_string(), "each stage should have name");
+        assert!(stage["status"].is_string(), "each stage should have status");
+        assert!(
+            stage["duration_ms"].is_number(),
+            "each stage should have duration_ms"
+        );
+        assert!(
+            stage["llm_calls"].is_number(),
+            "each stage should have llm_calls"
+        );
+    }
+}
+
+#[test]
+fn generate_format_json_contains_identify_stage() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-json-id-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-json-id-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let output = decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--no-setup", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+
+    let v: serde_json::Value =
+        serde_json::from_slice(&output).expect("stdout should be valid JSON");
+    let stages = v["data"]["stages"]
+        .as_array()
+        .expect("data.stages should be an array");
+    let has_identify = stages
+        .iter()
+        .any(|s| s["name"].as_str() == Some("identify"));
+    assert!(has_identify, "stage summaries should include 'identify'");
+}
+
+#[test]
+fn generate_format_text_still_works() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-gen-text-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-gen-text-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    decon()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--no-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
