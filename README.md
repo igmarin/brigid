@@ -1,4 +1,5 @@
-# decon
+# decon-rs
+![Decon-RS Logo](https://github.com/user-attachments/assets/149638e7-1b52-4028-89c3-510a9383d15f)
 
 > Turn any codebase into a beginner-friendly tutorial — powered by LLMs, built in Rust.
 
