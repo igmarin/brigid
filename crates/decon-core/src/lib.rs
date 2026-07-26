@@ -28,6 +28,7 @@ pub mod progress;
 pub mod scope;
 pub mod secrets;
 pub mod setup;
+pub mod stage_output;
 
 // Re-exports inherit rustdoc from `budget` (no extra crate-root docs required).
 pub use abstraction::{
@@ -81,6 +82,11 @@ pub use secrets::{
 pub use setup::{
     CONFIG_FILE_NAMES, MIN_README_LEN, SHORT_README_PENALTY, SIGNAL_POINTS, SetupAssessment,
     SetupSignals, assess_setup,
+};
+pub use stage_output::{
+    ChapterSummary, ChaptersOutput, CombineOutput, GenerateOutput, IdentifyOutput, OrderOutput,
+    OverviewOutput, RelationshipsOutput, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats,
+    StageStatus, StageSummary,
 };
 
 /// The version of this crate, as declared in `Cargo.toml`.
