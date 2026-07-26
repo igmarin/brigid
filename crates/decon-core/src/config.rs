@@ -131,6 +131,18 @@ pub struct RunConfig {
     /// the `DECON_SINCE` environment variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
+    /// Directories to load custom [`crate::plugin::KindDetector`] plugins
+    /// from (issue #228 / ADR 0014).
+    ///
+    /// Sourced from `[plugins] dirs = […]` in `decon.toml` /
+    /// `.decon.yaml`, or the `DECON_PLUGIN_DIRS` environment variable
+    /// (colon-separated). Dynamic loading from shared libraries is
+    /// **out of scope** for this field — it is reserved for a future
+    /// milestone. Today it is parsed and stored so config round-trips
+    /// are stable, but the identify stage uses an in-process
+    /// [`crate::plugin::PluginRegistry`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_dirs: Option<Vec<PathBuf>>,
 }
 
 impl Default for RunConfig {
@@ -153,6 +165,7 @@ impl Default for RunConfig {
             diagram_level: None,
             allowed_hosts: None,
             since: None,
+            plugin_dirs: None,
         }
     }
 }
@@ -179,6 +192,7 @@ impl RunConfig {
             diagram_level: None,
             allowed_hosts: None,
             since: None,
+            plugin_dirs: None,
         }
     }
 
@@ -209,6 +223,10 @@ impl RunConfig {
                 .or_else(|| self.diagram_level.clone()),
             allowed_hosts: merge_host_layers(&self.allowed_hosts, &overlay.allowed_hosts),
             since: overlay.since.clone().or_else(|| self.since.clone()),
+            plugin_dirs: overlay
+                .plugin_dirs
+                .clone()
+                .or_else(|| self.plugin_dirs.clone()),
         }
     }
 
@@ -248,8 +266,10 @@ pub fn resolve_config(
 /// or [`ConfigError::SecretFieldRejected`] when a secret-bearing key is found.
 pub fn parse_toml_config(text: &str) -> Result<RunConfig, ConfigError> {
     let value: toml::Value = toml::from_str(text).map_err(|e| ConfigError::Toml(e.to_string()))?;
-    let json_value = serde_json::to_value(&value).map_err(|e| ConfigError::Toml(e.to_string()))?;
+    let mut json_value =
+        serde_json::to_value(&value).map_err(|e| ConfigError::Toml(e.to_string()))?;
     check_for_secret_fields(&json_value)?;
+    lift_plugins_dirs(&mut json_value);
     let cfg: RunConfig =
         serde_json::from_value(json_value).map_err(|e| ConfigError::Toml(e.to_string()))?;
     validate_config_hosts(&cfg)?;
@@ -266,9 +286,10 @@ pub fn parse_toml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// Returns [`ConfigError::Yaml`] when YAML is invalid or types do not match,
 /// or [`ConfigError::SecretFieldRejected`] when a secret-bearing key is found.
 pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
-    let value: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_yaml_ng::from_str(text).map_err(|e| ConfigError::Yaml(e.to_string()))?;
     check_for_secret_fields(&value)?;
+    lift_plugins_dirs(&mut value);
     let cfg: RunConfig =
         serde_json::from_value(value).map_err(|e| ConfigError::Yaml(e.to_string()))?;
     validate_config_hosts(&cfg)?;
@@ -364,6 +385,19 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
     }
     if let Some(v) = nonblank(vars.get("DECON_SINCE")) {
         cfg.since = Some(v.to_owned());
+    }
+    if let Some(v) = nonblank(vars.get("DECON_PLUGIN_DIRS")) {
+        let dirs: Vec<PathBuf> = v
+            .split(':')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        if dirs.is_empty() {
+            cfg.plugin_dirs = None;
+        } else {
+            cfg.plugin_dirs = Some(dirs);
+        }
     }
     Ok(cfg)
 }
@@ -681,6 +715,37 @@ fn nonblank(v: Option<&String>) -> Option<&str> {
     v.map(String::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+/// Lift a nested `[plugins] dirs = […]` table into the flat `plugin_dirs`
+/// field that [`RunConfig`] expects.
+///
+/// TOML/YAML config files use the nested form:
+///
+/// ```toml
+/// [plugins]
+/// dirs = ["./plugins", "./custom"]
+/// ```
+///
+/// which parses into `{"plugins": {"dirs": [...]}}`. The [`RunConfig`] struct
+/// uses a flat `plugin_dirs` field, so this helper moves
+/// `plugins.dirs` → `plugin_dirs` (and removes the now-empty `plugins`
+/// table) before serde deserialization. If `plugin_dirs` is already present
+/// at the top level, it is left untouched (top-level takes precedence).
+fn lift_plugins_dirs(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    // Only lift when the flat field is not already set.
+    if map.contains_key("plugin_dirs") {
+        return;
+    }
+    let Some(plugins) = map.remove("plugins") else {
+        return;
+    };
+    if let Some(dirs) = plugins.get("dirs") {
+        map.insert("plugin_dirs".to_string(), dirs.clone());
+    }
 }
 
 /// Exact-match secret field names (compared case-insensitively against keys).
@@ -1804,5 +1869,133 @@ allowed_hosts = ["a.com", "b.com"]
             canonical_config_json(&a).unwrap(),
             canonical_config_json(&b).unwrap()
         );
+    }
+
+    // -----------------------------------------------------------------
+    // plugin_dirs (issue #228 / ADR 0014)
+    // -----------------------------------------------------------------
+
+    /// `RunConfig::empty()` has `plugin_dirs = None`.
+    #[test]
+    fn plugin_dirs_empty_is_none() {
+        let e = RunConfig::empty();
+        assert_eq!(e.plugin_dirs, None);
+    }
+
+    /// `RunConfig::default()` has `plugin_dirs = None`.
+    #[test]
+    fn plugin_dirs_default_is_none() {
+        let d = RunConfig::default();
+        assert_eq!(d.plugin_dirs, None);
+    }
+
+    /// `decon.toml` supports `[plugins] dirs = […]`.
+    #[test]
+    fn plugin_dirs_from_toml() {
+        let cfg = parse_toml_config(
+            r#"
+[plugins]
+dirs = ["./plugins", "./custom"]
+"#,
+        )
+        .expect("toml");
+        assert_eq!(
+            cfg.plugin_dirs.as_deref(),
+            Some(
+                [
+                    std::path::PathBuf::from("./plugins"),
+                    std::path::PathBuf::from("./custom")
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    /// `.decon.yaml` supports `plugins: { dirs: [...] }`.
+    #[test]
+    fn plugin_dirs_from_yaml() {
+        let cfg = parse_yaml_config("plugins:\n  dirs:\n    - ./plugins\n    - ./custom\n")
+            .expect("yaml");
+        assert_eq!(
+            cfg.plugin_dirs.as_deref(),
+            Some(
+                [
+                    std::path::PathBuf::from("./plugins"),
+                    std::path::PathBuf::from("./custom")
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    /// `DECON_PLUGIN_DIRS` env var (colon-separated) maps to `plugin_dirs`.
+    #[test]
+    fn plugin_dirs_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_PLUGIN_DIRS".into(), "./a:./b".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(
+            env.plugin_dirs.as_deref(),
+            Some(
+                [
+                    std::path::PathBuf::from("./a"),
+                    std::path::PathBuf::from("./b")
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    /// Blank `DECON_PLUGIN_DIRS` is ignored.
+    #[test]
+    fn plugin_dirs_blank_env_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_PLUGIN_DIRS".into(), "   ".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.plugin_dirs, None);
+    }
+
+    /// `merge_layer`: CLI `plugin_dirs` overrides file `plugin_dirs`.
+    #[test]
+    fn plugin_dirs_cli_overrides_file() {
+        let env = RunConfig::empty();
+        let file = RunConfig {
+            plugin_dirs: Some(vec![std::path::PathBuf::from("./file-plugins")]),
+            ..RunConfig::empty()
+        };
+        let cli = RunConfig {
+            plugin_dirs: Some(vec![std::path::PathBuf::from("./cli-plugins")]),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &cli);
+        assert_eq!(
+            resolved.plugin_dirs.as_deref(),
+            Some([std::path::PathBuf::from("./cli-plugins")].as_slice())
+        );
+    }
+
+    /// `plugin_dirs` is included in canonical JSON (checkpoint hashing).
+    #[test]
+    fn plugin_dirs_included_in_canonical_json() {
+        let a = RunConfig {
+            plugin_dirs: Some(vec![std::path::PathBuf::from("./a")]),
+            ..RunConfig::default()
+        };
+        let b = RunConfig {
+            plugin_dirs: Some(vec![std::path::PathBuf::from("./b")]),
+            ..RunConfig::default()
+        };
+        assert_ne!(
+            canonical_config_json(&a).unwrap(),
+            canonical_config_json(&b).unwrap()
+        );
+    }
+
+    /// `[plugins]` with no `dirs` key does not error and leaves
+    /// `plugin_dirs` as `None`.
+    #[test]
+    fn plugins_table_without_dirs_is_ok() {
+        let cfg = parse_toml_config("[plugins]\n").expect("toml");
+        assert_eq!(cfg.plugin_dirs, None);
     }
 }
