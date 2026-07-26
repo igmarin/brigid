@@ -19,6 +19,7 @@
 //!    and partial-resume semantics.
 
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -321,21 +322,8 @@ pub async fn write_single_chapter(
     });
     let chapter_outline = renderer.render(PromptId::ChapterOutline, &outline_ctx)?;
 
-    let apps_line = if abstraction.apps.is_empty() {
-        "N/A".to_string()
-    } else {
-        abstraction.apps.join(", ")
-    };
-    let entry_list = if abstraction.entry_files.is_empty() {
-        "(none)".to_string()
-    } else {
-        abstraction
-            .entry_files
-            .iter()
-            .map(|f| format!("- {f}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let apps_line = format_apps_line(&abstraction.apps);
+    let entry_list = format_entry_list(&abstraction.entry_files);
 
     let redacted_context = redact_content(file_context);
 
@@ -380,6 +368,11 @@ pub async fn write_single_chapter(
         abstraction.kind.clone(),
         evidence_footer,
     );
+    // `abstraction` is borrowed (`&Abstraction`) so we cannot move `apps`
+    // or `entry_files` out of it with `std::mem::take`. The clone is
+    // unavoidable here unless the signature is changed to take ownership,
+    // which would force the caller to clone the entire `Abstraction` anyway
+    // (it lives in a shared `Vec<Abstraction>`). See issue #217.
     chapter.apps = abstraction.apps.clone();
     chapter.entry_files = abstraction.entry_files.clone();
 
@@ -621,12 +614,12 @@ async fn generate_chapters_internal(
                 // before any async work (no guard held across `.await`).
                 let summary = {
                     let guard = summaries.lock().await;
-                    guard
-                        .iter()
-                        .filter(|(num, _)| *num < meta.chapter_num)
-                        .map(|(_, s)| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n\n")
+                    join_chapter_summaries(
+                        guard
+                            .iter()
+                            .filter(|(num, _)| *num < meta.chapter_num)
+                            .map(|(_, s)| s.as_str()),
+                    )
                 };
 
                 let file_context =
@@ -753,6 +746,66 @@ fn build_evidence_footer(abstraction: &Abstraction) -> String {
         apps,
         entry_files
     )
+}
+
+/// Format the apps line for a chapter prompt, joining apps with `", "`.
+///
+/// Returns `"N/A"` when the list is empty. Uses a single pre-allocated
+/// `String` instead of `Vec::join` to avoid an intermediate allocation.
+#[must_use]
+fn format_apps_line(apps: &[String]) -> String {
+    if apps.is_empty() {
+        return "N/A".to_string();
+    }
+    // Estimate: sum of app lengths + 2 bytes (", ") per separator.
+    let estimated = apps.iter().map(|a| a.len() + 2).sum::<usize>();
+    let mut out = String::with_capacity(estimated);
+    for (i, app) in apps.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(app);
+    }
+    out
+}
+
+/// Format the entry-files list for a chapter prompt as bullet points.
+///
+/// Returns `"(none)"` when the list is empty. Each entry is written as
+/// `"- {file}\n"` into a pre-allocated `String`, then the trailing newline
+/// is removed. This replaces the `map(format!).collect().join()` pattern
+/// which required two intermediate allocations (a `Vec<String>` and the
+/// joined `String`).
+#[must_use]
+fn format_entry_list(entry_files: &[String]) -> String {
+    if entry_files.is_empty() {
+        return "(none)".to_string();
+    }
+    let mut out = String::with_capacity(entry_files.len() * 40);
+    for f in entry_files {
+        writeln!(out, "- {f}").ok();
+    }
+    // Remove the single trailing newline added by the last `writeln!`.
+    out.pop();
+    out
+}
+
+/// Join chapter summaries with `"\n\n"` separators into a single `String`.
+///
+/// Replaces `collect::<Vec<_>>().join("\n\n")` which allocated an
+/// intermediate `Vec<&str>` before the final `String`.
+#[must_use]
+fn join_chapter_summaries<'a>(summaries: impl IntoIterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for s in summaries {
+        if !first {
+            out.push_str("\n\n");
+        }
+        out.push_str(s);
+        first = false;
+    }
+    out
 }
 
 /// Slugify a title for use in chapter filenames (matches checkpoint_store).
@@ -2043,5 +2096,88 @@ We learned routing.\n";
         let ts = now_iso8601_utc();
         assert_eq!(ts.len(), 20);
         assert!(ts.ends_with('Z'));
+    }
+
+    // --- format_entry_list ---
+
+    #[test]
+    fn format_entry_list_three_files() {
+        let files = vec![
+            "src/router.rs".to_string(),
+            "src/store.rs".to_string(),
+            "src/worker.rs".to_string(),
+        ];
+        let result = format_entry_list(&files);
+        assert_eq!(
+            result, "- src/router.rs\n- src/store.rs\n- src/worker.rs",
+            "entry list must match collect().join(\"\\n\") output"
+        );
+        assert!(!result.ends_with('\n'), "no trailing newline");
+    }
+
+    #[test]
+    fn format_entry_list_single_file() {
+        let files = vec!["main.rs".to_string()];
+        let result = format_entry_list(&files);
+        assert_eq!(result, "- main.rs");
+    }
+
+    #[test]
+    fn format_entry_list_empty_returns_none_marker() {
+        let files: Vec<String> = vec![];
+        let result = format_entry_list(&files);
+        assert_eq!(result, "(none)");
+    }
+
+    // --- format_apps_line ---
+
+    #[test]
+    fn format_apps_line_multiple_apps() {
+        let apps = vec!["web".to_string(), "api".to_string(), "worker".to_string()];
+        let result = format_apps_line(&apps);
+        assert_eq!(
+            result, "web, api, worker",
+            "apps line must match join(\", \") output"
+        );
+    }
+
+    #[test]
+    fn format_apps_line_single_app() {
+        let apps = vec!["web".to_string()];
+        let result = format_apps_line(&apps);
+        assert_eq!(result, "web");
+    }
+
+    #[test]
+    fn format_apps_line_empty_returns_na() {
+        let apps: Vec<String> = vec![];
+        let result = format_apps_line(&apps);
+        assert_eq!(result, "N/A");
+    }
+
+    // --- join_chapter_summaries ---
+
+    #[test]
+    fn join_chapter_summaries_multiple() {
+        let summaries = ["Summary A", "Summary B", "Summary C"];
+        let result = join_chapter_summaries(summaries.iter().copied());
+        assert_eq!(
+            result, "Summary A\n\nSummary B\n\nSummary C",
+            "must match collect().join(\"\\n\\n\") output"
+        );
+    }
+
+    #[test]
+    fn join_chapter_summaries_single() {
+        let summaries = ["Only one"];
+        let result = join_chapter_summaries(summaries.iter().copied());
+        assert_eq!(result, "Only one");
+    }
+
+    #[test]
+    fn join_chapter_summaries_empty() {
+        let summaries: [&str; 0] = [];
+        let result = join_chapter_summaries(summaries.iter().copied());
+        assert_eq!(result, "");
     }
 }
