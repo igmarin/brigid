@@ -68,6 +68,19 @@ pub async fn bounded_complete(
     join_all(futures).await
 }
 
+/// Convert a `usize` prompt count to `u32`, returning [`BudgetExceeded`]
+/// when the count exceeds `u32::MAX` (which would silently overflow the
+/// budget tracker).
+///
+/// This is extracted as a separate function so the overflow path can be
+/// unit-tested without allocating a multi-billion-element vector.
+fn prompt_count(len: usize) -> Result<u32, BudgetExceeded> {
+    u32::try_from(len).map_err(|_| BudgetExceeded {
+        used: u32::MAX,
+        max: u32::MAX,
+    })
+}
+
 /// Run LLM completion calls with bounded concurrency and budget enforcement.
 ///
 /// Before fanning out, this calls
@@ -83,14 +96,15 @@ pub async fn bounded_complete(
 /// # Errors
 ///
 /// Returns [`BudgetExceeded`] when `prompts.len()` would exceed the remaining
-/// budget.
+/// budget, or when `prompts.len()` exceeds `u32::MAX` (the budget tracker's
+/// counter width).
 pub async fn bounded_complete_with_budget(
     client: &dyn LlmClient,
     prompts: Vec<String>,
     max_concurrency: usize,
     progress: &mut ProgressTracker,
 ) -> Result<Vec<Result<String, LlmError>>, BudgetExceeded> {
-    let n = u32::try_from(prompts.len()).unwrap_or(u32::MAX);
+    let n = prompt_count(prompts.len())?;
     progress.reserve_llm_calls(n)?;
     Ok(bounded_complete(client, prompts, max_concurrency).await)
 }
@@ -301,5 +315,34 @@ mod tests {
         assert_eq!(results.len(), 5);
         assert_eq!(progress.snapshot().llm_calls_used, 5);
         assert_eq!(progress.snapshot().llm_calls_remaining, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #212: overflow in prompt count must return an error
+    // ------------------------------------------------------------------
+
+    /// When the prompt count exceeds `u32::MAX`, `prompt_count` must return
+    /// a [`BudgetExceeded`] error rather than silently clamping to
+    /// `u32::MAX` (which would allow exceeding the LLM call budget).
+    ///
+    /// This test runs only on 64-bit platforms where `usize` can exceed
+    /// `u32::MAX`.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn prompt_count_overflow_returns_budget_exceeded() {
+        let overflow_len = u32::MAX as usize + 1;
+        let result = prompt_count(overflow_len);
+        assert!(result.is_err(), "overflow should return Err");
+        let err = result.unwrap_err();
+        assert_eq!(err.used, u32::MAX);
+        assert_eq!(err.max, u32::MAX);
+    }
+
+    /// On any platform, a count within `u32::MAX` must convert successfully.
+    #[test]
+    fn prompt_count_within_range_succeeds() {
+        assert_eq!(prompt_count(0).unwrap(), 0);
+        assert_eq!(prompt_count(42).unwrap(), 42);
+        assert_eq!(prompt_count(u32::MAX as usize).unwrap(), u32::MAX);
     }
 }

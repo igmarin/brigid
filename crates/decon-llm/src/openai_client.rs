@@ -202,7 +202,13 @@ impl OpenAiClientConfig {
                 LlmError::network(format!("failed to parse base_url '{}': {e}", self.base_url))
             })?
             .host_str()
-            .unwrap_or("")
+            .ok_or_else(|| {
+                LlmError::network(format!(
+                    "base_url '{}' has no host component; \
+                     refusing to send Authorization header to a hostless URL",
+                    self.base_url
+                ))
+            })?
             .to_lowercase();
         if self.allowed_hosts.iter().any(|h| h == &host) {
             Ok(())
@@ -1107,6 +1113,30 @@ mod tests {
             env::remove_var("DECON_LLM_API_KEY");
             env::remove_var("DECON_LLM_ALLOWED_HOSTS");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #212: validate_host must reject URLs without a host
+    // ------------------------------------------------------------------
+
+    /// A `file:///` URL has no host component.  `validate_host` must
+    /// reject it rather than defaulting to an empty string (which would
+    /// bypass the allowlist and could send the Authorization header to
+    /// an unintended target).
+    #[test]
+    fn validate_host_rejects_url_without_host() {
+        let config = OpenAiClientConfig::new("file:///etc/passwd", "sk-test-key-1234", "m");
+        let err = config.validate_host().unwrap_err();
+        assert!(
+            matches!(err, LlmError::Network { .. }),
+            "expected Network error for hostless URL, got: {err:?}"
+        );
+        // The error must explicitly say the URL has no host — not just
+        // that an empty-string host is "not in the allowed list".
+        assert!(
+            err.to_string().contains("no host"),
+            "error should mention 'no host', got: {err}"
+        );
     }
 
     #[test]
