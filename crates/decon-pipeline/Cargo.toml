@@ -69,6 +69,10 @@ harness = false
 name = "budget_estimation"
 harness = false
 
+[[bench]]
+name = "batch_packing"
+harness = false
+
 [features]
 # Opt-in live LLM smoke tests. When enabled, the `tests/live_smoke.rs` and
 # `tests/live_generate_smoke.rs` integration tests are compiled and may make
