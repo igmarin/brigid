@@ -216,9 +216,24 @@ fn temp_base() -> PathBuf {
     // which causes "Access is denied" (error 5) on file creation, and on
     // macOS it resolves /var -> /private/var which the subprocess may not
     // find depending on sandbox state.
-    std::env::var("CARGO_TARGET_TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
+    if let Ok(dir) = std::env::var("CARGO_TARGET_TMPDIR") {
+        return PathBuf::from(dir);
+    }
+
+    // On Windows, std::env::temp_dir() may return a path with 8.3 short
+    // names (e.g. RUNNER~1) that subprocesses cannot reliably resolve.
+    // Fall back to a directory under the current working directory
+    // (typically the repo root on CI) which uses long names.
+    #[cfg(windows)]
+    {
+        if let Ok(cwd) = std::env::current_dir() {
+            let tmp = cwd.join("target").join("test-tmp");
+            let _ = std::fs::create_dir_all(&tmp);
+            return tmp;
+        }
+    }
+
+    std::env::temp_dir()
 }
 
 fn temp_dir(label: &str) -> PathBuf {
