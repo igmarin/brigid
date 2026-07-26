@@ -447,6 +447,7 @@ dependencies = [
  "decon-pipeline",
  "dirs",
  "predicates",
+ "serde",
  "serde_json",
  "tokio",
 ]
