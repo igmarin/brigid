@@ -225,7 +225,7 @@ jobs:
       - name: Generate SHA-256 checksums
         run: |
           cd release-assets
-          sha256sum * > ../SHA256SUMS
+          sha256sum ./* > ../SHA256SUMS
           echo "SHA-256 checksums:"
           cat ../SHA256SUMS
       - name: Extract release notes from CHANGELOG.md

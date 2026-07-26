@@ -137,7 +137,7 @@ jobs:
       # Pinned from codecov/codecov-action@v5.4.3
       - name: Upload to Codecov
         if: always()
-        uses: codecov/codecov-action@1826e78c3118b59eb28a2a67f5c3a5c7259fb7f3
+        uses: codecov/codecov-action@4650159d642e33fdc30954ca22638caf0df6cac8
         with:
           files: target/lcov.info
           fail_ci_if_error: false
