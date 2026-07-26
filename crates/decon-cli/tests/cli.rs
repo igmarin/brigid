@@ -795,7 +795,10 @@ fn resume_checkpoint_path_is_file_not_dir_exits_config() {
         .code(2)
         .stderr(predicate::str::contains("not a directory"));
 
-    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    // Only remove the file itself — `file.parent()` is the shared
+    // `temp_base()` directory used by all tests; removing it would race
+    // with other tests running in parallel and delete their directories.
+    let _ = std::fs::remove_file(&file);
 }
 
 // ---------------------------------------------------------------------------
