@@ -19,7 +19,7 @@ full migration design.
 
 ## Current status
 
-**Milestone 5 (Product Polish) — complete.**
+**Milestone 5 (Product Polish) — complete. Milestone 6 (Phase 5 Foundation + Audit Hardening) — in progress.**
 The full `decon generate` pipeline (relationships → order → chapters → setup →
 overview → combine) is working, with i18n chrome (English + Spanish),
 `--each-app` monorepo fan-out, `--review-chapters` polishing, file-based
@@ -27,7 +27,10 @@ checkpoint output storage, and an eval regression CI gate. M5 added native
 installers (Homebrew, `cargo install`, GitHub Releases), shell completions, a
 man page, disk cache by default with LRU eviction, concurrency/budget/verbose
 flags, symlink cycle detection, host allowlist, criterion benchmarks, an
-`init` wizard, Windows CI, and Python entrypoint deprecation.
+`init` wizard, Windows CI, and Python entrypoint deprecation. M6 landed the
+Phase 5 foundation: git-diff incremental crawls (`--since`, ADR 0013), JSON
+structured outputs for all pipeline stages (ADR 0012), and the plugin
+trait/registry for custom kind detectors (ADR 0014).
 
 | Milestone | Goal | Status |
 |-----------|------|--------|
@@ -37,6 +40,7 @@ flags, symlink cycle detection, host allowlist, criterion benchmarks, an
 | **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
 | **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app`; `--review-chapters`; eval regression gate | ✅ Done |
 | **M5** — Product Polish | Installers, man page, shell completions, disk cache, concurrency flags, benchmarks, init wizard, Windows CI, Python deprecation | ✅ Done |
+| **M6** — Phase 5 Foundation + Audit Hardening | git-diff incremental (`--since`, ADR 0013); JSON output for all stages (ADR 0012); plugin trait/registry (ADR 0014); audit hardening; performance optimizations | ✅ Done |
 
 ### What works today
 
@@ -71,6 +75,15 @@ flags, symlink cycle detection, host allowlist, criterion benchmarks, an
   - `decon init` wizard with `--check` validation for starter `decon.toml`
   - Concurrency (`--concurrency`), budget (`--max-llm-calls`), verbose
     (`--verbose` / `-v`), and quiet (`--quiet` / `-q`) flags
+- **CLI (M6):**
+  - `--since <git-ref>` — incremental crawl: only inventory files changed
+    since a tag, commit, or branch (ADR 0013). Requires `git` on `PATH`.
+  - `--format json` on all pipeline stages (`identify`, `relationships`,
+    `order`, `chapters`, `setup`, `overview`, `combine`, `generate`) —
+    machine-readable output with a versioned `StageOutput<T>` envelope
+    (ADR 0012)
+  - Plugin registry for custom kind detectors (ADR 0014) — the built-in
+    `DefaultKindDetector` fills gaps when the LLM leaves a `kind` empty
 - **`decon-core` pure helpers:** module keys, monorepo scope, setup scoring,
   context budget, Mermaid sanitize/validate, index diagram builders, structural
   eval, `RunConfig` layering, checkpoint schema v1 types, progress budget,
@@ -135,13 +148,17 @@ cargo run -p decon-cli -- relationships --dir tests/fixtures/umbrella \
 
 ### What does not work yet
 
-Phase 5 items (optional / advanced — not on the current roadmap):
+The Phase 5 foundation landed in M6 — git-diff incremental crawls
+(`--since`), JSON structured outputs for all pipeline stages (ADR 0012), and
+the plugin trait/registry for custom kind detectors (ADR 0014) are all
+implemented. Remaining advanced items (not on the current roadmap):
 
-- **git-diff incremental tutorials** — only re-explain modules changed since a
-  tag or commit.
-- **JSON structured outputs** — machine-readable pipeline output beyond
-  dry-run.
-- **Plugin ecosystem** — custom "kind" detectors or pipeline extensions.
+- **Dynamic plugin loading** — the `KindDetector` trait and in-process
+  `PluginRegistry` are in place (ADR 0014), but loading plugins from shared
+  libraries (`.so`/`.dylib`/`.dll`) or WASM modules is future work.
+- **Incremental tutorial regeneration** — `--since` limits the crawl to
+  changed files today; re-using prior chapter content for unchanged modules
+  during `generate` is a future enhancement.
 
 The Python entrypoint has been deprecated — see
 [`docs/migrating-from-python.md`](docs/migrating-from-python.md) for the
@@ -310,7 +327,7 @@ decon-rs/
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
-│   └── adr/              # Architecture Decision Records (0001–0011)
+│   └── adr/              # Architecture Decision Records (0001–0014)
 ├── homebrew/             # Homebrew formula template (decon.rb)
 ├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
@@ -425,6 +442,34 @@ export DECON_LLM_ALLOWED_HOSTS="my-proxy.internal,10.0.0.5"
 | `DECON_LLM_CACHE_DIR` | platform cache `/decon/llm-cache` | Disk cache root for LLM responses |
 | `DECON_NO_CACHE` | — | Set to `1` / `true` to disable the disk cache |
 | `DECON_FORCE_MOCK` | — | Set to any non-empty value to force the mock client (offline) |
+
+### Performance tips
+
+Large monorepo runs can take dozens of LLM calls. These knobs keep runs fast
+and cheap:
+
+- **Disk cache (enabled by default)** — LLM responses are cached on disk
+  keyed by `hash(prompt)+model+provider`, so re-runs with an unchanged prompt
+  are free. To bypass the cache for a single run (e.g. after changing a
+  prompt template), set `DECON_NO_CACHE=1`. See
+  [ADR 0009](docs/adr/0009-disk-cache-default-lru-eviction.md).
+- **Concurrency tuning (`--concurrency`)** — Controls how many LLM calls run
+  in parallel during the map/reduce stages.
+  - `--concurrency 8` is a good default for **local LLMs** (Ollama, LM Studio)
+    where you are not paying per call and the bottleneck is local throughput.
+  - `--concurrency 4` is safer for **cloud providers** (DeepSeek, OpenAI) to
+    stay under rate limits. Raise it only if your provider tier allows it.
+- **Incremental runs (`--since <git-ref>`)** — Only crawl files that changed
+  since a tag, commit, or branch (ADR 0013). This skips the full tree walk
+  and limits LLM work to changed modules — huge for CI and editor
+  integrations on large repos. Requires `git` on `PATH`.
+
+  ```bash
+  # Only re-explain modules changed since the last release tag
+  decon generate --dir . --since v1.2.0 --output-dir /tmp/tutorial
+  ```
+- **Scope with `--apps`** — In monorepos, scope to a single app to cut the
+  file corpus and LLM call count dramatically.
 
 ---
 
@@ -565,6 +610,29 @@ large monorepo run hits the limit mid-pipeline:
 3. Re-run the same command — completed stages are skipped, so only the
    remaining calls count against the new budget.
 
+### Checkpoint corruption
+
+If a checkpoint is unreadable (truncated `checkpoint.json`, missing
+`files.ndjson.gz`, or a SHA-256 mismatch on a stage output file):
+
+1. `decon resume --checkpoint PATH` will report the error and which stage
+   is affected.
+2. The safest fix is to **delete the checkpoint directory and re-run** from
+   scratch. Partial checkpoints with corrupted stage outputs cannot be
+   trusted — file-based stage outputs are SHA-256 verified (ADR 0006), and a
+   mismatch means the file was tampered with or written incompletely.
+3. If you want to preserve completed stages, you can manually delete only the
+   offending stage output file from the checkpoint directory; the stage will
+   re-run on the next invocation.
+
+### `--since` requires git
+
+The `--since <git-ref>` flag (ADR 0013) shells out to `git` to compute the
+files changed since a tag, commit, or branch. If `git` is not installed or
+not on `PATH`, the crawl fails with a clear error. The full crawl (without
+`--since`) works without `git`. Ensure you are running inside a git
+repository — `--since` on a non-repo directory is not supported.
+
 ---
 
 ## AI code review automation
@@ -604,6 +672,9 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
 | [`docs/adr/0009-disk-cache-default-lru-eviction.md`](docs/adr/0009-disk-cache-default-lru-eviction.md) | Disk cache enabled by default with LRU eviction and size limits |
 | [`docs/adr/0010-release-strategy.md`](docs/adr/0010-release-strategy.md) | Release strategy: GitHub Releases, Homebrew, cargo install, cargo-binstall |
 | [`docs/adr/0011-python-deprecation-approach.md`](docs/adr/0011-python-deprecation-approach.md) | Python deprecation: migration guide over wrapper (Option B) |
+| [`docs/adr/0012-json-output-schema.md`](docs/adr/0012-json-output-schema.md) | JSON output schema for pipeline stages (`StageOutput<T>` envelope) |
+| [`docs/adr/0013-git-diff-incremental.md`](docs/adr/0013-git-diff-incremental.md) | Git-diff incremental file detection (`--since`) |
+| [`docs/adr/0014-plugin-architecture.md`](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
 | [`prompts/README.md`](prompts/README.md) | Prompt catalog: 10 templates, variable schema, integration notes |
 | [`tests/fixtures/README.md`](tests/fixtures/README.md) | Fixture set, baseline regenerator, parity strategy |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | TDD workflow, coverage gate, CI checks, PR process |
