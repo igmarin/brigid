@@ -1019,6 +1019,7 @@ fn chapters_subcommand_help_shows_flags() {
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--language"))
         .stdout(predicate::str::contains("--diagram-level"))
+        .stdout(predicate::str::contains("--format"))
         .stdout(predicate::str::contains("--config"));
 }
 
@@ -1048,6 +1049,7 @@ fn setup_subcommand_help_shows_flags() {
         .stdout(predicate::str::contains("--dir"))
         .stdout(predicate::str::contains("--checkpoint-dir"))
         .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--format"))
         .stdout(predicate::str::contains("--config"));
 }
 
@@ -1076,6 +1078,7 @@ fn overview_subcommand_help_shows_flags() {
         .success()
         .stdout(predicate::str::contains("--dir"))
         .stdout(predicate::str::contains("--checkpoint-dir"))
+        .stdout(predicate::str::contains("--format"))
         .stdout(predicate::str::contains("--config"));
 }
 
@@ -1106,6 +1109,7 @@ fn combine_subcommand_help_shows_flags() {
         .stdout(predicate::str::contains("--checkpoint-dir"))
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--language"))
+        .stdout(predicate::str::contains("--format"))
         .stdout(predicate::str::contains("--config"));
 }
 
@@ -3590,6 +3594,193 @@ fn generate_format_text_still_works() {
         .assert()
         .success()
         .stderr(predicate::str::contains("generate: completed"));
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #222: --format json for chapters, setup, overview, and combine.
+//
+// Each subcommand should output a StageOutput<T> JSON envelope to stdout
+// when --format json is passed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chapters_format_json_outputs_stage_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-chapters-json-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-chapters-json-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_order_checkpoint(&ckpt_dir);
+
+    let output = decon()
+        .args(["chapters", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON on stdout");
+    assert_eq!(v["stage"], "chapters");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["schema_version"], 1);
+    let chapters = &v["data"]["chapters"];
+    assert!(chapters.is_array(), "data.chapters should be an array");
+    let arr = chapters.as_array().unwrap();
+    assert!(!arr.is_empty(), "should have at least one chapter");
+    let first = &arr[0];
+    assert!(
+        first.get("chapter_num").is_some(),
+        "chapter should have chapter_num"
+    );
+    assert!(first.get("title").is_some(), "chapter should have title");
+    assert!(
+        first.get("markdown_length").is_some(),
+        "chapter should have markdown_length"
+    );
+    assert!(
+        first.get("file_indices").is_some(),
+        "chapter should have file_indices"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn setup_format_json_outputs_stage_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-setup-json-ckpt-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_identify_checkpoint(&ckpt_dir);
+
+    let output = decon()
+        .args(["setup", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--force"])
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON on stdout");
+    assert_eq!(v["stage"], "setup");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["schema_version"], 1);
+    assert!(
+        v["data"].get("generated").is_some(),
+        "data should have generated field"
+    );
+    assert!(
+        v["data"].get("score").is_some(),
+        "data should have score field"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn overview_format_json_outputs_stage_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-overview-json-ckpt-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    seed_relationships_checkpoint(&ckpt_dir);
+
+    let output = decon()
+        .args(["overview", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON on stdout");
+    assert_eq!(v["stage"], "overview");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["schema_version"], 1);
+    assert!(
+        v["data"].get("generated").is_some(),
+        "data should have generated field"
+    );
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn combine_format_json_outputs_stage_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-combine-json-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("decon-cli-combine-json-out-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    seed_full_checkpoint(&ckpt_dir);
+
+    let output = decon()
+        .args(["combine", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON on stdout");
+    assert_eq!(v["stage"], "combine");
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["schema_version"], 1);
+    assert!(
+        v["data"].get("chapter_count").is_some(),
+        "data should have chapter_count"
+    );
+    assert!(
+        v["data"].get("setup_present").is_some(),
+        "data should have setup_present"
+    );
+    assert!(
+        v["data"].get("overview_present").is_some(),
+        "data should have overview_present"
+    );
+    assert!(v["data"].get("index").is_some(), "data should have index");
 
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
