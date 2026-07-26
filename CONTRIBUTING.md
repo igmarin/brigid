@@ -147,6 +147,33 @@ rs-guard --prompt-file .github/review-prompt.md
 Address Critical / Security / Important findings (or document why not), then
 commit. PRs also receive an automated rs-guard review from GitHub Actions.
 
+### CI automation
+
+Every pull request is reviewed automatically by
+[rs-guard](https://github.com/nebulaideas/rs-guard) using the project-specific
+prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
+
+- **CI**: [`.github/workflows/rs-guard-review.yml`](.github/workflows/rs-guard-review.yml)
+  posts an APPROVE / REQUEST_CHANGES / COMMENT review on every non-draft PR.
+  Requires a `DEEPSEEK_API_KEY` repository secret.
+- **Local (optional)**: run `./scripts/install-hooks.sh` once to install a
+  pre-commit hook that reviews staged changes before commit (bypass with
+  `git commit --no-verify`). Requires `rs-guard` on `PATH`
+  (`cargo install rs-guard`) and `DEEPSEEK_API_KEY` in your environment or
+  in `~/.config/rs-guard/env`.
+
+A **release workflow** (`.github/workflows/release.yml`) triggers on tag push
+(`vX.Y.Z`), builds release binaries for Linux (x86_64, aarch64), macOS
+(x86_64, aarch64), and Windows (x86_64), packages them with the man page and
+completion scripts, generates SHA-256 checksums, and creates a GitHub Release
+with notes extracted from [`CHANGELOG.md`](CHANGELOG.md). It can also be
+dispatched manually in dry-run mode to validate the build without publishing.
+
+CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
+generates a tutorial with a live DeepSeek key, evals the output, and compares
+the score against the frozen `llm-generated` fixture — opening a GitHub issue
+on regression.
+
 
 ## Domain modules (M1–M5)
 
@@ -244,8 +271,13 @@ workspace `members` list.
 
 ## Documentation
 
-- User-facing docs live in `README.md`, `docs/best-practices.md`, and
-  `docs/move-to-rust.md`.
+- User-facing docs live in [`README.md`](README.md) (overview + quick start),
+  [`docs/usage-guide.md`](docs/usage-guide.md) (deep command reference),
+  [`docs/troubleshooting.md`](docs/troubleshooting.md) (exit codes + recovery),
+  and [`docs/project-status.md`](docs/project-status.md) (milestones + roadmap).
+- Product quality rules live in [`docs/best-practices.md`](docs/best-practices.md).
+- Migration design and phase plan live in
+  [`docs/move-to-rust.md`](docs/move-to-rust.md).
 - Crate structure, pipeline data flow, key types, and checkpoint/resume design
   are documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Release history is tracked in [`CHANGELOG.md`](CHANGELOG.md).
