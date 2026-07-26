@@ -39,6 +39,27 @@ The layering rule: **library crates perform no CLI or main-binary logic**.
 maps errors to exit codes. Public APIs in library crates carry rustdoc
 (`#![deny(missing_docs)]`).
 
+### Workspace layout
+
+```
+decon-rs/
+├── crates/
+│   ├── decon-core/       # Pure domain models, traits, budgeting, mermaid sanitize
+│   ├── decon-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
+│   ├── decon-llm/        # LlmClient trait, provider clients, disk cache, retries
+│   ├── decon-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
+│   └── decon-cli/        # Thin binary — clap args, completions, man page, exit codes
+├── prompts/              # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
+├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
+├── docs/
+│   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
+│   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
+│   └── adr/              # Architecture Decision Records (0001–0014)
+├── homebrew/             # Homebrew formula template (decon.rb)
+├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
+└── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
+```
+
 ---
 
 ## Design principles
@@ -331,13 +352,19 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 
 ## Related documentation
 
-- [`README.md`](README.md) — project overview, current status, quick start
+- [`README.md`](README.md) — project overview, quick start, CLI at a glance
+- [`docs/usage-guide.md`](docs/usage-guide.md) — every command, flag, env var,
+  provider setup, examples
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — exit codes, recovery,
+  common issues
+- [`docs/project-status.md`](docs/project-status.md) — milestones, what works,
+  roadmap
 - [`docs/move-to-rust.md`](docs/move-to-rust.md) — migration design, pipeline
   model, domain objects, phase plan, engineering bar
 - [`docs/best-practices.md`](docs/best-practices.md) — language-agnostic
   product rules: scope, budget, abstraction quality, mermaid, setup docs
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — TDD workflow, coverage gate, CI
-  checks, PR process
+  checks, PR process, commit conventions
 - [`CHANGELOG.md`](CHANGELOG.md) — release history (Keep a Changelog format)
 - [`prompts/README.md`](prompts/README.md) — prompt catalog and variable schema
 - [`tests/fixtures/README.md`](tests/fixtures/README.md) — fixture set and
