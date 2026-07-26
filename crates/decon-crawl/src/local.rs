@@ -72,6 +72,39 @@ pub enum CrawlError {
     /// A path component is not valid UTF-8 (cannot form a POSIX inventory string).
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
+    /// A git-diff incremental crawl failed (ref not found, not a repo, ...).
+    #[error("git diff failed: {0}")]
+    GitDiff(String),
+}
+
+/// Options controlling [`crawl_local_with_options`].
+///
+/// When [`Self::since`] is `Some(ref_name)`, the inventory is filtered to only
+/// files that changed since that git ref (tag, commit, or branch) using
+/// [`crate::git_diff::changed_files_since`]. Files that no longer exist on
+/// disk are excluded.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CrawlOptions {
+    /// Optional git ref (tag, commit hash, or branch) to diff against. When
+    /// set, only files changed since this ref are included in the inventory.
+    pub since: Option<String>,
+}
+
+impl CrawlOptions {
+    /// Create a [`CrawlOptions`] with incremental detection enabled for the
+    /// given git ref.
+    #[must_use]
+    pub fn since(ref_name: impl Into<String>) -> Self {
+        Self {
+            since: Some(ref_name.into()),
+        }
+    }
+
+    /// Create default options (full crawl, no git-diff filtering).
+    #[must_use]
+    pub fn full() -> Self {
+        Self::default()
+    }
 }
 
 /// Inventory files under `root` (iterative walk; no recursion stack risk).
@@ -126,6 +159,62 @@ pub fn crawl_local(root: impl AsRef<Path>) -> Result<CrawlResult, CrawlError> {
     // Sort by path, keeping sizes parallel.
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
     let (files, sizes) = entries.into_iter().unzip();
+    Ok(CrawlResult { files, sizes })
+}
+
+/// Inventory files under `root` with [`CrawlOptions`].
+///
+/// When [`CrawlOptions::since`] is `Some(ref_name)`, the full crawl is
+/// performed first and then filtered to only the files that changed since the
+/// given git ref (via [`crate::git_diff::changed_files_since`]). Sizes remain
+/// parallel to the filtered file list.
+///
+/// # Errors
+///
+/// Propagates all [`CrawlError`] variants from [`crawl_local`], plus
+/// [`CrawlError::GitDiff`] when the git-diff detection fails (not a repo, ref
+/// not found, git not installed, ...).
+///
+/// # Examples
+///
+/// ```no_run
+/// use decon_crawl::local::{crawl_local_with_options, CrawlOptions};
+///
+/// let opts = CrawlOptions::since("v0.5.0");
+/// let result = crawl_local_with_options(".", opts).expect("incremental crawl");
+/// ```
+pub fn crawl_local_with_options(
+    root: impl AsRef<Path>,
+    options: CrawlOptions,
+) -> Result<CrawlResult, CrawlError> {
+    let root = root.as_ref();
+    let full = crawl_local(root)?;
+
+    let Some(ref_name) = options.since else {
+        return Ok(full);
+    };
+
+    // Detect changed files relative to repo root. `changed_files_since`
+    // resolves the repo root via `git -C`, so passing `root` directly works
+    // even when it is a subdirectory of the worktree.
+    let changed =
+        crate::git_diff::changed_files_since(root, ref_name.as_str()).map_err(CrawlError::from)?;
+
+    // Build a set of changed relative POSIX paths for fast lookup.
+    let changed_set: HashSet<String> = changed
+        .into_iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    // Filter the full inventory (files + parallel sizes) to changed files.
+    let mut filtered: Vec<(String, u64)> = full
+        .files
+        .into_iter()
+        .zip(full.sizes)
+        .filter(|(f, _)| changed_set.contains(f))
+        .collect();
+    filtered.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let (files, sizes) = filtered.into_iter().unzip();
     Ok(CrawlResult { files, sizes })
 }
 
@@ -809,5 +898,183 @@ mod tests {
             result.files.contains(&expected_rel),
             "file with >255 char relative path should be crawled"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #224: CrawlOptions + git-diff incremental crawl integration
+    // ------------------------------------------------------------------
+
+    /// Helper: run a `git` command in `dir`, panicking on failure.
+    fn git_cmd(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-C", &dir.to_string_lossy()])
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
+    }
+
+    /// Create a temp git repo with git identity configured for commits.
+    fn init_git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        git_cmd(dir.path(), &["init", "--quiet"]);
+        git_cmd(dir.path(), &["config", "user.name", "Test"]);
+        git_cmd(dir.path(), &["config", "user.email", "test@example.com"]);
+        git_cmd(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    fn git_commit_all(dir: &Path, msg: &str) {
+        git_cmd(dir, &["add", "--all"]);
+        git_cmd(dir, &["commit", "--quiet", "-m", msg]);
+    }
+
+    /// Skip the test if `git` is not installed on this machine.
+    fn require_git_installed() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping test: git not installed");
+        }
+    }
+
+    #[test]
+    fn crawl_with_options_full_returns_all_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"a\n"))
+            .expect("a.txt");
+        File::create(root.join("b.txt"))
+            .and_then(|mut f| f.write_all(b"b\n"))
+            .expect("b.txt");
+
+        let result = crawl_local_with_options(root, CrawlOptions::full()).expect("full crawl");
+        assert_eq!(result.files, vec!["a.txt".to_owned(), "b.txt".to_owned()]);
+    }
+
+    #[test]
+    fn crawl_with_options_default_is_full() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"a\n"))
+            .expect("a.txt");
+
+        let result =
+            crawl_local_with_options(root, CrawlOptions::default()).expect("default crawl");
+        assert_eq!(result.files, vec!["a.txt".to_owned()]);
+    }
+
+    #[test]
+    fn crawl_with_options_since_filters_to_changed_files() {
+        require_git_installed();
+        let dir = init_git_repo();
+        let root = dir.path();
+
+        // Initial commit with two files.
+        File::create(root.join("unchanged.txt"))
+            .and_then(|mut f| f.write_all(b"v1\n"))
+            .expect("unchanged.txt");
+        File::create(root.join("will_change.txt"))
+            .and_then(|mut f| f.write_all(b"v1\n"))
+            .expect("will_change.txt");
+        git_commit_all(root, "initial");
+        git_cmd(root, &["tag", "v1"]);
+
+        // Modify only will_change.txt and add a new file.
+        File::create(root.join("will_change.txt"))
+            .and_then(|mut f| f.write_all(b"v2\n"))
+            .expect("modify will_change.txt");
+        File::create(root.join("new.txt"))
+            .and_then(|mut f| f.write_all(b"new\n"))
+            .expect("new.txt");
+        git_commit_all(root, "second");
+
+        let result =
+            crawl_local_with_options(root, CrawlOptions::since("v1")).expect("incremental crawl");
+        assert_eq!(
+            result.files,
+            vec!["new.txt".to_owned(), "will_change.txt".to_owned()],
+            "only changed files should be present"
+        );
+        // Sizes remain parallel and match the modified content.
+        assert_eq!(result.files.len(), result.sizes.len());
+    }
+
+    #[test]
+    fn crawl_with_options_since_sizes_parallel() {
+        require_git_installed();
+        let dir = init_git_repo();
+        let root = dir.path();
+
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"12345")) // 5 bytes
+            .expect("a.txt");
+        git_commit_all(root, "initial");
+        git_cmd(root, &["tag", "v1"]);
+
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"12345678")) // 8 bytes
+            .expect("modify a.txt");
+        git_commit_all(root, "second");
+
+        let result =
+            crawl_local_with_options(root, CrawlOptions::since("v1")).expect("incremental crawl");
+        assert_eq!(result.files, vec!["a.txt".to_owned()]);
+        assert_eq!(result.sizes, vec![8]);
+    }
+
+    #[test]
+    fn crawl_with_options_since_no_changes_returns_empty() {
+        require_git_installed();
+        let dir = init_git_repo();
+        let root = dir.path();
+
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"data\n"))
+            .expect("a.txt");
+        git_commit_all(root, "initial");
+        git_cmd(root, &["tag", "v1"]);
+
+        let result =
+            crawl_local_with_options(root, CrawlOptions::since("v1")).expect("incremental crawl");
+        assert_eq!(result.file_count(), 0);
+    }
+
+    #[test]
+    fn crawl_with_options_since_bad_ref_errors() {
+        require_git_installed();
+        let dir = init_git_repo();
+        let root = dir.path();
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"data\n"))
+            .expect("a.txt");
+        git_commit_all(root, "initial");
+
+        let err = crawl_local_with_options(root, CrawlOptions::since("no-such-tag-xyz"))
+            .expect_err("bad ref");
+        assert!(matches!(err, CrawlError::GitDiff(_)));
+    }
+
+    #[test]
+    fn crawl_with_options_since_not_a_repo_errors() {
+        require_git_installed();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        File::create(root.join("a.txt"))
+            .and_then(|mut f| f.write_all(b"data\n"))
+            .expect("a.txt");
+
+        let err =
+            crawl_local_with_options(root, CrawlOptions::since("v1")).expect_err("not a repo");
+        assert!(matches!(err, CrawlError::GitDiff(_)));
     }
 }

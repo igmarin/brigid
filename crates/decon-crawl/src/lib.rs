@@ -5,9 +5,11 @@
 
 #![deny(missing_docs)]
 
+pub mod git_diff;
 pub mod local;
 
-pub use local::{CrawlError, CrawlResult, crawl_local};
+pub use git_diff::{GitDiffError, changed_files_since};
+pub use local::{CrawlError, CrawlOptions, CrawlResult, crawl_local, crawl_local_with_options};
 
 /// The version of this crate, as declared in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
