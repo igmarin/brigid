@@ -61,7 +61,8 @@ pub use identify_runner::{
 };
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{
-    ResumeIdentityMismatch, check_identity, invalidate_from, next_stage, pending_stages, should_run,
+    ResumeIdentityMismatch, check_identity, invalidate_from, is_checkpoint_stale, next_stage,
+    pending_stages, should_run,
 };
 pub use review::{
     ReviewError, ReviewOutcome, ReviewSummary, review_chapter, review_chapters,

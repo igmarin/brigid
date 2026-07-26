@@ -9,6 +9,8 @@ use crate::config::{RunConfig, canonical_config_json};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::process::Command;
 use thiserror::Error;
 
 /// Schema version for checkpoint metadata (`checkpoint.json`).
@@ -262,6 +264,19 @@ pub struct CheckpointV1 {
     /// overview, combine). Additive — no schema version bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_outputs: Option<StageOutputs>,
+    /// Git commit hash (`git rev-parse HEAD`) captured at checkpoint creation,
+    /// used to detect whether the checkpoint is still valid for the current
+    /// repo state on incremental resume. `None` for checkpoints created
+    /// outside a git repo (or older checkpoints predating this field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    /// The `since` ref used for git-diff incremental crawl (e.g. `v0.5.0`),
+    /// captured at checkpoint creation. When set, [`Self::git_commit`] is the
+    /// HEAD at creation time; a resume compares it to the current HEAD to
+    /// decide whether the checkpoint is stale. `None` for non-incremental
+    /// runs and older checkpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ref: Option<String>,
     /// Bookkeeping metadata.
     pub metadata: CheckpointMeta,
 }
@@ -304,12 +319,48 @@ impl CheckpointV1 {
             relationships: None,
             order: None,
             stage_outputs: None,
+            git_commit: None,
+            since_ref: None,
             metadata: CheckpointMeta {
                 created_at: created.clone(),
                 updated_at: created,
                 source_revision: source_revision.into(),
             },
         })
+    }
+
+    /// Create a new checkpoint shell that captures the current git HEAD and
+    /// `since` ref for incremental-resume staleness detection.
+    ///
+    /// When `repo_root` is `Some` and points at a git repository, the current
+    /// `git rev-parse HEAD` is captured into [`Self::git_commit`]; otherwise
+    /// `git_commit` is `None`. `since_ref` is recorded as-is (typically
+    /// `RunConfig::since`).
+    ///
+    /// This is the production constructor used by pipeline stages that run
+    /// inside a repository; the plain [`Self::new`] remains pure (no git
+    /// subprocess) for unit tests and non-repo contexts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::ConfigHash`] if config cannot be hashed.
+    pub fn new_with_repo(
+        unredacted_config: &RunConfig,
+        redacted_config: RunConfig,
+        source_revision: impl Into<String>,
+        created_at: impl Into<String>,
+        repo_root: Option<&Path>,
+        since_ref: Option<String>,
+    ) -> Result<Self, CheckpointError> {
+        let mut cp = Self::new(
+            unredacted_config,
+            redacted_config,
+            source_revision,
+            created_at,
+        )?;
+        cp.git_commit = repo_root.and_then(current_git_head);
+        cp.since_ref = since_ref;
+        Ok(cp)
     }
 
     /// Validate `version` is supported.
@@ -388,6 +439,34 @@ pub fn config_hash(config: &RunConfig) -> Result<String, CheckpointError> {
 #[must_use]
 pub fn sha256_hex_prefixed(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+/// Capture the current `HEAD` commit hash of the git repository at `repo_root`.
+///
+/// Runs `git -C <repo_root> rev-parse HEAD` (the same approach as
+/// `decon_crawl::git_diff`). Returns the trimmed commit hash, or `None` when
+/// `git` is not installed, `repo_root` is not inside a git repository, or the
+/// command otherwise fails. Never panics.
+///
+/// This performs git subprocess I/O and is intentionally optional — callers
+/// that prefer to keep checkpoint construction pure (e.g. unit tests) can use
+/// [`CheckpointV1::new`] and leave [`CheckpointV1::git_commit`] as `None`.
+#[must_use]
+pub fn current_git_head(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", &repo_root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8(output.stdout).ok()?;
+    let trimmed = hash.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -547,5 +626,131 @@ mod tests {
         assert!(!json.contains("stage_outputs"));
         let loaded = CheckpointV1::from_json(&json).unwrap();
         assert!(loaded.stage_outputs.is_none());
+    }
+
+    #[test]
+    fn checkpoint_git_fields_round_trip() {
+        let cfg = sample_config();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        cp.git_commit = Some("deadbeefcafe".to_string());
+        cp.since_ref = Some("v0.5.0".to_string());
+        let json = cp.to_json().unwrap();
+        assert!(json.contains("git_commit"));
+        assert!(json.contains("since_ref"));
+        let loaded = CheckpointV1::from_json(&json).unwrap();
+        assert_eq!(loaded.git_commit.as_deref(), Some("deadbeefcafe"));
+        assert_eq!(loaded.since_ref.as_deref(), Some("v0.5.0"));
+    }
+
+    #[test]
+    fn checkpoint_without_git_fields_back_compatible() {
+        // An old checkpoint JSON (pre-M6-GIT-3) has no git_commit/since_ref
+        // keys. It must still load with both fields defaulting to None.
+        let cfg = sample_config();
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        let mut json_val: serde_json::Value = serde_json::from_str(&cp.to_json().unwrap()).unwrap();
+        let obj = json_val.as_object_mut().unwrap();
+        obj.remove("git_commit");
+        obj.remove("since_ref");
+        let text = serde_json::to_string(&json_val).unwrap();
+        let loaded = CheckpointV1::from_json(&text).unwrap();
+        assert!(loaded.git_commit.is_none());
+        assert!(loaded.since_ref.is_none());
+    }
+
+    #[test]
+    fn new_defaults_git_fields_to_none() {
+        let cfg = sample_config();
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        assert!(cp.git_commit.is_none());
+        assert!(cp.since_ref.is_none());
+    }
+
+    /// Helper mirroring `decon_crawl::git_diff` tests: skip when `git` is
+    /// unavailable or the host cannot run subprocesses in CI sandboxes.
+    /// Returns `true` when git is available and the test should proceed.
+    fn require_git() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Init a temp git repo with one commit; returns `(tempdir, head_hash)`.
+    fn init_repo_with_head() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(["-C", &root.to_string_lossy()])
+                .args(args)
+                .status()
+                .unwrap_or_else(|e| panic!("git {:?} failed: {e}", args));
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(root.join("a.txt"), "data\n").expect("write a.txt");
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        let head = String::from_utf8(
+            Command::new("git")
+                .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
+                .output()
+                .expect("rev-parse")
+                .stdout,
+        )
+        .expect("utf8")
+        .trim()
+        .to_owned();
+        (dir, head)
+    }
+
+    #[test]
+    fn current_git_head_returns_commit_in_repo() {
+        if !require_git() {
+            return;
+        }
+        let (dir, head) = init_repo_with_head();
+        let got = current_git_head(dir.path());
+        assert_eq!(got.as_deref(), Some(head.as_str()));
+    }
+
+    #[test]
+    fn current_git_head_none_outside_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A fresh tempdir is not a git repo.
+        let got = current_git_head(dir.path());
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn new_with_repo_captures_git_head_and_since() {
+        if !require_git() {
+            return;
+        }
+        let (dir, head) = init_repo_with_head();
+        let cfg = sample_config();
+        let cp = CheckpointV1::new_with_repo(
+            &cfg,
+            cfg.clone(),
+            "rev",
+            "t0",
+            Some(dir.path()),
+            Some("v0.5.0".to_string()),
+        )
+        .unwrap();
+        assert_eq!(cp.git_commit.as_deref(), Some(head.as_str()));
+        assert_eq!(cp.since_ref.as_deref(), Some("v0.5.0"));
+    }
+
+    #[test]
+    fn new_with_repo_none_dir_leaves_git_commit_unset() {
+        let cfg = sample_config();
+        let cp = CheckpointV1::new_with_repo(&cfg, cfg.clone(), "rev", "t0", None, None).unwrap();
+        assert!(cp.git_commit.is_none());
+        assert!(cp.since_ref.is_none());
     }
 }

@@ -573,11 +573,13 @@ pub async fn run_generate_each_app(
             .join("\n");
 
         let store = CheckpointStore::new(&scoped_ckpt);
-        let mut cp = match CheckpointV1::new(
+        let mut cp = match CheckpointV1::new_with_repo(
             &config.run_config,
             config.run_config.redacted_for_checkpoint(),
             config.dir.display().to_string(),
             "0Z",
+            Some(config.dir.as_path()),
+            config.run_config.since.clone(),
         ) {
             Ok(c) => c,
             Err(e) => {
