@@ -237,10 +237,46 @@ impl PromptRenderer {
 /// ```
 #[must_use]
 pub fn sanitize_template_input(text: &str) -> String {
-    text.replace("{{", "{ {")
-        .replace("}}", "} }")
-        .replace("{%", "{ %")
-        .replace("%}", "% }")
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            if let Some(&next) = chars.peek() {
+                if next == '{' {
+                    out.push_str("{ {");
+                    chars.next();
+                    continue;
+                }
+                if next == '%' {
+                    out.push_str("{ %");
+                    chars.next();
+                    continue;
+                }
+            }
+            out.push(c);
+        } else if c == '}' {
+            if let Some(&next) = chars.peek() {
+                if next == '}' {
+                    out.push_str("} }");
+                    chars.next();
+                    continue;
+                }
+            }
+            out.push(c);
+        } else if c == '%' {
+            if let Some(&next) = chars.peek() {
+                if next == '}' {
+                    out.push_str("% }");
+                    chars.next();
+                    continue;
+                }
+            }
+            out.push(c);
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -296,5 +332,34 @@ mod tests {
     fn sanitize_preserves_single_braces() {
         let raw = "function foo() { return 1; }";
         assert_eq!(sanitize_template_input(raw), raw);
+    }
+
+    #[test]
+    fn sanitize_handles_all_four_delimiters_in_one_pass() {
+        let raw = "{{ x }} {% if y %} {{ z }} {% endif %}";
+        let safe = sanitize_template_input(raw);
+        assert!(!safe.contains("{{"));
+        assert!(!safe.contains("}}"));
+        assert!(!safe.contains("{%"));
+        assert!(!safe.contains("%}"));
+        // Single braces and percent signs are preserved.
+        assert!(safe.contains("{ {"));
+        assert!(safe.contains("} }"));
+        assert!(safe.contains("{ %"));
+        assert!(safe.contains("% }"));
+    }
+
+    #[test]
+    fn sanitize_no_patterns_returns_input_unchanged() {
+        let raw = "plain text with no template syntax at all";
+        assert_eq!(sanitize_template_input(raw), raw);
+        // empty string round-trips
+        assert_eq!(sanitize_template_input(""), "");
+    }
+
+    #[test]
+    fn sanitize_exact_output_for_mixed_input() {
+        let raw = "a{{b}}c{%d%}e";
+        assert_eq!(sanitize_template_input(raw), "a{ {b} }c{ %d% }e");
     }
 }

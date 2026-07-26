@@ -75,8 +75,15 @@ pub fn sanitize_label(label: &str) -> String {
         }
     }
 
-    let trimmed = out.trim().to_owned();
-    truncate_chars(&trimmed, MAX_LABEL_CHARS)
+    // Trim leading/trailing whitespace in place to avoid an extra allocation.
+    while out.ends_with(char::is_whitespace) {
+        out.pop();
+    }
+    let leading = out.len() - out.trim_start().len();
+    if leading > 0 {
+        out.drain(0..leading);
+    }
+    truncate_chars(&out, MAX_LABEL_CHARS)
 }
 
 /// Stable node id: `{prefix}{index}` with a sanitized alphabetic prefix.
@@ -235,7 +242,25 @@ pub fn validate_mermaid(source: &str) -> ValidateResult {
 /// ```
 #[must_use]
 pub fn sanitize_mermaid(source: &str) -> String {
-    let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+    // Single-pass line-ending normalization: `\r\n` -> `\n`, lone `\r` -> `\n`.
+    let mut normalized = String::with_capacity(source.len());
+    {
+        let mut chars = source.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    // `\r\n` -> `\n`: emit `\n` and consume the `\n`.
+                    normalized.push('\n');
+                    chars.next();
+                } else {
+                    // lone `\r` -> `\n`
+                    normalized.push('\n');
+                }
+            } else {
+                normalized.push(c);
+            }
+        }
+    }
     let mut lines: Vec<String> = Vec::new();
     let mut participant_count = 0usize;
     let mut kept_ids: Vec<String> = Vec::new();
@@ -379,10 +404,8 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 fn sanitize_participant_id(id: &str) -> String {
-    let mut s: String = id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
+    let mut s: String = id.to_string();
+    s.retain(|c| c.is_ascii_alphanumeric() || c == '_');
     if s.is_empty() {
         s.push('P');
     }
@@ -759,6 +782,56 @@ mod tests {
     #[test]
     fn sanitize_label_only_non_ascii_punctuation() {
         assert_eq!(sanitize_label("——…"), "");
+    }
+
+    #[test]
+    fn sanitize_participant_id_various_inputs() {
+        // empty -> fallback P
+        assert_eq!(sanitize_participant_id(""), "P");
+        // numeric leading -> prefixed with P
+        assert_eq!(sanitize_participant_id("123"), "P123");
+        // alphanumeric preserved
+        assert_eq!(sanitize_participant_id("A0"), "A0");
+        assert_eq!(sanitize_participant_id("Auth_0"), "Auth_0");
+        // special chars stripped, underscore kept
+        assert_eq!(sanitize_participant_id("A-0.B!"), "A0B");
+        assert_eq!(sanitize_participant_id("___"), "___");
+        // only special chars -> fallback P
+        assert_eq!(sanitize_participant_id("---"), "P");
+    }
+
+    #[test]
+    fn sanitize_mermaid_normalizes_crlf_line_endings() {
+        let raw = "flowchart LR\r\n  A0[Start] --> A1[End]\r\n";
+        let clean = sanitize_mermaid(raw);
+        assert!(
+            !clean.contains('\r'),
+            "lone CR must be normalized: {clean:?}"
+        );
+        assert!(clean.contains("flowchart LR\n"));
+        assert!(
+            validate_mermaid(&clean).valid,
+            "{:?}",
+            validate_mermaid(&clean).issues
+        );
+    }
+
+    #[test]
+    fn sanitize_mermaid_normalizes_lone_cr_line_endings() {
+        let raw = "flowchart LR\r  A0[Start] --> A1[End]\r";
+        let clean = sanitize_mermaid(raw);
+        assert!(
+            !clean.contains('\r'),
+            "lone CR must be normalized: {clean:?}"
+        );
+        assert!(clean.lines().count() >= 2, "{clean:?}");
+    }
+
+    #[test]
+    fn sanitize_mermaid_preserves_clean_lf_input() {
+        let raw = "flowchart LR\n  A0[Start] --> A1[End]\n";
+        let clean = sanitize_mermaid(raw);
+        assert_eq!(clean, "flowchart LR\n  A0[Start] --> A1[End]");
     }
 
     proptest! {
