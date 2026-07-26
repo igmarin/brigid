@@ -16,6 +16,7 @@
 //!    warning) when validation fails or the budget is exhausted.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use decon_core::{
     BudgetExceeded, Chapter, ChapterResult, ProgressTracker, sanitize_markdown_mermaid_blocks,
@@ -23,7 +24,7 @@ use decon_core::{
 use decon_llm::{LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use crate::chapters::count_mermaid_blocks;
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -192,41 +193,42 @@ pub async fn review_chapters(
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
     let original_markdowns: Vec<String> =
         result.chapters.iter().map(|c| c.markdown.clone()).collect();
-    let chapters: Arc<Mutex<Vec<Chapter>>> =
-        Arc::new(Mutex::new(std::mem::take(&mut result.chapters)));
+    // Chapters are moved out of `result` and sent through an mpsc channel.
+    // Each review task receives its chapter by index and sends the (possibly
+    // updated) chapter back through the channel. This avoids holding a
+    // `Mutex<Vec<Chapter>>` lock across `.await` points.
+    let chapter_count = result.chapters.len();
+    let chapters: Vec<Chapter> = std::mem::take(&mut result.chapters);
+    let (chapter_tx, mut chapter_rx) = mpsc::channel::<(usize, Chapter)>(chapter_count);
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let budget_exhausted: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let budget_exhausted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let diagram_need = Arc::new(diagram_need);
 
-    let futures = (0..count).map(|idx| {
+    let futures = (0..chapter_count).map(|idx| {
         let sem = Arc::clone(&semaphore);
-        let chapters = Arc::clone(&chapters);
+        let chapter = chapters[idx].clone();
         let warnings = Arc::clone(&warnings);
         let budget_exhausted = Arc::clone(&budget_exhausted);
         let diagram_need = Arc::clone(&diagram_need);
         let language = language.to_string();
         let allowed = allowed_paths.to_vec();
         let cancel = cancel.clone();
+        let chapter_tx = chapter_tx.clone();
         async move {
             let _permit = match sem.acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => {
-                    warnings.lock().await.push(format!(
-                        "chapter {}: review semaphore closed unexpectedly",
-                        idx + 1
-                    ));
+                    let msg = format!("chapter {}: review semaphore closed unexpectedly", idx + 1);
+                    warnings.lock().await.push(msg);
+                    let _ = chapter_tx.send((idx, chapter)).await;
                     return;
                 }
             };
 
-            if cancel.is_cancelled() || *budget_exhausted.lock().await {
+            if cancel.is_cancelled() || budget_exhausted.load(Ordering::Relaxed) {
+                let _ = chapter_tx.send((idx, chapter)).await;
                 return;
             }
-
-            let chapter = {
-                let guard = chapters.lock().await;
-                guard[idx].clone()
-            };
 
             let need = diagram_need(&chapter);
             let have = count_mermaid_blocks(&chapter.markdown);
@@ -237,39 +239,48 @@ pub async fn review_chapters(
                 {
                     Ok(md) => md,
                     Err(ReviewError::Llm(e)) => {
-                        warnings.lock().await.push(format!(
+                        let msg = format!(
                             "chapter {}: review LLM error, keeping original: {e}",
                             chapter.chapter_num
-                        ));
+                        );
+                        warnings.lock().await.push(msg);
+                        let _ = chapter_tx.send((idx, chapter)).await;
                         return;
                     }
                     Err(ReviewError::Budget(e)) => {
-                        *budget_exhausted.lock().await = true;
-                        warnings.lock().await.push(format!(
+                        budget_exhausted.store(true, Ordering::Relaxed);
+                        let msg = format!(
                             "chapter {}: budget exhausted, keeping original: {e}",
                             chapter.chapter_num
-                        ));
+                        );
+                        warnings.lock().await.push(msg);
+                        let _ = chapter_tx.send((idx, chapter)).await;
                         return;
                     }
                     Err(e) => {
-                        warnings.lock().await.push(format!(
+                        let msg = format!(
                             "chapter {}: review error, keeping original: {e}",
                             chapter.chapter_num
-                        ));
+                        );
+                        warnings.lock().await.push(msg);
+                        let _ = chapter_tx.send((idx, chapter)).await;
                         return;
                     }
                 };
 
             match validate_reviewed_chapter(&chapter.markdown, &reviewed, &allowed) {
                 Ok(()) => {
-                    let mut guard = chapters.lock().await;
-                    guard[idx].markdown = reviewed;
+                    let mut reviewed_chapter = chapter;
+                    reviewed_chapter.markdown = reviewed;
+                    let _ = chapter_tx.send((idx, reviewed_chapter)).await;
                 }
                 Err(reason) => {
-                    warnings.lock().await.push(format!(
+                    let msg = format!(
                         "chapter {}: review rejected, keeping original: {reason}",
                         chapter.chapter_num
-                    ));
+                    );
+                    warnings.lock().await.push(msg);
+                    let _ = chapter_tx.send((idx, chapter)).await;
                 }
             }
         }
@@ -277,22 +288,28 @@ pub async fn review_chapters(
 
     join_all(futures).await;
 
-    let mut summary = ReviewSummary::default();
-    {
-        let guard = chapters.lock().await;
-        for (i, ch) in guard.iter().enumerate() {
-            if ch.markdown != original_markdowns[i] {
-                summary.reviewed += 1;
-            } else {
-                summary.kept_original += 1;
-            }
+    // Drop the last sender so the receiver terminates after all chapters are
+    // collected.
+    drop(chapter_tx);
+
+    // Collect all chapters from the channel, preserving original order.
+    let mut collected: Vec<Chapter> = Vec::with_capacity(chapter_count);
+    collected.resize(chapter_count, chapters[0].clone());
+    while let Some((idx, ch)) = chapter_rx.recv().await {
+        if idx < chapter_count {
+            collected[idx] = ch;
         }
     }
+    result.chapters = collected;
 
-    result.chapters = match Arc::try_unwrap(chapters) {
-        Ok(mutex) => mutex.into_inner(),
-        Err(arc) => arc.lock().await.clone(),
-    };
+    let mut summary = ReviewSummary::default();
+    for (i, ch) in result.chapters.iter().enumerate() {
+        if ch.markdown != original_markdowns[i] {
+            summary.reviewed += 1;
+        } else {
+            summary.kept_original += 1;
+        }
+    }
 
     summary.warnings = match Arc::try_unwrap(warnings) {
         Ok(mutex) => mutex.into_inner(),
@@ -886,6 +903,156 @@ Done.\n"
         assert_eq!(summary.kept_original, 1);
         assert_eq!(result.chapters[0].markdown, original_md);
         assert_eq!(client.call_count(), 0);
+    }
+
+    // --- high-concurrency / lock-contention tests ---
+
+    #[tokio::test]
+    async fn review_chapters_high_concurrency_completes_without_deadlock() {
+        // 8 chapters reviewed concurrently with max_concurrency=8.
+        // If locks are held across .await points this can deadlock or hang.
+        let responses: Vec<String> = (1..=8)
+            .map(|i| improved_chapter(i, &format!("Mod{i}")))
+            .collect();
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let chapters: Vec<Chapter> = (1..=8)
+            .map(|i| sample_chapter(i, &format!("Mod{i}")))
+            .collect();
+        let mut result = ChapterResult::new(chapters);
+        let summary = review_chapters(
+            &mut result,
+            &client,
+            &renderer,
+            None,
+            &no_cancel(),
+            "English",
+            diagram_need_m,
+            &allowed_paths(),
+            8,
+        )
+        .await
+        .expect("should succeed under high concurrency");
+        assert_eq!(summary.reviewed, 8);
+        assert_eq!(summary.kept_original, 0);
+        assert_eq!(summary.warnings.len(), 0);
+        assert_eq!(client.call_count(), 8);
+        for ch in &result.chapters {
+            assert!(ch.markdown.contains("broad impact"));
+        }
+    }
+
+    #[tokio::test]
+    async fn review_chapters_high_concurrency_collects_all_warnings() {
+        // 8 chapters all fail validation (missing diagram) concurrently.
+        // Every failure must produce a warning — none should be lost.
+        let responses: Vec<String> = (1..=8)
+            .map(|i| chapter_missing_diagram(i, &format!("Mod{i}")))
+            .collect();
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let chapters: Vec<Chapter> = (1..=8)
+            .map(|i| sample_chapter(i, &format!("Mod{i}")))
+            .collect();
+        let original_mds: Vec<String> = chapters.iter().map(|c| c.markdown.clone()).collect();
+        let mut result = ChapterResult::new(chapters);
+        let summary = review_chapters(
+            &mut result,
+            &client,
+            &renderer,
+            None,
+            &no_cancel(),
+            "English",
+            diagram_need_m,
+            &allowed_paths(),
+            8,
+        )
+        .await
+        .expect("should succeed");
+        assert_eq!(summary.reviewed, 0);
+        assert_eq!(summary.kept_original, 8);
+        assert_eq!(
+            summary.warnings.len(),
+            8,
+            "all 8 chapters should produce a warning"
+        );
+        for w in &summary.warnings {
+            assert!(w.contains("diagram count reduced"), "{w}");
+        }
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(ch.markdown, original_mds[i], "originals must be preserved");
+        }
+    }
+
+    #[tokio::test]
+    async fn review_chapters_budget_exhausted_flag_visible_across_tasks() {
+        // When the budget is exhausted upfront, review_chapters returns a
+        // Budget error immediately and no chapters are modified.
+        let client = MockClient::new(improved_chapter(1, "Router"));
+        let renderer = PromptRenderer::new().unwrap();
+        let mut result = ChapterResult::new(vec![
+            sample_chapter(1, "Router"),
+            sample_chapter(2, "Store"),
+            sample_chapter(3, "Cache"),
+        ]);
+        let original_mds: Vec<String> =
+            result.chapters.iter().map(|c| c.markdown.clone()).collect();
+        let mut progress = ProgressTracker::new(2);
+        let err = review_chapters(
+            &mut result,
+            &client,
+            &renderer,
+            Some(&mut progress),
+            &no_cancel(),
+            "English",
+            diagram_need_m,
+            &allowed_paths(),
+            4,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ReviewError::Budget(_)));
+        // No LLM calls should have been made.
+        assert_eq!(client.call_count(), 0);
+        // All chapters must retain their originals.
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(ch.markdown, original_mds[i]);
+        }
+    }
+
+    #[tokio::test]
+    async fn review_chapters_concurrent_llm_errors_all_warned() {
+        // 4 chapters, each hitting an LLM timeout concurrently.
+        // All 4 errors must be captured as warnings.
+        let client = MockClient::new("ok").fail_on(0, LlmError::Timeout);
+        let renderer = PromptRenderer::new().unwrap();
+        let chapters: Vec<Chapter> = (1..=4)
+            .map(|i| sample_chapter(i, &format!("Mod{i}")))
+            .collect();
+        let original_mds: Vec<String> = chapters.iter().map(|c| c.markdown.clone()).collect();
+        let mut result = ChapterResult::new(chapters);
+        let summary = review_chapters(
+            &mut result,
+            &client,
+            &renderer,
+            None,
+            &no_cancel(),
+            "English",
+            diagram_need_m,
+            &allowed_paths(),
+            4,
+        )
+        .await
+        .expect("should succeed");
+        assert_eq!(summary.reviewed, 0);
+        assert_eq!(summary.kept_original, 4);
+        // fail_on(0) only fails the first call; the other 3 succeed but
+        // return "ok" which fails validation (heading mismatch), so all 4
+        // produce warnings.
+        assert_eq!(summary.warnings.len(), 4);
+        for (i, ch) in result.chapters.iter().enumerate() {
+            assert_eq!(ch.markdown, original_mds[i]);
+        }
     }
 
     // --- helper unit tests ---
