@@ -125,7 +125,10 @@ impl DiskCache {
     /// Return a snapshot of the current cache statistics.
     #[must_use]
     pub fn stats(&self) -> CacheStats {
-        self.stats.lock().unwrap().clone()
+        self.stats
+            .lock()
+            .expect("cache stats mutex poisoned")
+            .clone()
     }
 
     fn entry_path(&self, key: &str) -> PathBuf {
@@ -146,7 +149,7 @@ impl DiskCache {
         match fs::read_to_string(&path) {
             Ok(s) => {
                 {
-                    let mut st = self.stats.lock().unwrap();
+                    let mut st = self.stats.lock().expect("cache stats mutex poisoned");
                     st.hits += 1;
                 }
                 if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
@@ -156,14 +159,14 @@ impl DiskCache {
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 {
-                    let mut st = self.stats.lock().unwrap();
+                    let mut st = self.stats.lock().expect("cache stats mutex poisoned");
                     st.misses += 1;
                 }
                 Ok(None)
             }
             Err(source) => {
                 {
-                    let mut st = self.stats.lock().unwrap();
+                    let mut st = self.stats.lock().expect("cache stats mutex poisoned");
                     st.misses += 1;
                 }
                 Err(CacheError::Io { path, source })
@@ -196,7 +199,7 @@ impl DiskCache {
             source,
         })?;
         let should_check = {
-            let mut st = self.stats.lock().unwrap();
+            let mut st = self.stats.lock().expect("cache stats mutex poisoned");
             st.write_count += 1;
             st.write_count % EVICTION_CHECK_INTERVAL == 0
         };
@@ -250,7 +253,7 @@ impl DiskCache {
 
         let total_size: u64 = files.iter().map(|(_, _, sz)| *sz).sum();
         {
-            let mut st = self.stats.lock().unwrap();
+            let mut st = self.stats.lock().expect("cache stats mutex poisoned");
             st.current_size_bytes = total_size;
         }
 
@@ -270,7 +273,7 @@ impl DiskCache {
                 current -= size;
                 evicted_bytes += size;
                 {
-                    let mut st = self.stats.lock().unwrap();
+                    let mut st = self.stats.lock().expect("cache stats mutex poisoned");
                     st.evictions += 1;
                     st.current_size_bytes = current;
                 }
@@ -615,6 +618,56 @@ mod tests {
         // Restore permissions for cleanup.
         fs::set_permissions(&root, original_perms).unwrap();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #212: Mutex poisoning must panic with a descriptive message
+    // ------------------------------------------------------------------
+
+    /// When the stats mutex is poisoned (a thread panicked while holding
+    /// the lock), subsequent access must panic with a clear message rather
+    /// than the generic `unwrap()` panic.  We deliberately poison the
+    /// mutex from a spawned thread, then verify that `stats()` panics.
+    #[test]
+    fn stats_mutex_poisoned_panics_with_descriptive_message() {
+        use std::panic::AssertUnwindSafe;
+
+        let root = temp_root();
+        let cache = DiskCache::new(&root);
+        // Clone shares the same Arc<Mutex<CacheStats>>.
+        let cache_clone = cache.clone();
+
+        // Poison the mutex by panicking while holding the lock.
+        let handle = std::thread::spawn(move || {
+            let _guard = cache_clone.stats.lock().unwrap();
+            panic!("deliberate panic to poison the stats mutex");
+        });
+        // The thread panicked; the mutex is now poisoned.
+        let _ = handle.join();
+
+        // Accessing stats should panic with our expect message.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = cache.stats();
+        }));
+        assert!(
+            result.is_err(),
+            "stats() should panic when the mutex is poisoned"
+        );
+        let msg = result
+            .as_ref()
+            .err()
+            .and_then(|p| p.downcast_ref::<String>().cloned())
+            .or_else(|| {
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|p| p.downcast_ref::<&'static str>().map(|s| s.to_string()))
+            })
+            .unwrap_or_default();
+        assert!(
+            msg.contains("poisoned"),
+            "panic message should mention 'poisoned', got: {msg}"
+        );
     }
 
     /// When the cache root cannot be created at all (parent is a file),
