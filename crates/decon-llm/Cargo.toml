@@ -6,13 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-decon-core = { path = "../decon-core" }
+decon-core = { path = "../decon-core", version = "1.0.0" }
 sha2 = "0.10"
 hex = "0.4"
 thiserror = "2.0"

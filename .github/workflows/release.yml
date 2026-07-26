@@ -225,7 +225,7 @@ jobs:
       - name: Generate SHA-256 checksums
         run: |
           cd release-assets
-          sha256sum * > ../SHA256SUMS
+          sha256sum ./* > ../SHA256SUMS
           echo "SHA-256 checksums:"
           cat ../SHA256SUMS
       - name: Extract release notes from CHANGELOG.md
@@ -260,3 +260,50 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME:-v${{ steps.version.outputs.version }}}"
           gh release upload "$tag" SHA256SUMS --clobber
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Publish to crates.io.
+  # Workspace crates are published in dependency order:
+  #   decon-core → decon-crawl → decon-llm → decon-pipeline → decon-cli
+  # Each `cargo publish -p <crate>` waits for the previous to be available
+  # on the registry before proceeding. Skipped in dry-run mode.
+  # Requires the CRATES_TOKEN secret to be set in the repository.
+  # ──────────────────────────────────────────────────────────────────────
+  publish-crates:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry-run != 'true' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+        with:
+          toolchain: stable
+      - name: Publish decon-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: cargo publish -p decon-core
+      - name: Wait for decon-core to propagate
+        run: sleep 20
+      - name: Publish decon-crawl
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: cargo publish -p decon-crawl
+      - name: Wait for decon-crawl to propagate
+        run: sleep 20
+      - name: Publish decon-llm
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: cargo publish -p decon-llm
+      - name: Wait for decon-llm to propagate
+        run: sleep 20
+      - name: Publish decon-pipeline
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: cargo publish -p decon-pipeline
+      - name: Wait for decon-pipeline to propagate
+        run: sleep 20
+      - name: Publish decon-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: cargo publish -p decon-cli

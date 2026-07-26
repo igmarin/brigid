@@ -1,6 +1,11 @@
 # decon-rs
 ![Decon-RS Logo](https://github.com/user-attachments/assets/149638e7-1b52-4028-89c3-510a9383d15f)
 
+[![CI](https://github.com/igmarin/decon-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/igmarin/decon-rs/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/igmarin/decon-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/igmarin/decon-rs)
+[![crates.io](https://img.shields.io/crates/v/decon-cli.svg)](https://crates.io/crates/decon-cli)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > Turn any codebase into a beginner-friendly tutorial — powered by LLMs, built in Rust.
 
 `decon` crawls a codebase, identifies its core abstractions, and produces a

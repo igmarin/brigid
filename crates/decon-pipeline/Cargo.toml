@@ -6,15 +6,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-decon-core = { path = "../decon-core" }
-decon-crawl = { path = "../decon-crawl" }
-decon-llm = { path = "../decon-llm" }
+decon-core = { path = "../decon-core", version = "1.0.0" }
+decon-crawl = { path = "../decon-crawl", version = "1.0.0" }
+decon-llm = { path = "../decon-llm", version = "1.0.0" }
 thiserror = "2.0"
 flate2 = "1"
 base64 = "0.22"
