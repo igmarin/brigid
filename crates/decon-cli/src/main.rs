@@ -6,14 +6,16 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use decon_core::{
-    DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey, RunConfig, TutorialFile, config_from_env_map,
-    custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
-    resolve_config, validate_config_for_check,
+    ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
+    OverviewOutput, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats, StageStatus,
+    TutorialFile, config_from_env_map, custom_host_warning, evaluate_tutorial, parse_toml_config,
+    parse_yaml_config, redact_content, resolve_config, validate_config_for_check,
 };
 use decon_crawl::crawl_local;
 use decon_pipeline::{
@@ -356,6 +358,9 @@ enum Commands {
             default_value = "standard"
         )]
         diagram_level: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the setup guide stage (reads identify + dry-run from checkpoint).
     Setup {
@@ -368,6 +373,9 @@ enum Commands {
         /// Force generation even if the setup score is high.
         #[arg(long = "force", default_value_t = false)]
         force: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the architecture overview stage (reads identify + relationships from checkpoint).
     Overview {
@@ -377,6 +385,9 @@ enum Commands {
         /// Checkpoint directory (default: `.decon-checkpoint`).
         #[arg(long = "checkpoint-dir", value_name = "PATH")]
         checkpoint_dir: Option<PathBuf>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the combine stage (reads all prior outputs from checkpoint).
     Combine {
@@ -392,6 +403,9 @@ enum Commands {
         /// Output language (default: `en`).
         #[arg(long = "language", value_name = "LANG", default_value = "en")]
         language: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Generate a troff-formatted man page for `decon` to stdout.
     ///
@@ -941,6 +955,7 @@ fn main() -> ExitCode {
             output_dir,
             language,
             diagram_level,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
@@ -953,37 +968,41 @@ fn main() -> ExitCode {
                 &output_dir,
                 &language,
                 &diagram_level,
+                format,
             )
         }
         Commands::Setup {
             dir,
             checkpoint_dir,
             force,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
-            cmd_setup(&dir, &checkpoint_dir, force, &cfg)
+            cmd_setup(&dir, &checkpoint_dir, force, &cfg, format)
         }
         Commands::Overview {
             dir,
             checkpoint_dir,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
-            cmd_overview(&dir, &checkpoint_dir, &cfg)
+            cmd_overview(&dir, &checkpoint_dir, &cfg, format)
         }
         Commands::Combine {
             dir,
             checkpoint_dir,
             output_dir,
             language,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
             let output_dir = output_dir
                 .or_else(|| cfg.output.clone())
                 .unwrap_or_else(|| PathBuf::from("output"));
-            cmd_combine(&dir, &checkpoint_dir, &output_dir, &language, &cfg)
+            cmd_combine(&dir, &checkpoint_dir, &output_dir, &language, &cfg, format)
         }
         // `Manpage` is handled before config loading (see top of `main`),
         // so this arm is unreachable.
@@ -1504,6 +1523,27 @@ fn cmd_init(dir: &Path, non_interactive: bool, check: bool) -> ExitCode {
             ExitCode::from(EXIT_CONFIG)
         }
     }
+}
+
+/// Serialize a [`StageOutput`] envelope to stdout.
+///
+/// Uses pretty-printed JSON when stdout is a TTY (interactive), and compact
+/// JSON when piped (machine-readable).
+fn print_stage_json<T: serde::Serialize>(out: &StageOutput<T>) {
+    let value = serde_json::to_value(out).unwrap_or_else(|e| {
+        eprintln!("error: failed to serialize JSON output: {e}");
+        serde_json::Value::Null
+    });
+    let json = if std::io::stdout().is_terminal() {
+        serde_json::to_string_pretty(&value)
+    } else {
+        serde_json::to_string(&value)
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("error: failed to serialize JSON output: {e}");
+        String::from("{}")
+    });
+    let _ = writeln!(std::io::stdout(), "{json}");
 }
 
 fn cmd_crawl(dir: &Path, format: OutputFormat) -> ExitCode {
@@ -3041,6 +3081,7 @@ fn cmd_chapters(
     output_dir: &Path,
     language: &str,
     diagram_level: &str,
+    format: OutputFormat,
 ) -> ExitCode {
     let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
         Some(dl) => dl,
@@ -3124,9 +3165,43 @@ fn cmd_chapters(
         .await
         {
             Ok(result) => {
-                eprintln!("chapters: completed (chapters={})", result.chapters.len());
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
-                eprintln!("output: {}", output_dir.display());
+                match format {
+                    OutputFormat::Json => {
+                        let summaries: Vec<ChapterSummary> = result
+                            .chapters
+                            .iter()
+                            .map(|ch| ChapterSummary {
+                                chapter_num: ch.chapter_num as u32,
+                                title: ch.title.clone(),
+                                markdown_length: ch.markdown.len(),
+                                file_indices: identify
+                                    .abstractions
+                                    .get(ch.abstraction_index)
+                                    .map(|a| a.file_indices.clone())
+                                    .unwrap_or_default(),
+                            })
+                            .collect();
+                        let out = StageOutput {
+                            schema_version: SCHEMA_VERSION,
+                            stage: "chapters".into(),
+                            status: StageStatus::Ok,
+                            data: ChaptersOutput {
+                                chapters: summaries,
+                            },
+                            stats: Some(StageStats {
+                                items_processed: Some(result.chapters.len() as u32),
+                                llm_calls: None,
+                                elapsed_ms: None,
+                            }),
+                        };
+                        print_stage_json(&out);
+                    }
+                    OutputFormat::Text => {
+                        eprintln!("chapters: completed (chapters={})", result.chapters.len());
+                        eprintln!("checkpoint: {}", checkpoint_dir.display());
+                        eprintln!("output: {}", output_dir.display());
+                    }
+                }
                 let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
@@ -3139,7 +3214,13 @@ fn cmd_chapters(
     })
 }
 
-fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) -> ExitCode {
+fn cmd_setup(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    force: bool,
+    cfg: &RunConfig,
+    format: OutputFormat,
+) -> ExitCode {
     let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
         Ok(v) => v,
         Err(code) => return code,
@@ -3182,9 +3263,27 @@ fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) ->
         )
         .await
         {
-            Ok(_guide) => {
-                eprintln!("setup: completed (forced={force})");
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
+            Ok(guide) => {
+                match format {
+                    OutputFormat::Json => {
+                        let out = StageOutput {
+                            schema_version: SCHEMA_VERSION,
+                            stage: "setup".into(),
+                            status: StageStatus::Ok,
+                            data: SetupOutput {
+                                markdown: guide.markdown.clone(),
+                                score: guide.score.max(0) as u32,
+                                generated: !guide.markdown.is_empty(),
+                            },
+                            stats: None,
+                        };
+                        print_stage_json(&out);
+                    }
+                    OutputFormat::Text => {
+                        eprintln!("setup: completed (forced={force})");
+                        eprintln!("checkpoint: {}", checkpoint_dir.display());
+                    }
+                }
                 let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
@@ -3197,7 +3296,12 @@ fn cmd_setup(dir: &Path, checkpoint_dir: &Path, force: bool, cfg: &RunConfig) ->
     })
 }
 
-fn cmd_overview(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+fn cmd_overview(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    cfg: &RunConfig,
+    format: OutputFormat,
+) -> ExitCode {
     let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
         Ok(v) => v,
         Err(code) => return code,
@@ -3254,9 +3358,27 @@ fn cmd_overview(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode 
         )
         .await
         {
-            Ok(_overview) => {
-                eprintln!("overview: completed");
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
+            Ok(overview) => {
+                match format {
+                    OutputFormat::Json => {
+                        let out = StageOutput {
+                            schema_version: SCHEMA_VERSION,
+                            stage: "overview".into(),
+                            status: StageStatus::Ok,
+                            data: OverviewOutput {
+                                markdown: overview.markdown.clone(),
+                                apps: overview.app_inventory.clone(),
+                                generated: !overview.markdown.is_empty(),
+                            },
+                            stats: None,
+                        };
+                        print_stage_json(&out);
+                    }
+                    OutputFormat::Text => {
+                        eprintln!("overview: completed");
+                        eprintln!("checkpoint: {}", checkpoint_dir.display());
+                    }
+                }
                 let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
@@ -3275,6 +3397,7 @@ fn cmd_combine(
     output_dir: &Path,
     language: &str,
     cfg: &RunConfig,
+    format: OutputFormat,
 ) -> ExitCode {
     let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
         Ok(v) => v,
@@ -3303,12 +3426,35 @@ fn cmd_combine(
 
     match decon_pipeline::run_combine_stage(&store, &mut checkpoint, output_dir, lang, &modules) {
         Ok(combined) => {
-            eprintln!(
-                "combine: completed with {} chapters (locale={})",
-                combined.chapter_count, combined.locale
-            );
-            eprintln!("output: {}", output_dir.display());
-            eprintln!("checkpoint: {}", checkpoint_dir.display());
+            match format {
+                OutputFormat::Json => {
+                    let out = StageOutput {
+                        schema_version: SCHEMA_VERSION,
+                        stage: "combine".into(),
+                        status: StageStatus::Ok,
+                        data: CombineOutput {
+                            index: combined.index_markdown.clone(),
+                            chapter_count: combined.chapter_count as u32,
+                            setup_present: combined.has_setup_guide,
+                            overview_present: combined.has_architecture_overview,
+                        },
+                        stats: Some(StageStats {
+                            items_processed: Some(combined.chapter_count as u32),
+                            llm_calls: None,
+                            elapsed_ms: None,
+                        }),
+                    };
+                    print_stage_json(&out);
+                }
+                OutputFormat::Text => {
+                    eprintln!(
+                        "combine: completed with {} chapters (locale={})",
+                        combined.chapter_count, combined.locale
+                    );
+                    eprintln!("output: {}", output_dir.display());
+                    eprintln!("checkpoint: {}", checkpoint_dir.display());
+                }
+            }
             let _ = store.save(checkpoint, &files);
             ExitCode::from(EXIT_OK)
         }
