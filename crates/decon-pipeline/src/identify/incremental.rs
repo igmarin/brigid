@@ -142,8 +142,7 @@ pub async fn incremental_identify(
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             budget_config: budget_config_from_run(config),
         };
-        let batches =
-            identify_map(client, renderer, &map_input, progress.as_deref_mut()).await?;
+        let batches = identify_map(client, renderer, &map_input, progress.as_deref_mut()).await?;
         for b in batches {
             for mut cand in b.candidates {
                 // Remap sub-list file indices → full inventory indices.
