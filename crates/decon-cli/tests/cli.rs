@@ -3800,3 +3800,148 @@ fn combine_format_json_outputs_stage_envelope() {
     let _ = std::fs::remove_dir_all(&ckpt_dir);
     let _ = std::fs::remove_dir_all(&output_dir);
 }
+
+// --- Issue #225: --since CLI flag for git-diff incremental crawl ---
+
+/// Helper: create a temp git repo with an initial commit (tag `v1`) and a
+/// second commit adding `new.txt`. Returns the repo directory path.
+fn git_repo_with_two_commits(label: &str) -> PathBuf {
+    use std::process::Command;
+    let dir = temp_dir(label);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("old.txt"), "old content\n").unwrap();
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(["-C"])
+            .arg(&dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .status()
+            .expect("git command");
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    git(&["tag", "v1"]);
+    std::fs::write(dir.join("new.txt"), "new content\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "add new.txt"]);
+    dir
+}
+
+/// `decon dry-run --dir PATH --since v1 --format json` in a git repo filters
+/// the file inventory to only changed files.
+#[test]
+fn dry_run_since_filters_to_changed_files_json() {
+    let dir = git_repo_with_two_commits("dry-run-since");
+    decon()
+        .args(["dry-run", "--dir"])
+        .arg(&dir)
+        .args(["--since", "v1", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.txt"))
+        .stdout(predicate::str::contains("\"files\""));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `decon dry-run --since HEAD~1` works with relative refs.
+#[test]
+fn dry_run_since_head_minus_one() {
+    let dir = git_repo_with_two_commits("dry-run-head");
+    decon()
+        .args(["dry-run", "--dir"])
+        .arg(&dir)
+        .args(["--since", "HEAD~1", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.txt"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `decon crawl --dir PATH --since v1 --format json` in a git repo filters
+/// the file inventory to only changed files.
+#[test]
+fn crawl_since_filters_to_changed_files_json() {
+    let dir = git_repo_with_two_commits("crawl-since");
+    decon()
+        .args(["crawl", "--dir"])
+        .arg(&dir)
+        .args(["--since", "v1", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.txt"))
+        .stdout(predicate::str::contains("\"file_count\""));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `decon crawl --since v1` on a non-git directory exits with code 2
+/// (config/input error) and prints a clear error message.
+#[test]
+fn crawl_since_non_git_repo_exits_config() {
+    let dir = temp_dir("crawl-since-nongit");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+    decon()
+        .args(["crawl", "--dir"])
+        .arg(&dir)
+        .args(["--since", "v1"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("git"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `decon dry-run --since v1` on a non-git directory exits with code 2.
+#[test]
+fn dry_run_since_non_git_repo_exits_config() {
+    let dir = temp_dir("dryrun-since-nongit");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+    decon()
+        .args(["dry-run", "--dir"])
+        .arg(&dir)
+        .args(["--since", "v1"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("git"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--since` flag appears in `--help` for crawl, dry-run, identify, and generate.
+#[test]
+fn since_flag_in_help_for_all_subcommands() {
+    for sub in &["crawl", "dry-run", "identify", "generate"] {
+        decon()
+            .args([sub, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--since"));
+    }
+}
+
+/// `DECON_SINCE` env var is picked up by `decon crawl` (no --since flag needed).
+#[test]
+fn crawl_since_env_var_filters_files() {
+    let dir = git_repo_with_two_commits("crawl-since-env");
+    decon()
+        .env("DECON_SINCE", "v1")
+        .args(["crawl", "--dir"])
+        .arg(&dir)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("new.txt"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

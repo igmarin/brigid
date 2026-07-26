@@ -12,7 +12,7 @@ use decon_core::{
     assess_setup, discover_modules, estimate_budget, filter_files_by_scope, module_key,
     redact_content, unscoped_filter_stats,
 };
-use decon_crawl::{CrawlError, crawl_local};
+use decon_crawl::{CrawlError, CrawlOptions, crawl_local_with_options};
 use thiserror::Error;
 
 /// Full dry-run plan for a repository root (zero LLM calls).
@@ -69,7 +69,7 @@ pub enum DryRunError {
 /// Build a dry-run plan for `root`, optionally scoping to `apps` / modules.
 ///
 /// Steps:
-/// 1. [`crawl_local`] -- sorted relative inventory with per-file byte sizes
+/// 1. [`crawl_local_with_options`] -- sorted relative inventory with per-file byte sizes
 /// 2. [`discover_modules`] on the full inventory
 /// 3. Optional [`filter_files_by_scope`] (or unscoped stats)
 /// 4. [`assess_setup`] from `README.md` + **full** inventory (parity with baseline)
@@ -112,8 +112,42 @@ pub fn dry_run_with_budget(
     scope: Option<&[ModuleKey]>,
     budget_config: &BudgetConfig,
 ) -> Result<DryRunPlan, DryRunError> {
+    dry_run_with_options(root, scope, budget_config, CrawlOptions::default())
+}
+
+/// Same as [`dry_run_with_budget`] with explicit [`CrawlOptions`] for
+/// incremental git-diff crawl.
+///
+/// When [`CrawlOptions::since`] is `Some(ref)`, the file inventory is filtered
+/// to only files that changed since that git ref (via
+/// [`decon_crawl::crawl_local_with_options`]). Setup assessment and module
+/// discovery still use the filtered inventory (consistent with `--apps`
+/// scoping behavior).
+///
+/// # Errors
+///
+/// Same as [`dry_run_with_budget`], plus [`DryRunError::Crawl`] wrapping
+/// [`CrawlError::GitDiff`] when `since` is set but the directory is not a git
+/// repo or the ref cannot be resolved.
+///
+/// # Examples
+///
+/// ```no_run
+/// use decon_crawl::CrawlOptions;
+/// use decon_pipeline::dry_run::dry_run_with_options;
+///
+/// let opts = CrawlOptions::since("v0.5.0");
+/// let plan = dry_run_with_options(".", None, &Default::default(), opts)
+///     .expect("incremental dry-run");
+/// ```
+pub fn dry_run_with_options(
+    root: impl AsRef<Path>,
+    scope: Option<&[ModuleKey]>,
+    budget_config: &BudgetConfig,
+    crawl_options: CrawlOptions,
+) -> Result<DryRunPlan, DryRunError> {
     let root = root.as_ref();
-    let crawl = crawl_local(root)?;
+    let crawl = crawl_local_with_options(root, crawl_options)?;
     let all_files = crawl.files;
     let all_sizes = crawl.sizes;
     let modules = discover_modules(all_files.iter().map(String::as_str));
@@ -177,7 +211,7 @@ fn estimate_budget_for_files(
     sizes: &[u64],
     config: &BudgetConfig,
 ) -> Result<BudgetEstimate, DryRunError> {
-    // Sizes were collected during `crawl_local` (following symlinks via
+    // Sizes were collected during `crawl_local_with_options` (following symlinks via
     // `fs::metadata`), so dry-run no longer re-stats every path. We only
     // need to convert `u64` -> `usize` for the budget model.
     let mut file_sizes: Vec<FileSize> = Vec::with_capacity(files.len());
@@ -308,6 +342,99 @@ mod tests {
         // Default path would use max_file_chars=12_000 and not truncate this file.
         let default_plan = dry_run(&dir, None).expect("default budget");
         assert_eq!(default_plan.budget.truncated_file_count, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Issue #225: dry_run_with_options with CrawlOptions::since ---
+
+    /// Helper: create a temp git repo with an initial commit (tag `v1`) and a
+    /// second commit adding `new.txt`.
+    fn git_repo_with_two_commits() -> PathBuf {
+        use std::process::Command;
+        let dir = unique_temp_dir();
+        fs::write(dir.join("old.txt"), "old content\n").expect("write old.txt");
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(["-C"])
+                .arg(&dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test")
+                .status()
+                .expect("git command");
+            assert!(
+                status.success(),
+                "git {:?} failed in {}",
+                args,
+                dir.display()
+            );
+        };
+        git(&["init"]);
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        git(&["tag", "v1"]);
+        // Second commit: add a new file.
+        fs::write(dir.join("new.txt"), "new content\n").expect("write new.txt");
+        git(&["add", "."]);
+        git(&["commit", "-m", "add new.txt"]);
+        dir
+    }
+
+    /// `dry_run_with_options` with `CrawlOptions::since("v1")` filters the
+    /// inventory to only files changed since `v1` (i.e. `new.txt`).
+    #[test]
+    fn dry_run_with_options_since_filters_files() {
+        let dir = git_repo_with_two_commits();
+        let opts = decon_crawl::CrawlOptions::since("v1");
+        let plan = dry_run_with_options(&dir, None, &BudgetConfig::default(), opts)
+            .expect("incremental dry-run");
+        // Only new.txt should be in the inventory (changed since v1).
+        assert_eq!(
+            plan.files.len(),
+            1,
+            "expected 1 changed file, got {:?}",
+            plan.files
+        );
+        assert!(
+            plan.files.iter().any(|f| f == "new.txt"),
+            "expected new.txt in files: {:?}",
+            plan.files
+        );
+        assert!(
+            !plan.files.iter().any(|f| f == "old.txt"),
+            "old.txt should be filtered out: {:?}",
+            plan.files
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `dry_run_with_options` with default (full) options behaves like `dry_run`.
+    #[test]
+    fn dry_run_with_options_full_matches_dry_run() {
+        let dir = git_repo_with_two_commits();
+        let full = dry_run(&dir, None).expect("full dry-run");
+        let opts = decon_crawl::CrawlOptions::full();
+        let plan = dry_run_with_options(&dir, None, &BudgetConfig::default(), opts)
+            .expect("full options dry-run");
+        assert_eq!(plan.files, full.files, "full options should match dry_run");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `dry_run_with_options` with `since` set on a non-git directory returns
+    /// `DryRunError::Crawl` (wrapping `CrawlError::GitDiff`).
+    #[test]
+    fn dry_run_with_options_since_non_git_repo_errors() {
+        let dir = unique_temp_dir();
+        fs::write(dir.join("a.txt"), "a\n").expect("write a.txt");
+        let opts = decon_crawl::CrawlOptions::since("v1");
+        let err = dry_run_with_options(&dir, None, &BudgetConfig::default(), opts)
+            .expect_err("non-git should error");
+        assert!(
+            matches!(err, DryRunError::Crawl(ref e) if e.to_string().contains("git diff")),
+            "expected Crawl(GitDiff) error, got {err:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

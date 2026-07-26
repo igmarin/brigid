@@ -123,6 +123,14 @@ pub struct RunConfig {
         deserialize_with = "deserialize_allowed_hosts"
     )]
     pub allowed_hosts: Option<Vec<String>>,
+    /// Git ref (tag, commit, or branch) for incremental git-diff crawl.
+    ///
+    /// When set, the file inventory is filtered to only files that changed
+    /// since this ref (via `decon_crawl::git_diff::changed_files_since`).
+    /// Sourced from `--since` CLI flag, `since = "…"` in `decon.toml`, or
+    /// the `DECON_SINCE` environment variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
 }
 
 impl Default for RunConfig {
@@ -144,6 +152,7 @@ impl Default for RunConfig {
             max_abstractions: None,
             diagram_level: None,
             allowed_hosts: None,
+            since: None,
         }
     }
 }
@@ -169,6 +178,7 @@ impl RunConfig {
             max_abstractions: None,
             diagram_level: None,
             allowed_hosts: None,
+            since: None,
         }
     }
 
@@ -198,6 +208,7 @@ impl RunConfig {
                 .clone()
                 .or_else(|| self.diagram_level.clone()),
             allowed_hosts: merge_host_layers(&self.allowed_hosts, &overlay.allowed_hosts),
+            since: overlay.since.clone().or_else(|| self.since.clone()),
         }
     }
 
@@ -273,6 +284,7 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// - `DECON_BATCH_CHAR_BUDGET`, `DECON_CHARS_PER_TOKEN`,
 /// - `DECON_CACHE_SIZE_LIMIT_MB`, `DECON_CONCURRENCY`,
 /// - `DECON_MAX_ABSTRACTIONS`, `DECON_DIAGRAM_LEVEL`,
+/// - `DECON_SINCE` (git ref for incremental crawl),
 ///
 /// **Blank values are ignored** (treated as unset). Non-blank values that fail
 /// numeric parse return [`ConfigError::InvalidEnvValue`].
@@ -349,6 +361,9 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
             }
             cfg.allowed_hosts = Some(hosts);
         }
+    }
+    if let Some(v) = nonblank(vars.get("DECON_SINCE")) {
+        cfg.since = Some(v.to_owned());
     }
     Ok(cfg)
 }
@@ -1659,6 +1674,135 @@ allowed_hosts = ["a.com", "b.com"]
             matches!(err, ConfigError::InvalidEnvValue { ref key, .. }
                 if key == "DECON_MAX_ABSTRACTIONS"),
             "got {err:?}"
+        );
+    }
+
+    // --- Issue #225: `since` field for git-diff incremental crawl ---
+
+    /// `RunConfig::default()` has `since = None` (unset).
+    #[test]
+    fn since_default_is_none() {
+        let d = RunConfig::default();
+        assert_eq!(d.since, None);
+    }
+
+    /// `RunConfig::empty()` has `since = None`.
+    #[test]
+    fn since_empty_is_none() {
+        let e = RunConfig::empty();
+        assert_eq!(e.since, None);
+    }
+
+    /// `decon.toml` supports `since = "v0.5.0"`.
+    #[test]
+    fn since_from_toml() {
+        let cfg = parse_toml_config(r#"since = "v0.5.0""#).expect("toml");
+        assert_eq!(cfg.since.as_deref(), Some("v0.5.0"));
+    }
+
+    /// `.decon.yaml` supports `since: v0.5.0`.
+    #[test]
+    fn since_from_yaml() {
+        let cfg = parse_yaml_config("since: v0.5.0\n").expect("yaml");
+        assert_eq!(cfg.since.as_deref(), Some("v0.5.0"));
+    }
+
+    /// `DECON_SINCE` env var maps to `config.since`.
+    #[test]
+    fn since_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_SINCE".into(), "HEAD~1".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.since.as_deref(), Some("HEAD~1"));
+    }
+
+    /// Blank `DECON_SINCE` is ignored (does not override defaults).
+    #[test]
+    fn since_blank_env_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_SINCE".into(), "   ".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.since, None);
+    }
+
+    /// `merge_layer`: CLI `since` overrides file `since`.
+    #[test]
+    fn since_cli_overrides_file() {
+        let env = RunConfig::empty();
+        let file = RunConfig {
+            since: Some("v0.4.0".into()),
+            ..RunConfig::empty()
+        };
+        let cli = RunConfig {
+            since: Some("v0.5.0".into()),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &cli);
+        assert_eq!(resolved.since.as_deref(), Some("v0.5.0"));
+    }
+
+    /// `merge_layer`: file `since` overrides env `since`.
+    #[test]
+    fn since_file_overrides_env() {
+        let env = RunConfig {
+            since: Some("HEAD~3".into()),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            since: Some("v0.5.0".into()),
+            ..RunConfig::empty()
+        };
+        let cli = RunConfig::empty();
+        let resolved = resolve_config(&env, &file, &cli);
+        assert_eq!(resolved.since.as_deref(), Some("v0.5.0"));
+    }
+
+    /// `merge_layer`: env `since` overrides default (None).
+    #[test]
+    fn since_env_overrides_default() {
+        let env = RunConfig {
+            since: Some("HEAD~1".into()),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig::empty();
+        let cli = RunConfig::empty();
+        let resolved = resolve_config(&env, &file, &cli);
+        assert_eq!(resolved.since.as_deref(), Some("HEAD~1"));
+    }
+
+    /// Full layering: CLI > file > env > defaults for `since`.
+    #[test]
+    fn since_full_precedence_cli_file_env() {
+        let env = RunConfig {
+            since: Some("env-ref".into()),
+            ..RunConfig::empty()
+        };
+        let file = RunConfig {
+            since: Some("file-ref".into()),
+            ..RunConfig::empty()
+        };
+        let cli = RunConfig {
+            since: Some("cli-ref".into()),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &cli);
+        assert_eq!(resolved.since.as_deref(), Some("cli-ref"));
+    }
+
+    /// `since` is included in canonical JSON (checkpoint hashing).
+    #[test]
+    fn since_included_in_canonical_json() {
+        let a = RunConfig {
+            since: Some("v0.5.0".into()),
+            ..RunConfig::default()
+        };
+        let b = RunConfig {
+            since: Some("v0.6.0".into()),
+            ..RunConfig::default()
+        };
+        assert_ne!(
+            canonical_config_json(&a).unwrap(),
+            canonical_config_json(&b).unwrap()
         );
     }
 }
