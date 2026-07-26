@@ -6,7 +6,6 @@
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -144,16 +143,16 @@ impl DiskCache {
     /// # Errors
     ///
     /// I/O errors other than not-found. Missing entries return `Ok(None)`.
-    pub fn get(&self, key: &str) -> Result<Option<String>, CacheError> {
+    pub async fn get(&self, key: &str) -> Result<Option<String>, CacheError> {
         let path = self.entry_path(key);
-        match fs::read_to_string(&path) {
+        match tokio::fs::read_to_string(&path).await {
             Ok(s) => {
                 {
                     let mut st = self.stats.lock().expect("cache stats mutex poisoned");
                     st.hits += 1;
                 }
-                if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
-                    let _ = file.set_modified(SystemTime::now());
+                if let Ok(file) = tokio::fs::OpenOptions::new().write(true).open(&path).await {
+                    let _ = file.into_std().await.set_modified(SystemTime::now());
                 }
                 Ok(Some(s))
             }
@@ -183,28 +182,34 @@ impl DiskCache {
     /// # Errors
     ///
     /// Filesystem failures creating the root or writing the entry.
-    pub fn put(&self, key: &str, body: &str) -> Result<(), CacheError> {
-        fs::create_dir_all(&self.root).map_err(|source| CacheError::Io {
-            path: self.root.clone(),
-            source,
-        })?;
+    pub async fn put(&self, key: &str, body: &str) -> Result<(), CacheError> {
+        tokio::fs::create_dir_all(&self.root)
+            .await
+            .map_err(|source| CacheError::Io {
+                path: self.root.clone(),
+                source,
+            })?;
         let path = self.entry_path(key);
         let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, body).map_err(|source| CacheError::Io {
-            path: tmp.clone(),
-            source,
-        })?;
-        fs::rename(&tmp, &path).map_err(|source| CacheError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        tokio::fs::write(&tmp, body)
+            .await
+            .map_err(|source| CacheError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+        tokio::fs::rename(&tmp, &path)
+            .await
+            .map_err(|source| CacheError::Io {
+                path: path.clone(),
+                source,
+            })?;
         let should_check = {
             let mut st = self.stats.lock().expect("cache stats mutex poisoned");
             st.write_count += 1;
             st.write_count % EVICTION_CHECK_INTERVAL == 0
         };
         if should_check {
-            let _ = self.enforce_size_limit();
+            let _ = self.enforce_size_limit().await;
         }
         Ok(())
     }
@@ -218,11 +223,11 @@ impl DiskCache {
     /// # Errors
     ///
     /// Returns [`CacheError::Io`] only if the cache directory cannot be read.
-    pub fn enforce_size_limit(&self) -> Result<u64, CacheError> {
+    pub async fn enforce_size_limit(&self) -> Result<u64, CacheError> {
         if self.size_limit_bytes == u64::MAX {
             return Ok(0);
         }
-        let entries = match fs::read_dir(&self.root) {
+        let mut entries = match tokio::fs::read_dir(&self.root).await {
             Ok(rd) => rd,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
             Err(source) => {
@@ -234,16 +239,12 @@ impl DiskCache {
         };
 
         let mut files: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
-        for ent in entries {
-            let ent = match ent {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
+        while let Ok(Some(ent)) = entries.next_entry().await {
             let path = ent.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let md = match path.metadata() {
+            let md = match ent.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -269,7 +270,7 @@ impl DiskCache {
             if current <= self.size_limit_bytes {
                 break;
             }
-            if fs::remove_file(path).is_ok() {
+            if tokio::fs::remove_file(path).await.is_ok() {
                 current -= size;
                 evicted_bytes += size;
                 {
@@ -287,9 +288,9 @@ impl DiskCache {
     /// # Errors
     ///
     /// Key or I/O errors.
-    pub fn get_for(&self, input: &CacheKeyInput<'_>) -> Result<Option<String>, CacheError> {
+    pub async fn get_for(&self, input: &CacheKeyInput<'_>) -> Result<Option<String>, CacheError> {
         let key = cache_key(input)?;
-        self.get(&key)
+        self.get(&key).await
     }
 
     /// Convenience: key then put.
@@ -297,15 +298,16 @@ impl DiskCache {
     /// # Errors
     ///
     /// Key or I/O errors.
-    pub fn put_for(&self, input: &CacheKeyInput<'_>, body: &str) -> Result<(), CacheError> {
+    pub async fn put_for(&self, input: &CacheKeyInput<'_>, body: &str) -> Result<(), CacheError> {
         let key = cache_key(input)?;
-        self.put(&key, body)
+        self.put(&key, body).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root() -> PathBuf {
@@ -350,8 +352,8 @@ mod tests {
         assert_ne!(cache_key(&a).unwrap(), cache_key(&d).unwrap());
     }
 
-    #[test]
-    fn put_get_round_trip() {
+    #[tokio::test]
+    async fn put_get_round_trip() {
         let root = temp_root();
         let cache = DiskCache::new(&root);
         let input = CacheKeyInput {
@@ -360,10 +362,10 @@ mod tests {
             provider: "prov",
             extras: Some("t=0"),
         };
-        assert!(cache.get_for(&input).unwrap().is_none());
-        cache.put_for(&input, r#"{"ok":true}"#).unwrap();
+        assert!(cache.get_for(&input).await.unwrap().is_none());
+        cache.put_for(&input, r#"{"ok":true}"#).await.unwrap();
         assert_eq!(
-            cache.get_for(&input).unwrap().as_deref(),
+            cache.get_for(&input).await.unwrap().as_deref(),
             Some(r#"{"ok":true}"#)
         );
         let _ = fs::remove_dir_all(&root);
@@ -386,8 +388,8 @@ mod tests {
         assert_ne!(cache_key(&a).unwrap(), cache_key(&b).unwrap());
     }
 
-    #[test]
-    fn stats_track_hits_and_misses() {
+    #[tokio::test]
+    async fn stats_track_hits_and_misses() {
         let root = temp_root();
         let cache = DiskCache::new(&root);
         let input = CacheKeyInput {
@@ -400,13 +402,13 @@ mod tests {
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
 
-        assert!(cache.get_for(&input).unwrap().is_none());
+        assert!(cache.get_for(&input).await.unwrap().is_none());
         let stats = cache.stats();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 0);
 
-        cache.put_for(&input, r#"{"ok":true}"#).unwrap();
-        let _ = cache.get_for(&input).unwrap();
+        cache.put_for(&input, r#"{"ok":true}"#).await.unwrap();
+        let _ = cache.get_for(&input).await.unwrap();
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
@@ -414,9 +416,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn eviction_removes_oldest_first() {
+    async fn eviction_removes_oldest_first() {
         let root = temp_root();
         let cache = DiskCache::with_size_limit_bytes(&root, 7);
 
@@ -439,9 +441,9 @@ mod tests {
             extras: None,
         };
 
-        cache.put_for(&input_a, "aaa").unwrap();
-        cache.put_for(&input_b, "bbb").unwrap();
-        cache.put_for(&input_c, "ccc").unwrap();
+        cache.put_for(&input_a, "aaa").await.unwrap();
+        cache.put_for(&input_b, "bbb").await.unwrap();
+        cache.put_for(&input_c, "ccc").await.unwrap();
 
         use std::fs::OpenOptions;
         use std::time::{Duration, UNIX_EPOCH};
@@ -468,7 +470,7 @@ mod tests {
             .set_modified(UNIX_EPOCH + Duration::from_secs(300))
             .unwrap();
 
-        let evicted = cache.enforce_size_limit().unwrap();
+        let evicted = cache.enforce_size_limit().await.unwrap();
         assert!(evicted > 0, "should have evicted bytes");
         assert!(!path_a.exists(), "oldest entry should be evicted");
         assert!(path_b.exists(), "middle entry should remain");
@@ -480,9 +482,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn eviction_respects_size_limit_config() {
+    async fn eviction_respects_size_limit_config() {
         let root = temp_root();
         let limit_bytes: u64 = 20;
         let cache = DiskCache::with_size_limit_bytes(&root, limit_bytes);
@@ -494,10 +496,13 @@ mod tests {
                 provider: "p",
                 extras: None,
             };
-            cache.put_for(&input, &format!("payload-{i:03}")).unwrap();
+            cache
+                .put_for(&input, &format!("payload-{i:03}"))
+                .await
+                .unwrap();
         }
 
-        let evicted = cache.enforce_size_limit().unwrap();
+        let evicted = cache.enforce_size_limit().await.unwrap();
         assert!(evicted > 0, "should evict bytes when over limit");
 
         let remaining = fs::read_dir(&root)
@@ -523,8 +528,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn graceful_error_on_unwritable_cache_dir() {
+    #[tokio::test]
+    async fn graceful_error_on_unwritable_cache_dir() {
         let blocker = std::env::temp_dir().join(format!(
             "decon-llm-cache-blocker-{}",
             std::time::SystemTime::now()
@@ -542,7 +547,7 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        let result = cache.put_for(&input, "data");
+        let result = cache.put_for(&input, "data").await;
         assert!(
             result.is_err(),
             "put should return error, not panic, when dir cannot be created"
@@ -567,10 +572,10 @@ mod tests {
     /// error (not panic), and `get` must return `None` for missing entries
     /// (not crash).  This simulates a deployment where the cache partition
     /// is mounted read-only or permissions are misconfigured.
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
     #[cfg(unix)]
-    fn permission_denied_cache_dir_graceful_error() {
+    async fn permission_denied_cache_dir_graceful_error() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_root();
@@ -584,7 +589,7 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        cache.put_for(&input, r#"{"ok":true}"#).unwrap();
+        cache.put_for(&input, r#"{"ok":true}"#).await.unwrap();
 
         // Make the directory read-only.
         let original_perms = fs::metadata(&root).unwrap().permissions();
@@ -597,7 +602,7 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        let put_result = cache.put_for(&input_new, r#"{"new":true}"#);
+        let put_result = cache.put_for(&input_new, r#"{"new":true}"#).await;
         assert!(
             put_result.is_err(),
             "put to read-only cache dir should return error, not panic"
@@ -608,11 +613,11 @@ mod tests {
         );
 
         // get on the existing entry should still work (read is allowed).
-        let existing = cache.get_for(&input).unwrap();
+        let existing = cache.get_for(&input).await.unwrap();
         assert_eq!(existing.as_deref(), Some(r#"{"ok":true}"#));
 
         // get on a missing key returns None (not an error, not a panic).
-        let missing = cache.get_for(&input_new).unwrap();
+        let missing = cache.get_for(&input_new).await.unwrap();
         assert!(missing.is_none(), "missing key should return None");
 
         // Restore permissions for cleanup.
@@ -674,9 +679,9 @@ mod tests {
     /// both `put` and `get` must handle it gracefully — `put` returns an
     /// error, `get` returns `None` or a graceful I/O error (not a panic).
     /// The pipeline can continue without a working cache (degraded mode).
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn unwritable_cache_root_get_returns_none() {
+    async fn unwritable_cache_root_get_returns_none() {
         let blocker = std::env::temp_dir().join(format!(
             "decon-llm-cache-blocker2-{}",
             std::time::SystemTime::now()
@@ -696,13 +701,13 @@ mod tests {
         };
 
         // put fails gracefully.
-        let put_result = cache.put_for(&input, "data");
+        let put_result = cache.put_for(&input, "data").await;
         assert!(put_result.is_err(), "put should fail when root is a file");
 
         // get returns None or a graceful I/O error — either way, no panic.
         // (When the parent path is a file, the OS may return NotADirectory
         // instead of NotFound; both are graceful.)
-        let get_result = cache.get_for(&input);
+        let get_result = cache.get_for(&input).await;
         assert!(
             get_result.is_ok() || matches!(get_result, Err(CacheError::Io { .. })),
             "get should return None or a graceful I/O error, got: {get_result:?}"
@@ -717,8 +722,8 @@ mod tests {
 
     /// An unlimited cache (`u64::MAX`) must treat `enforce_size_limit` as a
     /// no-op, returning `Ok(0)` without touching the filesystem.
-    #[test]
-    fn unlimited_cache_enforce_size_limit_is_noop() {
+    #[tokio::test]
+    async fn unlimited_cache_enforce_size_limit_is_noop() {
         let root = temp_root();
         let cache = DiskCache::new(&root);
 
@@ -729,13 +734,13 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        cache.put_for(&input, "data").unwrap();
+        cache.put_for(&input, "data").await.unwrap();
 
-        let evicted = cache.enforce_size_limit().expect("should be Ok");
+        let evicted = cache.enforce_size_limit().await.expect("should be Ok");
         assert_eq!(evicted, 0, "unlimited cache should evict 0 bytes");
 
         // The entry must still be present.
-        assert!(cache.get_for(&input).unwrap().is_some());
+        assert!(cache.get_for(&input).await.unwrap().is_some());
 
         let stats = cache.stats();
         assert_eq!(stats.evictions, 0, "no evictions for unlimited cache");
@@ -745,13 +750,13 @@ mod tests {
 
     /// `enforce_size_limit` on a missing root directory must return `Ok(0)`
     /// (NotFound is treated as an empty cache, not an error).
-    #[test]
-    fn enforce_size_limit_missing_root_returns_ok_zero() {
+    #[tokio::test]
+    async fn enforce_size_limit_missing_root_returns_ok_zero() {
         let root = temp_root();
         // Note: we do NOT create the directory.
         let cache = DiskCache::with_size_limit_bytes(&root, 10);
 
-        let evicted = cache.enforce_size_limit().expect("should be Ok");
+        let evicted = cache.enforce_size_limit().await.expect("should be Ok");
         assert_eq!(evicted, 0, "missing root should return Ok(0)");
 
         let _ = fs::remove_dir_all(&root);
@@ -759,9 +764,9 @@ mod tests {
 
     /// LRU eviction with a small size limit: writing 3 files that exceed the
     /// limit must evict the oldest-mtime file and increment `stats.evictions`.
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn lru_eviction_evicts_oldest_and_increments_stats() {
+    async fn lru_eviction_evicts_oldest_and_increments_stats() {
         let root = temp_root();
         // Limit small enough that 3 files of 4 bytes each (12 total) exceeds it.
         let cache = DiskCache::with_size_limit_bytes(&root, 5);
@@ -785,9 +790,9 @@ mod tests {
             extras: None,
         };
 
-        cache.put_for(&input_a, "aaaa").unwrap();
-        cache.put_for(&input_b, "bbbb").unwrap();
-        cache.put_for(&input_c, "cccc").unwrap();
+        cache.put_for(&input_a, "aaaa").await.unwrap();
+        cache.put_for(&input_b, "bbbb").await.unwrap();
+        cache.put_for(&input_c, "cccc").await.unwrap();
 
         // Set distinct mtimes so the oldest is deterministic.
         use std::fs::OpenOptions;
@@ -814,7 +819,7 @@ mod tests {
             .set_modified(UNIX_EPOCH + Duration::from_secs(300))
             .unwrap();
 
-        let evicted = cache.enforce_size_limit().unwrap();
+        let evicted = cache.enforce_size_limit().await.unwrap();
         assert!(evicted > 0, "should have evicted bytes");
         assert!(!path_a.exists(), "oldest entry (a) should be evicted");
         assert!(
@@ -838,9 +843,9 @@ mod tests {
 
     /// `enforce_size_limit` when files are already under the limit must
     /// return `Ok(0)` and update `current_size_bytes` without evicting.
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn enforce_size_limit_under_limit_no_eviction() {
+    async fn enforce_size_limit_under_limit_no_eviction() {
         let root = temp_root();
         let cache = DiskCache::with_size_limit_bytes(&root, 1000);
 
@@ -850,9 +855,9 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        cache.put_for(&input, "small").unwrap();
+        cache.put_for(&input, "small").await.unwrap();
 
-        let evicted = cache.enforce_size_limit().unwrap();
+        let evicted = cache.enforce_size_limit().await.unwrap();
         assert_eq!(evicted, 0, "should not evict when under limit");
 
         let stats = cache.stats();
@@ -868,10 +873,10 @@ mod tests {
     /// `put` into a read-only parent directory must return a graceful
     /// `CacheError::Io` (not panic). This simulates a read-only cache
     /// partition where the rename step fails.
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
     #[cfg(unix)]
-    fn put_rename_into_readonly_parent_graceful_error() {
+    async fn put_rename_into_readonly_parent_graceful_error() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_root();
@@ -885,7 +890,7 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        cache.put_for(&input, "data").unwrap();
+        cache.put_for(&input, "data").await.unwrap();
 
         // Make the directory read-only.
         let original_perms = fs::metadata(&root).unwrap().permissions();
@@ -898,7 +903,7 @@ mod tests {
             provider: "p",
             extras: None,
         };
-        let result = cache.put_for(&input_new, "new-data");
+        let result = cache.put_for(&input_new, "new-data").await;
         assert!(
             result.is_err(),
             "put into read-only dir should return error, not panic"
