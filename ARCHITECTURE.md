@@ -49,6 +49,7 @@ decon-rs/
 │   ├── decon-llm/        # LlmClient trait, provider clients, disk cache, retries
 │   ├── decon-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
 │   └── decon-cli/        # Thin binary — clap args, completions, man page, exit codes
+│   (decon-mcp/)          # MCP server — proposed (ADR 0015), post-v1.0.0
 ├── prompts/              # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 ├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
 ├── docs/
@@ -347,6 +348,7 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0012](docs/adr/0012-json-output-schema.md) | JSON output schema for pipeline stages (`StageOutput<T>` envelope) |
 | [0013](docs/adr/0013-git-diff-incremental.md) | Git-diff incremental file detection (`--since`) |
 | [0014](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
+| [0015](docs/adr/0015-mcp-server.md) | MCP server for codebase knowledge querying (proposed, post-v1.0.0) |
 
 ---
 
