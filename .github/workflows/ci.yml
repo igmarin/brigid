@@ -277,7 +277,9 @@ jobs:
       - uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
 
   # Run criterion benchmarks on main pushes only (not on PRs, to avoid
-  # inflating PR run times). Uses --quick for faster feedback.
+  # inflating PR run times). Note: --quick is a criterion-only flag that
+  # unittests reject, so we cannot pass it through `--`. Benchmarks run
+  # at full sample size (acceptable for a main-only job).
   bench:
     name: Benchmarks
     runs-on: ubuntu-latest
@@ -289,4 +291,4 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Run benchmarks
-        run: cargo bench --workspace -- --quick
+        run: cargo bench --workspace --benches
