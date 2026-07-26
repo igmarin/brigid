@@ -37,6 +37,21 @@ pub enum StageStatus {
     Error,
 }
 
+impl<T> StageOutput<T> {
+    /// Create a new stage output envelope with the given stage name, status,
+    /// data, and optional stats.
+    #[must_use]
+    pub fn new(stage: &str, status: StageStatus, data: T, stats: Option<StageStats>) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            stage: stage.to_string(),
+            status,
+            data,
+            stats,
+        }
+    }
+}
+
 /// Stage execution statistics.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -699,5 +714,227 @@ mod tests {
     #[test]
     fn schema_version_is_one() {
         assert_eq!(SCHEMA_VERSION, 1);
+    }
+
+    // ---- JSON schema stability tests (Issue #223) ----
+    //
+    // These tests serialize sample data for each stage output type and compare
+    // the resulting JSON against a frozen snapshot in
+    // `tests/fixtures/json-schemas/`. If a snapshot mismatch occurs, either
+    // the schema changed (requires SCHEMA_VERSION bump + snapshot update) or
+    // there is a regression.
+
+    use std::path::PathBuf;
+
+    use assert_json_diff::assert_json_eq;
+
+    fn schema_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/json-schemas")
+            .join(format!("{name}.json"))
+    }
+
+    fn load_fixture(name: &str) -> serde_json::Value {
+        let path = schema_fixture(name);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read schema fixture {name}: {e} at {}",
+                path.display()
+            )
+        });
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("failed to parse schema fixture {name}: {e}"))
+    }
+
+    #[test]
+    fn schema_stability_identify() {
+        let mut abs1 = Abstraction::new(
+            "Query Processing",
+            "Handles incoming queries",
+            Tier::M,
+            "module",
+        );
+        abs1.file_indices = vec![0, 1];
+        let mut abs2 = Abstraction::new("Routing", "Routes requests to handlers", Tier::S, "class");
+        abs2.file_indices = vec![2];
+        let out = StageOutput::new(
+            "identify",
+            StageStatus::Ok,
+            IdentifyOutput {
+                abstractions: vec![abs1, abs2],
+                relationships: vec![Relationship::new(0, 1, "routes to", "calls")],
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("identify");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_relationships() {
+        let out = StageOutput::new(
+            "relationships",
+            StageStatus::Ok,
+            RelationshipsOutput {
+                relationships: vec![
+                    Relationship::new(0, 1, "uses", "calls"),
+                    Relationship::new(1, 2, "hands off", "publishes"),
+                ],
+                evidence: vec!["src/router.rs:42".into(), "src/pub.rs:10".into()],
+            },
+            Some(StageStats {
+                llm_calls: Some(1),
+                elapsed_ms: Some(500),
+                items_processed: None,
+            }),
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("relationships");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_order() {
+        let out = StageOutput::new(
+            "order",
+            StageStatus::Ok,
+            OrderOutput {
+                ordered_indices: vec![2, 0, 1],
+                titles: vec!["Core".into(), "Intro".into(), "Query".into()],
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("order");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_chapters() {
+        let out = StageOutput::new(
+            "chapters",
+            StageStatus::Ok,
+            ChaptersOutput {
+                chapters: vec![
+                    ChapterSummary {
+                        chapter_num: 1,
+                        title: "Intro".into(),
+                        markdown_length: 100,
+                        file_indices: vec![0],
+                    },
+                    ChapterSummary {
+                        chapter_num: 2,
+                        title: "Core".into(),
+                        markdown_length: 500,
+                        file_indices: vec![1, 2],
+                    },
+                ],
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("chapters");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_setup() {
+        let out = StageOutput::new(
+            "setup",
+            StageStatus::Ok,
+            SetupOutput {
+                markdown: "# Setup\n\nInstall Rust...".into(),
+                score: 42,
+                generated: true,
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("setup");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_overview() {
+        let out = StageOutput::new(
+            "overview",
+            StageStatus::Ok,
+            OverviewOutput {
+                markdown: "# Architecture\n\n...".into(),
+                apps: vec!["nexus_hub".into(), "web".into()],
+                generated: true,
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("overview");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_combine() {
+        let out = StageOutput::new(
+            "combine",
+            StageStatus::Ok,
+            CombineOutput {
+                index: "# Index\n\n## Chapters".into(),
+                chapter_count: 5,
+                setup_present: true,
+                overview_present: true,
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("combine");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_generate() {
+        let out = StageOutput::new(
+            "generate",
+            StageStatus::Ok,
+            GenerateOutput {
+                stages: vec![
+                    StageSummary {
+                        name: "identify".into(),
+                        status: "ok".into(),
+                        duration_ms: 1000,
+                        llm_calls: 2,
+                    },
+                    StageSummary {
+                        name: "chapters".into(),
+                        status: "ok".into(),
+                        duration_ms: 5000,
+                        llm_calls: 5,
+                    },
+                ],
+                output_dir: "out/tutorial".into(),
+                checkpoint_path: "out/checkpoint.json".into(),
+                total_llm_calls: 7,
+                elapsed_ms: 6000,
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        let expected = load_fixture("generate");
+        assert_json_eq!(actual, expected);
+    }
+
+    #[test]
+    fn schema_stability_error_envelope() {
+        let out = StageOutput::new(
+            "identify",
+            StageStatus::Error,
+            IdentifyOutput {
+                abstractions: Vec::new(),
+                relationships: Vec::new(),
+            },
+            None,
+        );
+        let actual: serde_json::Value = serde_json::to_value(&out).unwrap();
+        assert_eq!(actual["status"], "error");
+        assert_eq!(actual["schema_version"], SCHEMA_VERSION);
     }
 }

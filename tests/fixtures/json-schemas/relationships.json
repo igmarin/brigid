@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "stage": "relationships",
+  "status": "ok",
+  "data": {
+    "relationships": [
+      {
+        "from": 0,
+        "to": 1,
+        "label": "uses",
+        "kind": "calls"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "label": "hands off",
+        "kind": "publishes"
+      }
+    ],
+    "evidence": [
+      "src/router.rs:42",
+      "src/pub.rs:10"
+    ]
+  },
+  "stats": {
+    "llm_calls": 1,
+    "elapsed_ms": 500
+  }
+}

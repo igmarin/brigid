@@ -306,6 +306,10 @@ enum Commands {
         /// exclusive with `--verbose`.
         #[arg(long = "quiet", default_value_t = false)]
         quiet: bool,
+        /// Output format: human-readable text (default) or machine-readable
+        /// JSON.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the relationships stage (reads identify from checkpoint).
     Relationships {
@@ -440,7 +444,7 @@ impl ShellKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Text,
     Json,
@@ -852,6 +856,7 @@ fn main() -> ExitCode {
             max_llm_calls,
             verbose,
             quiet,
+            format,
         } => {
             if verbose && quiet {
                 eprintln!(
@@ -908,6 +913,7 @@ fn main() -> ExitCode {
                 concurrency,
                 max_llm_calls,
                 verbosity,
+                format,
                 &cfg,
             )
         }
@@ -2019,6 +2025,7 @@ fn cmd_generate(
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
+    format: OutputFormat,
     cfg: &RunConfig,
 ) -> ExitCode {
     let diagram_level_parsed = match decon_pipeline::DiagramLevel::parse(diagram_level) {
@@ -2048,6 +2055,7 @@ fn cmd_generate(
             concurrency,
             max_llm_calls,
             verbosity,
+            format,
             cfg,
         );
     }
@@ -2260,6 +2268,8 @@ fn cmd_generate(
             .unwrap_or(decon_core::DEFAULT_MAX_LLM_CALLS),
     );
 
+    let generate_start = std::time::Instant::now();
+
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2344,6 +2354,43 @@ fn cmd_generate(
                 if verbosity.is_verbose() {
                     print_verbose_summary(&progress, cache.as_ref(), checkpoint_dir);
                 }
+
+                if format == OutputFormat::Json {
+                    let stages: Vec<decon_core::StageSummary> = progress
+                        .stage_timings()
+                        .iter()
+                        .map(|t| decon_core::StageSummary {
+                            name: t.stage.clone(),
+                            status: "ok".to_string(),
+                            duration_ms: t.elapsed.as_millis() as u64,
+                            llm_calls: t.llm_calls,
+                        })
+                        .collect();
+                    let total_llm_calls = progress.snapshot().llm_calls_used;
+                    let elapsed_ms = generate_start.elapsed().as_millis() as u64;
+                    let data = decon_core::GenerateOutput {
+                        stages,
+                        output_dir: output_dir.display().to_string(),
+                        checkpoint_path: checkpoint_dir
+                            .join("checkpoint.json")
+                            .display()
+                            .to_string(),
+                        total_llm_calls,
+                        elapsed_ms,
+                    };
+                    let envelope = decon_core::StageOutput::new(
+                        "generate",
+                        decon_core::StageStatus::Ok,
+                        data,
+                        None,
+                    );
+                    let json = serde_json::to_string(&envelope).unwrap_or_else(|e| {
+                        eprintln!("error: generate: JSON serialization failed: {e}");
+                        "{}".to_string()
+                    });
+                    println!("{json}");
+                }
+
                 ExitCode::from(EXIT_OK)
             }
             Ok(decon_pipeline::GenerateOutcome::Cancelled { checkpoint_path }) => {
@@ -2439,8 +2486,11 @@ fn cmd_generate_each_app(
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
+    format: OutputFormat,
     cfg: &RunConfig,
 ) -> ExitCode {
+    // `--format json` for `--each-app` is not yet supported; text output only.
+    let _ = format;
     let mut run_config = cfg.clone();
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());

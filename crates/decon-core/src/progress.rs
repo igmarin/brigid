@@ -35,13 +35,16 @@ pub struct ProgressSnapshot {
     pub stages_completed: u32,
 }
 
-/// A completed stage's name and elapsed time, for verbose reporting.
+/// A completed stage's name, elapsed time, and LLM call count, for verbose
+/// reporting and JSON output.
 #[derive(Clone, Debug)]
 pub struct StageTiming {
     /// Human-readable stage label (e.g. `"identify"`).
     pub stage: String,
     /// Elapsed wall-clock time for this stage.
     pub elapsed: Duration,
+    /// Number of LLM calls made during this stage.
+    pub llm_calls: u32,
 }
 
 /// Fail-closed LLM call budget and light progress state.
@@ -52,6 +55,7 @@ pub struct ProgressTracker {
     current_stage: Option<String>,
     stages_completed: u32,
     stage_start: Option<Instant>,
+    stage_llm_calls: u32,
     stage_timings: Vec<StageTiming>,
 }
 
@@ -65,6 +69,7 @@ impl ProgressTracker {
             current_stage: None,
             stages_completed: 0,
             stage_start: None,
+            stage_llm_calls: 0,
             stage_timings: Vec::new(),
         }
     }
@@ -82,6 +87,9 @@ impl ProgressTracker {
             });
         }
         self.llm_calls_used = self.llm_calls_used.saturating_add(1);
+        if self.current_stage.is_some() {
+            self.stage_llm_calls = self.stage_llm_calls.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -99,6 +107,9 @@ impl ProgressTracker {
             });
         }
         self.llm_calls_used = new_used;
+        if self.current_stage.is_some() {
+            self.stage_llm_calls = self.stage_llm_calls.saturating_add(n);
+        }
         Ok(())
     }
 
@@ -110,6 +121,7 @@ impl ProgressTracker {
         self.record_stage_timing();
         self.current_stage = Some(stage.into());
         self.stage_start = Some(Instant::now());
+        self.stage_llm_calls = 0;
     }
 
     /// Clear current stage and increment completed stage count.
@@ -129,8 +141,10 @@ impl ProgressTracker {
             self.stage_timings.push(StageTiming {
                 stage: name.clone(),
                 elapsed: start.elapsed(),
+                llm_calls: self.stage_llm_calls,
             });
         }
+        self.stage_llm_calls = 0;
     }
 
     /// Return per-stage elapsed timings recorded so far.
@@ -196,5 +210,55 @@ mod tests {
         t.complete_stage();
         assert!(t.snapshot().current_stage.is_none());
         assert_eq!(t.snapshot().stages_completed, 1);
+    }
+
+    #[test]
+    fn stage_llm_calls_tracked_per_stage() {
+        let mut t = ProgressTracker::new(20);
+        t.set_stage("identify");
+        t.record_llm_call().unwrap();
+        t.record_llm_call().unwrap();
+        t.complete_stage();
+        t.set_stage("relationships");
+        t.record_llm_call().unwrap();
+        t.complete_stage();
+        let timings = t.stage_timings();
+        assert_eq!(timings.len(), 2);
+        assert_eq!(timings[0].stage, "identify");
+        assert_eq!(timings[0].llm_calls, 2);
+        assert_eq!(timings[1].stage, "relationships");
+        assert_eq!(timings[1].llm_calls, 1);
+        assert_eq!(t.snapshot().llm_calls_used, 3);
+    }
+
+    #[test]
+    fn stage_llm_calls_with_reserve() {
+        let mut t = ProgressTracker::new(20);
+        t.set_stage("chapters");
+        t.reserve_llm_calls(5).unwrap();
+        t.complete_stage();
+        let timings = t.stage_timings();
+        assert_eq!(timings[0].llm_calls, 5);
+    }
+
+    #[test]
+    fn stage_llm_calls_zero_when_no_calls() {
+        let mut t = ProgressTracker::new(20);
+        t.set_stage("order");
+        t.complete_stage();
+        let timings = t.stage_timings();
+        assert_eq!(timings[0].llm_calls, 0);
+    }
+
+    #[test]
+    fn llm_calls_outside_stage_not_counted() {
+        let mut t = ProgressTracker::new(20);
+        t.record_llm_call().unwrap();
+        t.set_stage("identify");
+        t.record_llm_call().unwrap();
+        t.complete_stage();
+        let timings = t.stage_timings();
+        assert_eq!(timings[0].llm_calls, 1);
+        assert_eq!(t.snapshot().llm_calls_used, 2);
     }
 }

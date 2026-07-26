@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "stage": "identify",
+  "status": "ok",
+  "data": {
+    "abstractions": [
+      {
+        "name": "Query Processing",
+        "description": "Handles incoming queries",
+        "file_indices": [0, 1],
+        "tier": "M",
+        "kind": "module",
+        "apps": [],
+        "entry_files": []
+      },
+      {
+        "name": "Routing",
+        "description": "Routes requests to handlers",
+        "file_indices": [2],
+        "tier": "S",
+        "kind": "class",
+        "apps": [],
+        "entry_files": []
+      }
+    ],
+    "relationships": [
+      {
+        "from": 0,
+        "to": 1,
+        "label": "routes to",
+        "kind": "calls"
+      }
+    ]
+  }
+}

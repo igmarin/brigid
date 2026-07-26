@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "stage": "chapters",
+  "status": "ok",
+  "data": {
+    "chapters": [
+      {
+        "chapter_num": 1,
+        "title": "Intro",
+        "markdown_length": 100,
+        "file_indices": [0]
+      },
+      {
+        "chapter_num": 2,
+        "title": "Core",
+        "markdown_length": 500,
+        "file_indices": [1, 2]
+      }
+    ]
+  }
+}
