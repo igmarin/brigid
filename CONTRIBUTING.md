@@ -107,6 +107,34 @@ Budget is capped at `DECON_MAX_LLM_CALLS` (default `5`) calls per test via a
 under `target/decon-llm-cache` so re-runs with an unchanged prompt are free.
 
 
+## Testing strategy
+
+`decon` uses several layers of tests, each suited to a different concern:
+
+| Layer | Tooling | What it covers |
+|-------|---------|----------------|
+| **Unit tests** (`#[test]`) | `cargo test` | Pure domain logic in `decon-core` (budget, scope, mermaid, eval, config, plugin) and stage helpers. Fast, no I/O. |
+| **Integration tests** (`tests/`) | `cargo test --test …` | Stage orchestration, checkpoint roundtrips, CLI exit codes, JSON schema stability. |
+| **HTTP contract tests** | [`wiremock`](https://crates.io/crates/wiremock) | LLM provider client retry/backoff, timeout, and error handling against a mock OpenAI-compatible server — no real network. |
+| **Property tests** | [`proptest`](https://crates.io/crates/proptest) | Pure-logic invariants: budget packing, module-key normalization, mermaid sanitize idempotence. |
+| **CLI tests** | [`assert_cmd`](https://crates.io/crates/assert_cmd) | `decon --help`, exit codes, `--format json` dry-run shape, error messages. |
+| **Live LLM smoke** | feature-gated `decon-pipeline/live-llm` | Real, paid API calls (DeepSeek) against a tiny fixture; budget-capped via `DECON_MAX_LLM_CALLS`. Runs **nightly** in CI, never on PR/push. Skips automatically when no key is present. |
+| **Eval regression** | `decon eval` on golden fixtures | Structural tutorial quality gate (`good-mini` passes, `broken-mini` fails at threshold 80). |
+
+Guidelines:
+
+- **Prefer unit tests** for pure logic; keep `decon-core` I/O-free so it stays
+  fast and deterministic.
+- Use **wiremock** for any HTTP-touching code — never hit a live provider in
+  unit or PR CI.
+- Use **proptest** for pure functions with many input combinations
+  (budgeting, parsing, normalization).
+- Use **assert_cmd** for observable CLI contracts (argument parsing, exit
+  codes, stdout JSON shape).
+- Live LLM tests are **opt-in and nightly only**; see
+  [Optional live LLM tests](#optional-live-llm-tests).
+
+
 ## Pre-commit review (rs-guard)
 
 Before committing non-trivial changes on a feature branch:
@@ -225,11 +253,75 @@ workspace `members` list.
   checkpoint format, crate boundaries, or provider contract.
 - Every public function, type, and module should have a rustdoc comment.
 
+## Commit messages
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/) so the
+history is greppable and `CHANGELOG.md` entries are easy to assemble.
+
+### Format
+
+```
+<type>: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+### Types
+
+| Type | Use for |
+|------|---------|
+| `feat` | A new feature (user-visible) |
+| `fix` | A bug fix (user-visible) |
+| `docs` | Documentation-only changes |
+| `refactor` | Code restructuring with no behavior change |
+| `test` | Adding or correcting tests |
+| `ci` | CI/build/release pipeline changes |
+| `perf` | Performance improvement |
+| `chore` | Maintenance (deps, formatting) with no product impact |
+
+### Rules
+
+- The **subject line** is lowercase, imperative, and ≤ 72 characters — no
+  trailing period.
+- The **body** (when present) explains *why*, not *what*, wrapped at ~72
+  columns.
+- Reference the issue in a **footer trailer** on its own line, e.g.
+  `Closes #212`. Use `Closes`, `Fixes`, or `Resolves` so GitHub auto-closes
+  the issue on merge.
+- For work produced with AI assistance, add a **co-author trailer**:
+
+  ```
+  Generated with [Devin](https://devin.ai)
+
+  Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+  ```
+
+### Examples
+
+```
+feat(pipeline): add git-diff incremental file detection (--since)
+
+Closes #224
+```
+
+```
+fix(core): treat blank env var as unset in config layering
+
+Regression from #198 — `config_from_env_map` now filters empty strings
+before merging, matching the documented CLI > file > env > defaults
+precedence.
+
+Fixes #210
+```
+
 ## Pull requests
 
 1. Create a feature branch from `main`: `feature/#-short-name` (e.g.
    `feature/3-contributing-guide`).
-2. Make focused, incremental commits.
+2. Make focused, incremental commits following
+   [Commit messages](#commit-messages).
 3. Ensure `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
    `cargo llvm-cov --fail-under-lines 85`, `cargo audit`, `cargo deny check`,
    and the eval regression gate (`cargo run -p decon-cli -- eval --out
@@ -239,6 +331,12 @@ workspace `members` list.
    automated `rs-guard` review.
 6. Merge only when CI is green.
 
-## Questions?
+## Getting help
 
-Open an issue or discussion on [GitHub](https://github.com/igmarin/decon-rs).
+- **Bugs and feature requests** — open a [GitHub issue](https://github.com/igmarin/decon-rs/issues).
+  Include the `decon --version`, the command you ran, and the full stderr
+  output (redact API keys).
+- **Questions and discussion** — use [GitHub Discussions](https://github.com/igmarin/decon-rs/discussions)
+  for "how do I…" questions that are not bugs.
+- **Architecture questions** — check [`ARCHITECTURE.md`](ARCHITECTURE.md) and
+  [`docs/adr/`](docs/adr/) first; most design decisions are recorded there.

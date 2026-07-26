@@ -432,15 +432,40 @@ are closed. The product is now polished and distributable:
 **Exit criteria:** met — installers, completions, man page, cache-by-default,
 Windows CI, and Python deprecation all landed.
 
-### Phase 5 — Optional / advanced (not on the current roadmap)
+### Phase 5 — Foundation landed in M6 (Milestone M6 — complete)
 
-These items are explicitly **optional** and are not committed to a milestone.
-They may be pursued if there is user demand:
+Tracked as GitHub milestone **M6 — Phase 5 Foundation + Audit Hardening**.
+The three Phase 5 foundation items are now implemented, along with audit
+hardening and performance optimizations:
 
-- git-diff incremental tutorials — only re-explain modules changed since a
-  tag or commit.
-- JSON structured outputs — machine-readable pipeline output beyond dry-run.
-- plugin ecosystem — custom "kind" detectors or pipeline extensions.
+- **git-diff incremental file detection** (`--since <git-ref>`) —
+  `decon-crawl::git_diff` shells out to `git diff --name-only` with
+  triple-dot merge-base semantics and filters the crawl inventory to changed
+  files. No libgit2 dependency. See
+  [ADR 0013](./adr/0013-git-diff-incremental.md).
+- **JSON structured outputs** — all pipeline stages (`identify`,
+  `relationships`, `order`, `chapters`, `setup`, `overview`, `combine`,
+  `generate`) now support `--format json` via a versioned `StageOutput<T>`
+  envelope with frozen schema-stability snapshots. See
+  [ADR 0012](./adr/0012-json-output-schema.md).
+- **Plugin architecture** — an object-safe `KindDetector` trait and
+  `PluginRegistry` with first-match dispatch let users plug domain-specific
+  classification into the identify stage. The built-in
+  `DefaultKindDetector` fills gaps when the LLM leaves a `kind` empty. See
+  [ADR 0014](./adr/0014-plugin-architecture.md).
+
+**Remaining advanced items (not on the current roadmap):**
+
+- **Dynamic plugin loading** — loading `KindDetector` implementations from
+  shared libraries (`.so`/`.dylib`/`.dll`) or WASM modules. The trait and
+  registry are designed as a stable ABI boundary for this future work;
+  `RunConfig.plugin_dirs` is already parsed and stored.
+- **Incremental tutorial regeneration** — `--since` limits the crawl to
+  changed files today; re-using prior chapter content for unchanged modules
+  during `generate` is a future enhancement.
+
+**Exit criteria:** met — git-diff incremental, JSON output for all stages,
+and the plugin trait/registry all landed with ADRs and tests.
 
 ---
 
@@ -604,6 +629,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 | Phase 2 (identify) | Contract tests for map/reduce parse; mock LLM |
 | Phase 3 (full generate) | Golden eval fixtures; docs for every subcommand; eval regression gate; nightly LLM smoke |
 | Phase 4 (product polish) | man page, completions, benchmarks, Windows CI, Python deprecation |
+| Phase 5 (foundation — M6) | git-diff incremental, JSON output schema stability tests, plugin trait/registry, audit hardening |
 
 **Anti-pattern:** “We’ll add tests after the port works.” That recreates the Python repo’s fragility. The port **is** the moment to lock behavior with tests.
 

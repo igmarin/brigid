@@ -41,6 +41,54 @@ maps errors to exit codes. Public APIs in library crates carry rustdoc
 
 ---
 
+## Design principles
+
+The architecture follows four principles that guide every stage and module
+boundary:
+
+### 1. I/O isolation
+
+All filesystem, network, and subprocess I/O lives at the edges —
+`decon-crawl` (filesystem walk, `git` shell-out), `decon-llm` (HTTP provider
+calls, disk cache), and `decon-cli` (argument parsing, exit codes). The
+pipeline orchestration (`decon-pipeline`) coordinates stages but delegates
+I/O to these crates. `decon-core` is **pure**: no network, no filesystem,
+no `tokio`. This keeps the domain logic fast, deterministic, and easy to
+unit-test without mocks.
+
+### 2. Fail-closed budgeting
+
+The `max_llm_calls` budget (`decon-core::progress`) is enforced
+**fail-closed**: if the tracker cannot confirm remaining budget, the stage
+aborts rather than exceeding the limit. This prevents runaway costs on large
+monorepos and surfaces budget exhaustion as a distinct exit code (3) instead
+of a silent hang. The same principle applies to the context budget
+(`decon-core::budget`) — per-file truncation and per-batch char budgets are
+hard limits, not suggestions.
+
+### 3. Checkpoint-first
+
+Every expensive stage writes its output to the checkpoint **before** the
+stage is marked complete. On resume, each stage checks `completed_stages`
+and skips if already done. Stage outputs are stored as files with SHA-256
+verification (ADR 0006) so corruption is detected, not silently propagated.
+Ctrl+C triggers a graceful shutdown that dumps a clean checkpoint (exit 5),
+so the next run resumes from the last completed stage — never from a
+half-written state.
+
+### 4. Pure core
+
+Domain types (`Abstraction`, `Relationship`, `Chapter`, `RunConfig`,
+`CheckpointV1`, …) and all pure logic (budgeting, scope filtering, mermaid
+sanitize, eval scoring, kind detection heuristics) live in `decon-core`.
+Stages in `decon-pipeline` are thin orchestrators that call into core for
+the actual work. This separation means the hard IP — quality rules,
+monorepo heuristics, prompt contracts — is testable without any I/O and
+reusable by future front-ends (a hosted mode, an editor plugin) without
+dragging in the CLI.
+
+---
+
 ## Pipeline data flow
 
 The full `decon generate` pipeline runs a linear sequence of stages. Every
@@ -108,7 +156,10 @@ done, enabling resume from any point without re-running expensive LLM calls.
 | `decon-core` | `abstraction` | `Abstraction`, `Relationship`, `IdentifyResult`, `RelationshipsResult` |
 | `decon-core` | `generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
 | `decon-core` | `extract` | Robust YAML/JSON block extraction from messy LLM output |
+| `decon-core` | `stage_output` | `StageOutput<T>` JSON envelope and per-stage output types (ADR 0012) |
+| `decon-core` | `plugin` | `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector` (ADR 0014) |
 | `decon-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker, symlink cycle detection) |
+| `decon-crawl` | `git_diff` | Git-diff incremental file detection via `git` shell-out; `--since` support (ADR 0013) |
 | `decon-llm` | `client` | `LlmClient` async trait (ADR 0002) |
 | `decon-llm` | `mock` | `MockClient` test double |
 | `decon-llm` | `openai_client` | OpenAI-compatible HTTP client with retry/backoff/timeout |
@@ -272,6 +323,9 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0009](docs/adr/0009-disk-cache-default-lru-eviction.md) | Disk cache enabled by default with LRU eviction and size limits |
 | [0010](docs/adr/0010-release-strategy.md) | Release strategy: GitHub Releases, Homebrew, cargo install, cargo-binstall |
 | [0011](docs/adr/0011-python-deprecation-approach.md) | Python deprecation: migration guide over wrapper (Option B) |
+| [0012](docs/adr/0012-json-output-schema.md) | JSON output schema for pipeline stages (`StageOutput<T>` envelope) |
+| [0013](docs/adr/0013-git-diff-incremental.md) | Git-diff incremental file detection (`--since`) |
+| [0014](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
 
 ---
 
