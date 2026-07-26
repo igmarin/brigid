@@ -38,6 +38,7 @@ pub use decon_core::ExtractError;
 /// that only depend on `decon-pipeline`.
 pub use decon_llm::LlmError;
 
-pub(crate) use map::{batch_files_by_size, run_single_map_batch};
+pub use map::batch_files_by_size;
+pub(crate) use map::run_single_map_batch;
 #[allow(unused_imports)]
 pub(crate) use map::{parse_candidates, render_map_prompt};

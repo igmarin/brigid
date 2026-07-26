@@ -24,3 +24,16 @@ hex = "0.4"
 proptest = { workspace = true }
 assert-json-diff = "2.0"
 tempfile = "3.20"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "redaction"
+harness = false
+
+[[bench]]
+name = "yaml_extraction"
+harness = false
+
+[[bench]]
+name = "module_key"
+harness = false

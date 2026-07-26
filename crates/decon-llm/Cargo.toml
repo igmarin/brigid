@@ -27,3 +27,9 @@ futures = "0.3"
 serial_test = "3.5.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "fs"] }
 wiremock = "0.6"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.20"
+
+[[bench]]
+name = "cache_operations"
+harness = false

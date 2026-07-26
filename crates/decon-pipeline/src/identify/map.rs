@@ -218,7 +218,7 @@ pub(crate) async fn run_single_map_batch(
 /// budget still gets its own batch (an "oversized batch").
 ///
 /// Returns a vector of batches, each a vector of global file indices.
-pub(crate) fn batch_files_by_size(
+pub fn batch_files_by_size(
     files: &[String],
     sizes: &[u64],
     config: &BudgetConfig,
