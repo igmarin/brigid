@@ -60,6 +60,14 @@ current roadmap):
   AI assistants (Cursor, Claude, Windsurf) query the codebase knowledge
   on demand instead of bulk-loading tutorial files. Scoped as read-only
   first, post-v1.0.0.
+- **Graph provider integration** — a proposed `GraphProvider` trait (ADR
+  0016) would let `decon` use structural ground truth from external tools
+  (codegraph for call graphs, Graphify for community detection and
+  multimodal concepts) to improve abstraction identification and
+  relationship verification on large codebases. Strictly optional
+  (`NoneProvider` default) — `decon` delivers full value standalone, and
+  gets *better* when graph tools are present. Post-v1.0.0, pending
+  validation on real codebases.
 
 The Python entrypoint has been deprecated — see
 [`docs/migrating-from-python.md`](migrating-from-python.md) for the
