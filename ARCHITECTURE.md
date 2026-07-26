@@ -349,6 +349,7 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0013](docs/adr/0013-git-diff-incremental.md) | Git-diff incremental file detection (`--since`) |
 | [0014](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
 | [0015](docs/adr/0015-mcp-server.md) | MCP server for codebase knowledge querying (proposed, post-v1.0.0) |
+| [0016](docs/adr/0016-graph-provider.md) | Graph provider trait for structural ground truth from codegraph/Graphify (proposed, post-v1.0.0) |
 
 ---
 
