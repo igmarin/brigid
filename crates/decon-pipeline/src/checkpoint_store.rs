@@ -1557,4 +1557,197 @@ mod tests {
         assert!(!dir.join("chapters").exists());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: I/O fault injection coverage gaps
+    // ------------------------------------------------------------------
+
+    /// A manifest whose SHA-256 matches the on-disk file but whose recorded
+    /// **size** does not must be rejected with a `ManifestIntegrity` error
+    /// (size-only mismatch).
+    #[test]
+    fn manifest_size_only_mismatch_detected() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let (cp, files) = make_checkpoint(2);
+        store.save(cp, &files).unwrap();
+
+        // Tamper with the size field in checkpoint.json only.
+        let cp_path = dir.join("checkpoint.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cp_path).unwrap()).unwrap();
+        // Set a wrong size (off by one) while keeping SHA-256 intact.
+        let original_size = json["manifest"]["size"].as_u64().unwrap();
+        json["manifest"]["size"] = serde_json::json!(original_size + 1);
+        fs::write(&cp_path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        let err = store.load().unwrap_err();
+        assert!(
+            matches!(err, CheckpointStoreError::ManifestIntegrity(ref msg)
+                if msg.contains("size mismatch")),
+            "size-only mismatch should give ManifestIntegrity with 'size mismatch', got {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stage output file that contains non-UTF-8 bytes (but whose SHA-256
+    /// matches the manifest) must produce a `StageOutputIntegrity` error when
+    /// read back through `read_setup_guide` (which expects UTF-8).
+    #[test]
+    fn non_utf8_stage_file_detected() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_checkpoint(&store);
+
+        // Write non-UTF-8 bytes to the setup guide path.
+        let non_utf8: &[u8] = &[0xFF, 0xFE, 0x00, 0x80, 0xC0, 0xC1];
+        let _ = CheckpointStore::write_stage_file("00_setup.md", non_utf8, &dir);
+        // If write_stage_file succeeded, the entry has the correct digest.
+        // If not, manually write the file and build the entry.
+        if !dir.join("00_setup.md").is_file() {
+            fs::write(dir.join("00_setup.md"), non_utf8).unwrap();
+        }
+        let digest = sha256_hex_prefixed(non_utf8);
+        let entry = StageOutputEntry {
+            path: "00_setup.md".to_owned(),
+            sha256: digest,
+            size: non_utf8.len() as u64,
+        };
+        store
+            .record_stage_outputs(&mut cp, StageId::Setup, vec![entry])
+            .unwrap();
+
+        let (loaded_cp, _) = store.load().unwrap();
+        let err = store.read_setup_guide(&dir, &loaded_cp).unwrap_err();
+        assert!(
+            matches!(err, CheckpointStoreError::StageOutputIntegrity(ref msg)
+                if msg.contains("UTF-8")),
+            "non-UTF-8 stage file should give StageOutputIntegrity with 'UTF-8', got {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A manifest path containing path traversal (`../foo`) must be rejected
+    /// by `validate_manifest_rel` both on save and on load.
+    #[test]
+    fn path_traversal_in_manifest_rejected() {
+        // Direct validation check.
+        let err = CheckpointStore::validate_manifest_rel("../foo").unwrap_err();
+        assert!(
+            matches!(err, CheckpointStoreError::ManifestIntegrity(ref msg)
+                if msg.contains("unsafe manifest path")),
+            "path traversal should be rejected, got {err:?}"
+        );
+
+        // Also verify via load: save a valid checkpoint, then tamper with
+        // the manifest path in checkpoint.json.
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let (cp, files) = make_checkpoint(1);
+        store.save(cp, &files).unwrap();
+
+        let cp_path = dir.join("checkpoint.json");
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cp_path).unwrap()).unwrap();
+        json["manifest"]["path"] = serde_json::json!("../evil");
+        fs::write(&cp_path, serde_json::to_string(&json).unwrap()).unwrap();
+
+        let err = store.load().unwrap_err();
+        assert!(
+            matches!(err, CheckpointStoreError::ManifestIntegrity(_)),
+            "load with path traversal manifest should give ManifestIntegrity, got {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `is_stage_complete_with_files` returns `Ok(false)` when the stage is
+    /// marked complete but a stage output file is missing from disk.
+    #[test]
+    fn is_stage_complete_with_files_missing_file_returns_false() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_checkpoint(&store);
+
+        // Write a setup guide and record it.
+        let guide = SetupGuide::new("# Setup\n", 10, vec![], false);
+        let entry = store.write_setup_guide(&dir, &guide).unwrap();
+        store
+            .record_stage_outputs(&mut cp, StageId::Setup, vec![entry])
+            .unwrap();
+        cp.mark_stage_complete(StageId::Setup, "t2");
+        let entries_clone = cp
+            .stage_outputs
+            .as_ref()
+            .unwrap()
+            .get(StageId::Setup.as_str())
+            .unwrap()
+            .to_vec();
+        store
+            .record_stage_outputs(&mut cp, StageId::Setup, entries_clone)
+            .unwrap();
+
+        // Verify it returns true when the file exists.
+        let (loaded_cp, _) = store.load().unwrap();
+        assert!(
+            store
+                .is_stage_complete_with_files(&loaded_cp, StageId::Setup)
+                .unwrap()
+        );
+
+        // Remove the file and verify it returns false.
+        fs::remove_file(dir.join("00_setup.md")).unwrap();
+        let complete = store
+            .is_stage_complete_with_files(&loaded_cp, StageId::Setup)
+            .unwrap();
+        assert!(
+            !complete,
+            "stage should not be complete when file is missing"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `is_stage_complete_with_files` returns `Err(StageOutputIntegrity)`
+    /// when a stage output file exists but its SHA-256 does not match the
+    /// manifest entry.
+    #[test]
+    fn is_stage_complete_with_files_corrupt_file_returns_error() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_checkpoint(&store);
+
+        let guide = SetupGuide::new("# Setup\n", 10, vec![], false);
+        let entry = store.write_setup_guide(&dir, &guide).unwrap();
+        store
+            .record_stage_outputs(&mut cp, StageId::Setup, vec![entry])
+            .unwrap();
+        cp.mark_stage_complete(StageId::Setup, "t2");
+        let entries_clone = cp
+            .stage_outputs
+            .as_ref()
+            .unwrap()
+            .get(StageId::Setup.as_str())
+            .unwrap()
+            .to_vec();
+        store
+            .record_stage_outputs(&mut cp, StageId::Setup, entries_clone)
+            .unwrap();
+
+        // Corrupt the file content.
+        fs::write(dir.join("00_setup.md"), b"corrupted content").unwrap();
+
+        let (loaded_cp, _) = store.load().unwrap();
+        let err = store
+            .is_stage_complete_with_files(&loaded_cp, StageId::Setup)
+            .unwrap_err();
+        assert!(
+            matches!(err, CheckpointStoreError::StageOutputIntegrity(_)),
+            "corrupt file should give StageOutputIntegrity error, got {err:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

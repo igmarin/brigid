@@ -1485,4 +1485,180 @@ host = "llm-gateway.corp.example"
         assert_eq!(issues[0].severity, "warning");
         assert!(issues[0].message.contains("provider"));
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: env var coverage and allowed_hosts deserialization edge cases
+    // ------------------------------------------------------------------
+
+    /// Every `DECON_*` env var must be recognized by `config_from_env_map`.
+    /// This test sets all of them at once and verifies each field is populated.
+    #[test]
+    fn env_map_covers_all_decon_vars() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_OUTPUT".into(), "/tmp/out".into());
+        vars.insert("DECON_LANGUAGE".into(), "es".into());
+        vars.insert("DECON_PROVIDER".into(), "openai".into());
+        vars.insert("DECON_MODEL".into(), "gpt-4".into());
+        vars.insert("DECON_CACHE_DIR".into(), "/tmp/cache".into());
+        vars.insert("DECON_CHECKPOINT_DIR".into(), "/tmp/ckpt".into());
+        vars.insert("DECON_BATCH_CHAR_BUDGET".into(), "50000".into());
+        vars.insert("DECON_CHARS_PER_TOKEN".into(), "3".into());
+
+        let env = config_from_env_map(&vars).expect("env map should parse");
+
+        assert_eq!(
+            env.output.as_deref(),
+            Some(std::path::Path::new("/tmp/out"))
+        );
+        assert_eq!(env.language.as_deref(), Some("es"));
+        assert_eq!(env.provider.as_deref(), Some("openai"));
+        assert_eq!(env.model.as_deref(), Some("gpt-4"));
+        assert_eq!(
+            env.cache_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/cache"))
+        );
+        assert_eq!(
+            env.checkpoint_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/ckpt"))
+        );
+        assert_eq!(env.batch_char_budget, Some(50_000));
+        assert_eq!(env.chars_per_token, Some(3));
+    }
+
+    /// Each numeric `DECON_*` var must return `InvalidEnvValue` when set to
+    /// a non-integer string.
+    #[test]
+    fn env_map_numeric_vars_invalid_values_error() {
+        let numeric_vars = ["DECON_BATCH_CHAR_BUDGET", "DECON_CHARS_PER_TOKEN"];
+        for key in &numeric_vars {
+            let mut vars = BTreeMap::new();
+            vars.insert((*key).to_string(), "not-a-number".into());
+            let err = config_from_env_map(&vars).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::InvalidEnvValue { key: ref k, .. } if k == *key),
+                "{key} should give InvalidEnvValue, got {err:?}"
+            );
+        }
+    }
+
+    /// `allowed_hosts` deserialization: the `[[allowed_hosts]] host = "x"`
+    /// table form must produce a `Vec<String>` with the host values.
+    #[test]
+    fn allowed_hosts_table_form_single_entry() {
+        let cfg = parse_toml_config(
+            r#"
+[[allowed_hosts]]
+host = "x.example.com"
+"#,
+        )
+        .expect("toml");
+        assert_eq!(
+            cfg.allowed_hosts.as_deref(),
+            Some(["x.example.com".to_owned()].as_slice())
+        );
+    }
+
+    /// `allowed_hosts` entry missing the `host` field must produce a
+    /// deserialization error.
+    #[test]
+    fn allowed_hosts_missing_host_field_errors() {
+        let err = parse_toml_config(
+            r#"
+[[allowed_hosts]]
+port = 8080
+"#,
+        )
+        .unwrap_err();
+        // The error should be a Toml parse error (from serde custom).
+        assert!(
+            matches!(err, ConfigError::Toml(ref msg)
+                if msg.contains("host") || msg.contains("allowed_hosts")),
+            "missing host field should give Toml error mentioning host, got {err:?}"
+        );
+    }
+
+    /// `allowed_hosts` entry that is a bare number (not a string or object)
+    /// must produce a deserialization error.
+    #[test]
+    fn allowed_hosts_numeric_entry_errors() {
+        let err = parse_toml_config(
+            r#"
+allowed_hosts = [42]
+"#,
+        )
+        .unwrap_err();
+        // The error should be a Toml parse error.
+        assert!(
+            matches!(err, ConfigError::Toml(_)),
+            "numeric allowed_hosts entry should give Toml error, got {err:?}"
+        );
+    }
+
+    /// `allowed_hosts` array-of-strings form should also work (the simple
+    /// form alongside the table form).
+    #[test]
+    fn allowed_hosts_array_of_strings_form() {
+        let cfg = parse_toml_config(
+            r#"
+allowed_hosts = ["a.com", "b.com"]
+"#,
+        )
+        .expect("toml");
+        assert_eq!(
+            cfg.allowed_hosts.as_deref(),
+            Some(["a.com".to_owned(), "b.com".to_owned()].as_slice())
+        );
+    }
+
+    /// `DECON_MAX_LLM_CALLS` with an invalid value must error.
+    #[test]
+    fn env_max_llm_calls_invalid_errors() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_MAX_LLM_CALLS".into(), "xyz".into());
+        let err = config_from_env_map(&vars).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidEnvValue { ref key, .. }
+                if key == "DECON_MAX_LLM_CALLS"),
+            "got {err:?}"
+        );
+    }
+
+    /// `DECON_CACHE_SIZE_LIMIT_MB` with an invalid value must error.
+    #[test]
+    fn env_cache_size_limit_mb_invalid_errors() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CACHE_SIZE_LIMIT_MB".into(), "abc".into());
+        let err = config_from_env_map(&vars).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidEnvValue { ref key, .. }
+                if key == "DECON_CACHE_SIZE_LIMIT_MB"),
+            "got {err:?}"
+        );
+    }
+
+    /// `DECON_CONCURRENCY` with an invalid value must error.
+    #[test]
+    fn env_concurrency_invalid_errors() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_CONCURRENCY".into(), "NaN".into());
+        let err = config_from_env_map(&vars).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidEnvValue { ref key, .. }
+                if key == "DECON_CONCURRENCY"),
+            "got {err:?}"
+        );
+    }
+
+    /// `DECON_MAX_ABSTRACTIONS` with an invalid value must error.
+    #[test]
+    fn env_max_abstractions_invalid_errors() {
+        let mut vars = BTreeMap::new();
+        vars.insert("DECON_MAX_ABSTRACTIONS".into(), "forty".into());
+        let err = config_from_env_map(&vars).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidEnvValue { ref key, .. }
+                if key == "DECON_MAX_ABSTRACTIONS"),
+            "got {err:?}"
+        );
+    }
 }

@@ -2322,4 +2322,205 @@ mod tests {
         let _ = fs::remove_dir_all(&ckpt_dir);
         let _ = fs::remove_dir_all(&output_dir);
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: mid-pipeline cancellation, each-app edge cases, empty language
+    // ------------------------------------------------------------------
+
+    /// Pre-cancelling the token before calling `run_generate` must return
+    /// `GenerateOutcome::Cancelled` at the first stage checkpoint (identify),
+    /// without making any LLM calls.
+    #[tokio::test]
+    async fn cancel_before_identify_returns_cancelled() {
+        let ckpt_dir = temp_dir("cancel-pre-ckpt");
+        let output_dir = temp_dir("cancel-pre-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_store(&store);
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+        let mut progress = ProgressTracker::new(200);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let (files, sizes) = files_and_sizes();
+        let fc = file_contents_for();
+        let mut cfg = gen_config(PathBuf::from("/repo"), output_dir.clone());
+        cfg.checkpoint_dir.clone_from(&ckpt_dir);
+
+        let outcome = run_generate(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &mut progress,
+            &cancel,
+            &cfg,
+            &fc,
+            files,
+            sizes,
+            20,
+            &["gap1".to_string()],
+            "README",
+            &two_modules(),
+        )
+        .await
+        .expect("should not error on cancel");
+
+        assert!(
+            matches!(outcome, GenerateOutcome::Cancelled { .. }),
+            "pre-cancelled token should return Cancelled, got {outcome:?}"
+        );
+        assert_eq!(
+            client.call_count(),
+            0,
+            "no LLM calls should be made when cancelled before start"
+        );
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    /// `run_generate` with an empty language string must handle it gracefully
+    /// (the pipeline uses an empty `language_instruction` and default locale).
+    #[tokio::test]
+    async fn empty_language_instruction_handles_gracefully() {
+        let ckpt_dir = temp_dir("empty-lang-ckpt");
+        let output_dir = temp_dir("empty-lang-out");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_store(&store);
+        let client = MockClient::with_responses(full_pipeline_responses()).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let mut progress = ProgressTracker::new(200);
+        let cancel = CancelToken::new();
+        let (files, sizes) = files_and_sizes();
+        let fc = file_contents_for();
+        let mut cfg = gen_config(PathBuf::from("/repo"), output_dir.clone());
+        cfg.language = String::new();
+        cfg.checkpoint_dir.clone_from(&ckpt_dir);
+
+        let outcome = run_generate(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &mut progress,
+            &cancel,
+            &cfg,
+            &fc,
+            files,
+            sizes,
+            20,
+            &["gap1".to_string()],
+            "README",
+            &two_modules(),
+        )
+        .await
+        .expect("empty language should complete with default locale");
+
+        assert!(
+            matches!(outcome, GenerateOutcome::Completed(_)),
+            "empty language should complete, got {outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&ckpt_dir);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    /// `run_generate_each_app` with zero modules (empty repo) must write an
+    /// empty summary index and return `EachAppOutcome::Completed([])`.
+    #[tokio::test]
+    async fn each_app_with_zero_modules_writes_empty_index() {
+        // Create a truly empty repo directory (no files at all).
+        let repo = temp_dir("each-app-empty-repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        let output_dir = temp_dir("each-app-empty-out");
+        let ckpt_dir = temp_dir("each-app-empty-ckpt");
+
+        let client = MockClient::new("should-not-be-called");
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app with zero modules should complete");
+
+        match &outcome {
+            EachAppOutcome::Completed(summaries) => {
+                assert!(
+                    summaries.is_empty(),
+                    "zero modules should produce empty summaries"
+                );
+            }
+            EachAppOutcome::Partial { .. } => panic!("expected completed with empty summaries"),
+        }
+
+        // The summary index.md should exist and indicate no apps.
+        let index_path = output_dir.join("index.md");
+        assert!(index_path.is_file(), "summary index.md should exist");
+        let index = fs::read_to_string(&index_path).unwrap();
+        assert!(
+            index.contains("No apps"),
+            "index should indicate no apps found, got: {index}"
+        );
+
+        assert_eq!(client.call_count(), 0, "no LLM calls for zero modules");
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    /// `run_generate_each_app` with one module whose LLM call fails must
+    /// record the failure in the summary and continue with other modules.
+    /// This complements `each_app_with_one_failing_continues_with_other` by
+    /// verifying the error message content and index file content.
+    #[tokio::test]
+    async fn each_app_failure_error_message_and_index_content() {
+        let repo = make_monorepo_dir(&["alpha", "beta"]);
+        let output_dir = temp_dir("each-app-fail-msg-out");
+        let ckpt_dir = temp_dir("each-app-fail-msg-ckpt");
+
+        // Fail on call 5 (first call of second app, beta).
+        let responses = repeated_responses(per_app_responses_with_overview(), 2);
+        let client = MockClient::with_responses(responses)
+            .unwrap()
+            .fail_on(5, decon_llm::LlmError::network("beta identify failure"));
+        let renderer = PromptRenderer::new().unwrap();
+        let cancel = CancelToken::new();
+
+        let cfg = each_app_config(repo.clone(), output_dir.clone(), ckpt_dir.clone());
+
+        let outcome = run_generate_each_app(&client, &renderer, &cancel, &cfg)
+            .await
+            .expect("each-app should complete even with one failure");
+
+        match &outcome {
+            EachAppOutcome::Completed(summaries) => {
+                assert_eq!(summaries.len(), 2, "both apps should be in summaries");
+                let failures: Vec<_> = summaries.iter().filter(|s| !s.success).collect();
+                assert_eq!(
+                    failures.len(),
+                    1,
+                    "one app should fail, got {} failures",
+                    failures.len()
+                );
+                let err = failures[0].error.as_ref().expect("error message");
+                assert!(!err.is_empty(), "error message should not be empty");
+            }
+            EachAppOutcome::Partial { .. } => panic!("expected completed"),
+        }
+
+        // The index.md should contain both apps, one marked FAILED.
+        let index = fs::read_to_string(output_dir.join("index.md")).unwrap();
+        assert!(
+            index.contains("FAILED"),
+            "index should mark the failed app, got: {index}"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&output_dir);
+        let alpha_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-alpha");
+        let beta_ckpt = scoped_ckpt_path(&ckpt_dir, "apps-beta");
+        let _ = fs::remove_dir_all(&alpha_ckpt);
+        let _ = fs::remove_dir_all(&beta_ckpt);
+    }
 }

@@ -657,4 +657,206 @@ mod tests {
 
         let _ = fs::remove_file(&blocker);
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: LRU eviction loop, unlimited no-op, missing dir, rename error
+    // ------------------------------------------------------------------
+
+    /// An unlimited cache (`u64::MAX`) must treat `enforce_size_limit` as a
+    /// no-op, returning `Ok(0)` without touching the filesystem.
+    #[test]
+    fn unlimited_cache_enforce_size_limit_is_noop() {
+        let root = temp_root();
+        let cache = DiskCache::new(&root);
+
+        // Write some entries so there is data on disk.
+        let input = CacheKeyInput {
+            prompt: "unlimited",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        cache.put_for(&input, "data").unwrap();
+
+        let evicted = cache.enforce_size_limit().expect("should be Ok");
+        assert_eq!(evicted, 0, "unlimited cache should evict 0 bytes");
+
+        // The entry must still be present.
+        assert!(cache.get_for(&input).unwrap().is_some());
+
+        let stats = cache.stats();
+        assert_eq!(stats.evictions, 0, "no evictions for unlimited cache");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `enforce_size_limit` on a missing root directory must return `Ok(0)`
+    /// (NotFound is treated as an empty cache, not an error).
+    #[test]
+    fn enforce_size_limit_missing_root_returns_ok_zero() {
+        let root = temp_root();
+        // Note: we do NOT create the directory.
+        let cache = DiskCache::with_size_limit_bytes(&root, 10);
+
+        let evicted = cache.enforce_size_limit().expect("should be Ok");
+        assert_eq!(evicted, 0, "missing root should return Ok(0)");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// LRU eviction with a small size limit: writing 3 files that exceed the
+    /// limit must evict the oldest-mtime file and increment `stats.evictions`.
+    #[test]
+    #[serial_test::serial]
+    fn lru_eviction_evicts_oldest_and_increments_stats() {
+        let root = temp_root();
+        // Limit small enough that 3 files of 4 bytes each (12 total) exceeds it.
+        let cache = DiskCache::with_size_limit_bytes(&root, 5);
+
+        let input_a = CacheKeyInput {
+            prompt: "lru-a",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        let input_b = CacheKeyInput {
+            prompt: "lru-b",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        let input_c = CacheKeyInput {
+            prompt: "lru-c",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+
+        cache.put_for(&input_a, "aaaa").unwrap();
+        cache.put_for(&input_b, "bbbb").unwrap();
+        cache.put_for(&input_c, "cccc").unwrap();
+
+        // Set distinct mtimes so the oldest is deterministic.
+        use std::fs::OpenOptions;
+        use std::time::{Duration, UNIX_EPOCH};
+        let path_a = cache.entry_path(&cache_key(&input_a).unwrap());
+        let path_b = cache.entry_path(&cache_key(&input_b).unwrap());
+        let path_c = cache.entry_path(&cache_key(&input_c).unwrap());
+        OpenOptions::new()
+            .write(true)
+            .open(&path_a)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(100))
+            .unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&path_b)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(200))
+            .unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&path_c)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(300))
+            .unwrap();
+
+        let evicted = cache.enforce_size_limit().unwrap();
+        assert!(evicted > 0, "should have evicted bytes");
+        assert!(!path_a.exists(), "oldest entry (a) should be evicted");
+        assert!(
+            path_c.exists(),
+            "newest entry (c) should remain after eviction"
+        );
+
+        let stats = cache.stats();
+        assert!(
+            stats.evictions >= 1,
+            "stats.evictions should be >= 1, got {}",
+            stats.evictions
+        );
+        assert!(
+            stats.current_size_bytes <= 5,
+            "current_size_bytes should be within limit after eviction"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `enforce_size_limit` when files are already under the limit must
+    /// return `Ok(0)` and update `current_size_bytes` without evicting.
+    #[test]
+    #[serial_test::serial]
+    fn enforce_size_limit_under_limit_no_eviction() {
+        let root = temp_root();
+        let cache = DiskCache::with_size_limit_bytes(&root, 1000);
+
+        let input = CacheKeyInput {
+            prompt: "under-limit",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        cache.put_for(&input, "small").unwrap();
+
+        let evicted = cache.enforce_size_limit().unwrap();
+        assert_eq!(evicted, 0, "should not evict when under limit");
+
+        let stats = cache.stats();
+        assert_eq!(stats.evictions, 0, "no evictions when under limit");
+        assert!(
+            stats.current_size_bytes > 0,
+            "current_size_bytes should reflect on-disk size"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `put` into a read-only parent directory must return a graceful
+    /// `CacheError::Io` (not panic). This simulates a read-only cache
+    /// partition where the rename step fails.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn put_rename_into_readonly_parent_graceful_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+
+        // Write an entry while writable.
+        let cache = DiskCache::new(&root);
+        let input = CacheKeyInput {
+            prompt: "existing",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        cache.put_for(&input, "data").unwrap();
+
+        // Make the directory read-only.
+        let original_perms = fs::metadata(&root).unwrap().permissions();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+
+        // A new key must fail gracefully on the rename (or write) step.
+        let input_new = CacheKeyInput {
+            prompt: "new-key-readonly",
+            model: "m",
+            provider: "p",
+            extras: None,
+        };
+        let result = cache.put_for(&input_new, "new-data");
+        assert!(
+            result.is_err(),
+            "put into read-only dir should return error, not panic"
+        );
+        assert!(
+            matches!(result.unwrap_err(), CacheError::Io { .. }),
+            "should be an I/O error"
+        );
+
+        // Restore permissions for cleanup.
+        fs::set_permissions(&root, original_perms).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
 }
