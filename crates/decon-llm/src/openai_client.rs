@@ -337,7 +337,7 @@ impl LlmClient for OpenAiCompatibleClient {
         };
         // b. Cache hit short-circuits.
         if let Some(cache) = &self.cache {
-            if let Ok(Some(cached)) = cache.get_for(&cache_input) {
+            if let Ok(Some(cached)) = cache.get_for(&cache_input).await {
                 return Ok(cached);
             }
         }
@@ -415,7 +415,7 @@ impl LlmClient for OpenAiCompatibleClient {
                     .ok_or_else(|| LlmError::parse("response had no choices[0].message.content"))?;
                 // Store in cache.
                 if let Some(cache) = &self.cache {
-                    let _ = cache.put_for(&cache_input, &content);
+                    let _ = cache.put_for(&cache_input, &content).await;
                 }
                 return Ok(content);
             }
@@ -752,7 +752,7 @@ mod tests {
             provider: "deepseek",
             extras: None,
         };
-        cache.put_for(&input, "cached response").unwrap();
+        cache.put_for(&input, "cached response").await.unwrap();
 
         // Server that would fail if hit.
         let server = MockServer::start().await;
@@ -800,7 +800,7 @@ mod tests {
             extras: None,
         };
         assert_eq!(
-            cache.get_for(&input).unwrap().as_deref(),
+            cache.get_for(&input).await.unwrap().as_deref(),
             Some("fresh response")
         );
         let _ = fs::remove_dir_all(&root);
