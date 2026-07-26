@@ -412,14 +412,14 @@ fn resume_text_format_on_valid_checkpoint() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Issue #226: `decon resume` reports git commit info and staleness in both
-/// text and JSON output.
+/// Issue #226: `decon resume --format json` reports git commit info and
+/// staleness in JSON output.
 #[test]
-fn resume_reports_git_commit_and_staleness() {
+fn resume_reports_git_commit_and_staleness_json() {
     use decon_core::{CheckpointV1, RunConfig, StageId};
     use decon_pipeline::{CheckpointStore, records_from_files};
 
-    let dir = temp_dir("resume-git");
+    let dir = temp_dir("resume-git-json");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = RunConfig::default();
     let mut meta = CheckpointV1::new(
@@ -430,7 +430,6 @@ fn resume_reports_git_commit_and_staleness() {
     )
     .unwrap();
     meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
-    // Record a git commit + since ref so staleness can be evaluated.
     meta.git_commit = Some("aaa111".to_string());
     meta.since_ref = Some("v0.5.0".to_string());
     let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
@@ -438,7 +437,6 @@ fn resume_reports_git_commit_and_staleness() {
 
     let dir = canonicalize_for_subprocess(&dir);
 
-    // JSON output includes the new git fields.
     decon()
         .args(["resume", "--checkpoint"])
         .arg(&dir)
@@ -450,7 +448,33 @@ fn resume_reports_git_commit_and_staleness() {
         .stdout(predicate::str::contains("\"current_head\""))
         .stdout(predicate::str::contains("\"stale\""));
 
-    // Text output includes the new git fields.
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #226: `decon resume` (text) reports git commit info and staleness.
+#[test]
+fn resume_reports_git_commit_and_staleness_text() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let dir = temp_dir("resume-git-text");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
+    meta.git_commit = Some("aaa111".to_string());
+    meta.since_ref = Some("v0.5.0".to_string());
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&dir).save(meta, &files).unwrap();
+
+    let dir = canonicalize_for_subprocess(&dir);
+
     decon()
         .args(["resume", "--checkpoint"])
         .arg(&dir)
