@@ -149,6 +149,25 @@ pub fn invalidate_from(checkpoint: &mut CheckpointV1, from: StageId) {
     }
 }
 
+/// Whether the checkpoint is stale for an incremental resume given the
+/// current repository HEAD.
+///
+/// Per ADR 0013 / issue #226: when the checkpoint recorded a `since_ref`
+/// (i.e. the run was an incremental git-diff run), the checkpoint is stale
+/// when the HEAD recorded at creation ([`CheckpointV1::git_commit`]) no longer
+/// matches `current_head`. A stale checkpoint means new commits landed between
+/// the checkpoint's creation and now, so the pipeline should re-diff from
+/// `checkpoint.git_commit` to `current_head` rather than skipping crawl.
+///
+/// - No `since_ref` → not stale (non-incremental run; staleness is irrelevant).
+/// - `since_ref` set and `git_commit == current_head` → not stale.
+/// - `since_ref` set and `git_commit != current_head` (including when
+///   `git_commit` is `None`, e.g. an older checkpoint) → stale.
+#[must_use]
+pub fn is_checkpoint_stale(checkpoint: &CheckpointV1, current_head: &str) -> bool {
+    checkpoint.since_ref.is_some() && checkpoint.git_commit.as_deref() != Some(current_head)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +385,40 @@ mod tests {
             }
             assert_eq!(next_stage(&cp), *expect, "done={done:?}");
         }
+    }
+
+    fn cp_with_git(since: Option<&str>, commit: Option<&str>) -> CheckpointV1 {
+        let cfg = RunConfig::default();
+        let mut cp = CheckpointV1::new(&cfg, cfg.redacted_for_checkpoint(), "rev-a", "t0").unwrap();
+        cp.since_ref = since.map(str::to_owned);
+        cp.git_commit = commit.map(str::to_owned);
+        cp
+    }
+
+    #[test]
+    fn stale_when_since_set_and_commit_differs() {
+        let cp = cp_with_git(Some("v0.5.0"), Some("aaa111"));
+        assert!(is_checkpoint_stale(&cp, "bbb222"));
+    }
+
+    #[test]
+    fn not_stale_when_since_set_and_commit_matches() {
+        let cp = cp_with_git(Some("v0.5.0"), Some("aaa111"));
+        assert!(!is_checkpoint_stale(&cp, "aaa111"));
+    }
+
+    #[test]
+    fn not_stale_when_no_since_ref() {
+        // Non-incremental run: staleness is irrelevant regardless of commit.
+        let cp = cp_with_git(None, Some("aaa111"));
+        assert!(!is_checkpoint_stale(&cp, "bbb222"));
+    }
+
+    #[test]
+    fn stale_when_since_set_but_git_commit_missing() {
+        // Old checkpoint (pre-M6-GIT-3) with since_ref somehow set but no
+        // git_commit recorded: cannot confirm HEAD matches, so treat as stale.
+        let cp = cp_with_git(Some("v0.5.0"), None);
+        assert!(is_checkpoint_stale(&cp, "bbb222"));
     }
 }

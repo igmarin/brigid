@@ -14,12 +14,14 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use decon_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
     OverviewOutput, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats, StageStatus,
-    TutorialFile, config_from_env_map, custom_host_warning, evaluate_tutorial, parse_toml_config,
-    parse_yaml_config, redact_content, resolve_config, validate_config_for_check,
+    TutorialFile, config_from_env_map, current_git_head, custom_host_warning, evaluate_tutorial,
+    parse_toml_config, parse_yaml_config, redact_content, resolve_config,
+    validate_config_for_check,
 };
 use decon_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
 use decon_pipeline::{
-    CheckpointStore, DryRunError, check_identity, dry_run_with_options, next_stage, pending_stages,
+    CheckpointStore, DryRunError, check_identity, dry_run_with_options, is_checkpoint_stale,
+    next_stage, pending_stages,
 };
 
 /// Success.
@@ -1816,6 +1818,20 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
         .map(|s| s.as_str().to_owned())
         .collect();
 
+    // Capture the current repo HEAD for git revision tracking (issue #226).
+    // Prefer the configured repo root; fall back to the current working
+    // directory so `decon resume` still reports staleness when run from inside
+    // the repo without an explicit `--root`.
+    let repo_root = current_cfg
+        .root
+        .as_deref()
+        .unwrap_or_else(|| Path::new("."));
+    let current_head = current_git_head(repo_root);
+    let stale = current_head
+        .as_deref()
+        .map(|head| is_checkpoint_stale(&meta, head))
+        .unwrap_or(false);
+
     match format {
         OutputFormat::Text => {
             println!("checkpoint: {}", checkpoint.display());
@@ -1829,6 +1845,19 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
                 next.map(|s| s.as_str()).unwrap_or("(done)")
             );
             println!("pending: {}", pending.join(","));
+            println!(
+                "git_commit: {}",
+                meta.git_commit.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "since_ref: {}",
+                meta.since_ref.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "current_head: {}",
+                current_head.as_deref().unwrap_or("(none)")
+            );
+            println!("stale: {stale}");
         }
         OutputFormat::Json => {
             let v = serde_json::json!({
@@ -1841,6 +1870,10 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
                 "next_stage": next.map(|s| s.as_str()),
                 "pending_stages": pending,
                 "config_hash": meta.config_hash,
+                "git_commit": meta.git_commit,
+                "since_ref": meta.since_ref,
+                "current_head": current_head,
+                "stale": stale,
             });
             println!("{v}");
         }

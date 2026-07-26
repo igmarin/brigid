@@ -412,6 +412,82 @@ fn resume_text_format_on_valid_checkpoint() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Issue #226: `decon resume --format json` reports git commit info and
+/// staleness in JSON output.
+#[test]
+fn resume_reports_git_commit_and_staleness_json() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let dir = temp_dir("resume-git-json");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
+    meta.git_commit = Some("aaa111".to_string());
+    meta.since_ref = Some("v0.5.0".to_string());
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&dir).save(meta, &files).unwrap();
+
+    let dir = canonicalize_for_subprocess(&dir);
+
+    decon()
+        .args(["resume", "--checkpoint"])
+        .arg(&dir)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"git_commit\""))
+        .stdout(predicate::str::contains("\"since_ref\""))
+        .stdout(predicate::str::contains("\"current_head\""))
+        .stdout(predicate::str::contains("\"stale\""));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #226: `decon resume` (text) reports git commit info and staleness.
+#[test]
+fn resume_reports_git_commit_and_staleness_text() {
+    use decon_core::{CheckpointV1, RunConfig, StageId};
+    use decon_pipeline::{CheckpointStore, records_from_files};
+
+    let dir = temp_dir("resume-git-text");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = RunConfig::default();
+    let mut meta = CheckpointV1::new(
+        &cfg,
+        cfg.redacted_for_checkpoint(),
+        ".",
+        "2026-07-24T00:00:00Z",
+    )
+    .unwrap();
+    meta.mark_stage_complete(StageId::Fetch, "2026-07-24T00:01:00Z");
+    meta.git_commit = Some("aaa111".to_string());
+    meta.since_ref = Some("v0.5.0".to_string());
+    let files = records_from_files(&[("a.txt", b"hi" as &[u8])]);
+    CheckpointStore::new(&dir).save(meta, &files).unwrap();
+
+    let dir = canonicalize_for_subprocess(&dir);
+
+    decon()
+        .args(["resume", "--checkpoint"])
+        .arg(&dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("git_commit:"))
+        .stdout(predicate::str::contains("since_ref:"))
+        .stdout(predicate::str::contains("current_head:"))
+        .stdout(predicate::str::contains("stale:"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn init_refuses_to_overwrite_existing_config() {
     let dir = temp_dir("init-overwrite");
@@ -719,7 +795,10 @@ fn resume_checkpoint_path_is_file_not_dir_exits_config() {
         .code(2)
         .stderr(predicate::str::contains("not a directory"));
 
-    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    // Only remove the file itself — `file.parent()` is the shared
+    // `temp_base()` directory used by all tests; removing it would race
+    // with other tests running in parallel and delete their directories.
+    let _ = std::fs::remove_file(&file);
 }
 
 // ---------------------------------------------------------------------------

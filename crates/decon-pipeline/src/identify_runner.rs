@@ -100,11 +100,13 @@ fn write_partial_checkpoint(
     run_cfg: &IdentifyRunConfig,
     candidates: &[CandidateAbstraction],
 ) -> Result<(), IdentifyError> {
-    let mut meta = CheckpointV1::new(
+    let mut meta = CheckpointV1::new_with_repo(
         &run_cfg.unredacted_config,
         run_cfg.unredacted_config.redacted_for_checkpoint(),
         &run_cfg.source_revision,
         now_iso(),
+        run_cfg.unredacted_config.root.as_deref(),
+        run_cfg.unredacted_config.since.clone(),
     )?;
 
     // Mark any earlier stages that are implied to be done (fetch/dry-run) so
@@ -129,11 +131,13 @@ fn write_completed_checkpoint(
     run_cfg: &IdentifyRunConfig,
     result: &IdentifyResult,
 ) -> Result<(), IdentifyError> {
-    let mut meta = CheckpointV1::new(
+    let mut meta = CheckpointV1::new_with_repo(
         &run_cfg.unredacted_config,
         run_cfg.unredacted_config.redacted_for_checkpoint(),
         &run_cfg.source_revision,
         now_iso(),
+        run_cfg.unredacted_config.root.as_deref(),
+        run_cfg.unredacted_config.since.clone(),
     )?;
 
     meta.mark_stage_complete(StageId::Fetch, now_iso());
