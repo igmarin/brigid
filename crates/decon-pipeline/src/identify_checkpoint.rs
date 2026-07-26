@@ -843,4 +843,150 @@ mod tests {
         let id_err: IdentifyError = err.into();
         assert!(matches!(id_err, IdentifyError::Checkpoint(_)));
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: map+reduce orchestration and complete-but-empty fall-through
+    // ------------------------------------------------------------------
+
+    /// A canned map-stage response: one candidate referencing file index 0.
+    fn canned_map_candidate() -> String {
+        let yaml = "\
+- name: \"Core\"
+  description: \"core module\"
+  file_indices: [0]
+  tier: \"S\"
+  kind: \"module\"
+  apps: []
+  entry_files: []
+";
+        format!("```yaml\n{yaml}```\n")
+    }
+
+    /// A canned reduce-stage response: one final abstraction referencing
+    /// file index 0.
+    fn canned_reduce_abstraction() -> String {
+        let yaml = "\
+- name: \"Core\"
+  description: \"core module\"
+  file_indices: [0]
+  tier: \"S\"
+  kind: \"module\"
+  apps: []
+  entry_files: []
+";
+        format!("```yaml\n{yaml}```\n")
+    }
+
+    /// `identify_and_checkpoint` with >20 files must take the map+reduce path
+    /// (at least 2 LLM calls: one map batch + one reduce) and save the result
+    /// to the checkpoint with abstractions present.
+    #[tokio::test]
+    async fn identify_and_checkpoint_map_reduce_path_saves_abstractions() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_store(&store);
+
+        // 25 files → exceeds SINGLE_SHOT_FILE_THRESHOLD (20) → map+reduce.
+        let files: Vec<String> = (0..25).map(|i| format!("f{i}.rs")).collect();
+        let sizes: Vec<u64> = vec![100; 25];
+
+        // Map stage: one batch (all 25 files fit in the default 80k budget).
+        // Reduce stage: one call. Total = 2 LLM calls.
+        let client =
+            MockClient::with_responses(vec![canned_map_candidate(), canned_reduce_abstraction()])
+                .unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let config = RunConfig::default();
+        let mut progress = ProgressTracker::new(100);
+
+        let result = identify_and_checkpoint(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            files,
+            sizes,
+            &config,
+            &mut progress,
+        )
+        .await
+        .expect("map+reduce identify should succeed");
+
+        assert!(
+            !result.abstractions.is_empty(),
+            "map+reduce should produce abstractions"
+        );
+        assert!(
+            cp.is_stage_complete(StageId::Identify),
+            "identify stage should be marked complete"
+        );
+        assert!(
+            cp.abstractions.is_some(),
+            "checkpoint should have abstractions"
+        );
+        // At least 2 calls: 1 map + 1 reduce.
+        assert!(
+            client.call_count() >= 2,
+            "map+reduce should make >= 2 LLM calls, got {}",
+            client.call_count()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// "Complete but empty" fall-through: when the Identify stage is marked
+    /// complete but `load_identify_result` returns `None` (no abstractions),
+    /// `identify_and_checkpoint` must fall through and re-run the stage.
+    #[tokio::test]
+    async fn identify_and_checkpoint_complete_but_empty_reruns() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_store(&store);
+
+        // Mark Identify complete but do NOT set abstractions (the "edge case"
+        // described in the code comment at the fall-through point).
+        cp.mark_stage_complete(StageId::Identify, "t3");
+        let (_, file_records) = store.load().unwrap();
+        store.save(cp.clone(), &file_records).unwrap();
+
+        // The config hash matches (so should_run_identify returns false because
+        // the stage is complete), but load_identify_result returns None because
+        // abstractions is None. This triggers the fall-through re-run.
+        let client = MockClient::new(canned_two_abstractions());
+        let renderer = PromptRenderer::new().unwrap();
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let sizes = vec![10_u64, 10];
+        let config = RunConfig::default();
+        let mut progress = ProgressTracker::new(10);
+
+        let result = identify_and_checkpoint(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            files,
+            sizes,
+            &config,
+            &mut progress,
+        )
+        .await
+        .expect("re-run should succeed");
+
+        // The LLM must have been called (re-run happened).
+        assert_eq!(
+            client.call_count(),
+            1,
+            "complete-but-empty should trigger a re-run (1 LLM call)"
+        );
+        assert!(
+            !result.abstractions.is_empty(),
+            "re-run should produce abstractions"
+        );
+        assert!(
+            cp.abstractions.is_some(),
+            "checkpoint should have abstractions after re-run"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

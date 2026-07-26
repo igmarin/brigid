@@ -138,4 +138,72 @@ mod tests {
         assert!(!out.contains("real"));
         assert!(out.contains(REDACTED_PLACEHOLDER));
     }
+
+    // ------------------------------------------------------------------
+    // Issue #230: id_rsa, credentials.json, service-account.json, non-UTF8
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn is_sensitive_path_id_rsa() {
+        assert!(is_sensitive_path("config/id_rsa"));
+        assert!(is_sensitive_path("id_rsa"));
+        assert!(is_sensitive_path("ssh/id_rsa"));
+    }
+
+    #[test]
+    fn is_sensitive_path_credentials_json() {
+        assert!(is_sensitive_path("creds/credentials.json"));
+        assert!(is_sensitive_path("credentials.json"));
+        assert!(is_sensitive_path("config/credentials.json"));
+    }
+
+    #[test]
+    fn is_sensitive_path_service_account_json() {
+        assert!(is_sensitive_path("svc/service-account.json"));
+        assert!(is_sensitive_path("service-account.json"));
+        assert!(is_sensitive_path("gcp/service-account.json"));
+    }
+
+    #[test]
+    fn is_sensitive_path_id_ed25519() {
+        assert!(is_sensitive_path("ssh/id_ed25519"));
+        assert!(is_sensitive_path("id_ed25519"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_is_sensitive_non_utf8_returns_false() {
+        // A path with non-UTF-8 bytes: `to_str()` returns None, so
+        // `path_is_sensitive` must return false (cannot classify).
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let non_utf8 = OsStr::from_bytes(b"\xFF\xFE/path");
+        let path = Path::new(non_utf8);
+        assert!(
+            !path_is_sensitive(path),
+            "non-UTF-8 path should return false (cannot classify)"
+        );
+    }
+
+    #[test]
+    fn content_for_checkpoint_normal_path_returns_redacted_body() {
+        // A normal (non-sensitive) path should return the redacted body,
+        // not the sensitive-path placeholder.
+        let body = "API_KEY=secret123\nname=myproject\n";
+        let out = content_for_checkpoint("src/config.rs", body);
+        // The API_KEY line should be redacted.
+        assert!(out.contains(&format!("API_KEY={REDACTED_PLACEHOLDER}")));
+        assert!(!out.contains("secret123"));
+        // The name line should be preserved.
+        assert!(out.contains("name=myproject"));
+        // It should NOT contain the sensitive-path placeholder marker.
+        assert!(!out.contains("sensitive path omitted"));
+    }
+
+    #[test]
+    fn content_for_checkpoint_normal_path_no_secrets_passes_through() {
+        let body = "# My Project\n\nA simple project.\n";
+        let out = content_for_checkpoint("README.md", body);
+        assert_eq!(out, body, "normal path with no secrets should pass through");
+    }
 }
