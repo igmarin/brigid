@@ -14,6 +14,68 @@ tracks the latest.
 
 _No unreleased changes._
 
+## [0.6.0] - 2026-07-26
+
+Milestone 6 — Phase 5 Foundation + Audit Hardening. The `decon` CLI gains
+machine-readable JSON output for all stages, git-diff incremental tutorials,
+a plugin foundation for custom kind detectors, criterion benchmarks for all
+critical paths, and audit-driven hardening of error handling, lock
+contention, and test coverage.
+
+### Added
+
+- Typed JSON output schemas (`StageOutput<T>`) for all pipeline stages in
+  `decon-core::stage_output` with schema stability tests and ADR 0012
+  (#220, #221, #222, #223).
+- `--format json` flag on every stage subcommand (identify, relationships,
+  order, chapters, setup, overview, combine) and `decon generate`, emitting
+  a `StageOutput<T>` envelope with `schema_version`, `stage`, `status`,
+  `data`, and optional `stats` (#221, #222, #223).
+- Per-stage LLM call tracking in `ProgressTracker` and `StageTiming`
+  (#223).
+- `git_diff` module in `decon-crawl` for detecting changed files since a
+  git ref via `git diff --name-only` (no libgit2 dependency), with
+  `CrawlOptions { since }` for filtered crawl (#224, ADR 0013).
+- `--since <ref>` CLI flag and `RunConfig.since` field (config precedence:
+  CLI > file > env > defaults; `DECON_SINCE` env var) on `generate`,
+  `dry-run`, `identify`, and `crawl` (#225).
+- Git revision tracking in `CheckpointV1` (`git_commit`, `since_ref`) with
+  staleness detection for incremental resume (#226).
+- Incremental identify: `decon generate --since <ref>` re-analyzes only
+  modules with changed files, merges with checkpoint abstractions, and
+  re-ranks; falls back to full identify when no checkpoint or stale
+  (#227).
+- Plugin trait and registry (`KindDetector`, `PluginRegistry`,
+  `DefaultKindDetector`) in `decon-core::plugin` for custom abstraction
+  kind detectors; `RunConfig.plugin_dirs` configurable via `decon.toml`
+  `[plugins] dirs = [...]` and `DECON_PLUGIN_DIRS` env var (#228, ADR 0014).
+- Criterion benchmarks for crawl walk, batch file packing, cache get/put,
+  content redaction, YAML extraction, and module key computation (#229).
+- ADRs 0012–0014: JSON output schema, git-diff incremental approach,
+  plugin architecture (#223, #224, #228).
+- Documentation: commit message conventions, testing strategy, getting
+  help (CONTRIBUTING.md); troubleshooting, performance tips, Phase 5
+  status (README.md); design principles, module table updates (ARCHITECTURE.md)
+  (#247).
+- Coverage tests for audit-identified gaps: checkpoint_store I/O faults,
+  cache LRU eviction, generate cancellation, identify map+reduce
+  orchestration (#230).
+
+### Changed
+
+- Hardened `DiskCache` mutex handling, URL host validation bypass, and
+  bounded completion overflow handling (#212).
+- Reduced lock contention in `review` stage with `AtomicBool` and
+  channel-based chapter collection (#213).
+- Reduced lock contention in `chapters` stage with clone-before-async and
+  channel-based collection (#215).
+- Fixed O(n) file context search in chapters with HashMap lookup (#216).
+- Reduced string allocations in chapter writing hot path (#217).
+- Replaced synchronous `std::fs` with `tokio::fs` in `DiskCache` for
+  async cache I/O (#218).
+- Single-pass string replacement for prompt sanitization and mermaid
+  allocation reduction (#219).
+
 ## [0.5.0] - 2026-07-25
 
 Milestone 5 — Product Polish. The `decon` CLI is now a distributable product:
