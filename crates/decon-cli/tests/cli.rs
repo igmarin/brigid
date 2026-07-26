@@ -3618,7 +3618,6 @@ fn chapters_format_json_outputs_stage_envelope() {
     let dir = fixtures_dir().join("python-lib");
 
     seed_order_checkpoint(&ckpt_dir);
-    let ckpt_dir = canonicalize_for_subprocess(&ckpt_dir);
 
     let output = decon()
         .args(["chapters", "--dir"])
@@ -3672,7 +3671,6 @@ fn setup_format_json_outputs_stage_envelope() {
     let dir = fixtures_dir().join("python-lib");
 
     seed_identify_checkpoint(&ckpt_dir);
-    let ckpt_dir = canonicalize_for_subprocess(&ckpt_dir);
 
     let output = decon()
         .args(["setup", "--dir"])
@@ -3714,7 +3712,6 @@ fn overview_format_json_outputs_stage_envelope() {
     let dir = fixtures_dir().join("umbrella");
 
     seed_relationships_checkpoint(&ckpt_dir);
-    let ckpt_dir = canonicalize_for_subprocess(&ckpt_dir);
 
     let output = decon()
         .args(["overview", "--dir"])
@@ -3752,7 +3749,6 @@ fn combine_format_json_outputs_stage_envelope() {
     let dir = fixtures_dir().join("python-lib");
 
     seed_full_checkpoint(&ckpt_dir);
-    let ckpt_dir = canonicalize_for_subprocess(&ckpt_dir);
 
     let output = decon()
         .args(["combine", "--dir"])
