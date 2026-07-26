@@ -3282,3 +3282,139 @@ fn refute_empty_and_check_subcommands(output: &[u8], shell: &str) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #221: --format json for identify, relationships, and order subcommands.
+//
+// Each subcommand must emit a StageOutput<T> envelope (schema_version, stage,
+// status, data) as valid JSON to stdout when --format json is passed.
+// ---------------------------------------------------------------------------
+
+/// Parse stdout as JSON and assert it is an object.
+fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
+    let text = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(text.trim()).unwrap_or_else(|e| {
+        panic!("stdout should be valid JSON, parse error: {e}\nstdout was:\n{text}")
+    })
+}
+
+#[test]
+fn identify_format_json_outputs_stage_output_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-identify-json-{n}"));
+    let dir = fixtures_dir().join("python-lib");
+
+    let binding = decon()
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--single-shot", "--format", "json"])
+        .assert()
+        .success();
+    let output = binding.get_output();
+
+    let v = parse_json_stdout(output);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["stage"], "identify");
+    assert_eq!(v["status"], "ok");
+    assert!(v["data"]["abstractions"].is_array());
+    assert!(v["data"]["relationships"].is_array());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn relationships_format_json_outputs_stage_output_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-rel-json-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    seed_identify_checkpoint(&ckpt_dir);
+
+    let binding = decon()
+        .args(["relationships", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let output = binding.get_output();
+
+    let v = parse_json_stdout(output);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["stage"], "relationships");
+    assert_eq!(v["status"], "ok");
+    assert!(v["data"]["relationships"].is_array());
+    assert!(v["data"]["evidence"].is_array());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn order_format_json_outputs_stage_output_envelope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("decon-cli-order-json-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    seed_relationships_checkpoint(&ckpt_dir);
+
+    let binding = decon()
+        .args(["order", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    let output = binding.get_output();
+
+    let v = parse_json_stdout(output);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["stage"], "order");
+    assert_eq!(v["status"], "ok");
+    assert!(v["data"]["ordered_indices"].is_array());
+    assert!(v["data"]["titles"].is_array());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+}
+
+#[test]
+fn identify_subcommand_help_lists_format_flag() {
+    decon()
+        .args(["identify", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--format"));
+}
+
+#[test]
+fn relationships_subcommand_help_lists_format_flag() {
+    decon()
+        .args(["relationships", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--format"));
+}
+
+#[test]
+fn order_subcommand_help_lists_format_flag() {
+    decon()
+        .args(["order", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--format"));
+}

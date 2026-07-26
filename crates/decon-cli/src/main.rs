@@ -234,6 +234,9 @@ enum Commands {
         /// Maximum abstractions to return.
         #[arg(long = "max-abstractions", default_value_t = 10)]
         max_abstractions: usize,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run the full generate pipeline: identify -> relationships -> order ->
     /// chapters -> setup -> overview -> combine.
@@ -312,6 +315,9 @@ enum Commands {
         /// Checkpoint directory (default: `.decon-checkpoint`).
         #[arg(long = "checkpoint-dir", value_name = "PATH")]
         checkpoint_dir: Option<PathBuf>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the order stage (reads identify + relationships from checkpoint).
     Order {
@@ -321,6 +327,9 @@ enum Commands {
         /// Checkpoint directory (default: `.decon-checkpoint`).
         #[arg(long = "checkpoint-dir", value_name = "PATH")]
         checkpoint_dir: Option<PathBuf>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Run only the chapters stage (reads identify + relationships + order from checkpoint).
     Chapters {
@@ -471,6 +480,32 @@ fn print_progress(verbosity: Verbosity, msg: &str) {
 fn verbose_msg(verbosity: Verbosity, msg: &str) {
     if verbosity.is_verbose() {
         eprintln!("verbose: {msg}");
+    }
+}
+
+/// Serialize a value to JSON, pretty-printing when stdout is a TTY and
+/// emitting compact JSON when piped.
+///
+/// # Errors
+///
+/// Propagates `serde_json` serialization errors.
+fn serialize_json_for_stdout<T: ?Sized + serde::Serialize>(
+    value: &T,
+) -> Result<String, serde_json::Error> {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        serde_json::to_string_pretty(value)
+    } else {
+        serde_json::to_string(value)
+    }
+}
+
+/// Print a JSON-serialized value to stdout, pretty-printing when stdout is a
+/// TTY and emitting compact JSON when piped.
+fn print_json<T: ?Sized + serde::Serialize>(value: &T) {
+    match serialize_json_for_stdout(value) {
+        Ok(s) => println!("{s}"),
+        Err(e) => eprintln!("error: json serialization failed: {e}"),
     }
 }
 
@@ -783,13 +818,21 @@ fn main() -> ExitCode {
             checkpoint_dir,
             single_shot,
             max_abstractions,
+            format,
         } => {
             let dir = dir
                 .or_else(|| cfg.root.clone())
                 .unwrap_or_else(|| PathBuf::from("."));
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
-            cmd_identify(&dir, &checkpoint_dir, single_shot, max_abstractions, &cfg)
+            cmd_identify(
+                &dir,
+                &checkpoint_dir,
+                single_shot,
+                max_abstractions,
+                &cfg,
+                format,
+            )
         }
         Commands::Generate {
             dir,
@@ -871,18 +914,20 @@ fn main() -> ExitCode {
         Commands::Relationships {
             dir,
             checkpoint_dir,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
-            cmd_relationships(&dir, &checkpoint_dir, &cfg)
+            cmd_relationships(&dir, &checkpoint_dir, &cfg, format)
         }
         Commands::Order {
             dir,
             checkpoint_dir,
+            format,
         } => {
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".decon-checkpoint"));
-            cmd_order(&dir, &checkpoint_dir, &cfg)
+            cmd_order(&dir, &checkpoint_dir, &cfg, format)
         }
         Commands::Chapters {
             dir,
@@ -1704,6 +1749,7 @@ fn cmd_identify(
     single_shot: bool,
     max_abstractions: usize,
     cfg: &RunConfig,
+    format: OutputFormat,
 ) -> ExitCode {
     // Crawl the repo to get the file inventory.
     let crawl_result = match crawl_local(dir) {
@@ -1880,11 +1926,34 @@ fn cmd_identify(
 
         match outcome {
             Ok(decon_pipeline::IdentifyRunOutcome::Completed(result)) => {
-                println!(
-                    "identify: completed with {} abstractions",
-                    result.abstractions.len()
-                );
-                println!("checkpoint: {}", checkpoint_dir.display());
+                match format {
+                    OutputFormat::Text => {
+                        println!(
+                            "identify: completed with {} abstractions",
+                            result.abstractions.len()
+                        );
+                        println!("checkpoint: {}", checkpoint_dir.display());
+                    }
+                    OutputFormat::Json => {
+                        let data = decon_core::IdentifyOutput {
+                            abstractions: result.abstractions.clone(),
+                            relationships: Vec::new(),
+                        };
+                        let stats = decon_core::StageStats {
+                            items_processed: Some(result.abstractions.len() as u32),
+                            llm_calls: Some(progress.snapshot().llm_calls_used),
+                            elapsed_ms: None,
+                        };
+                        let out = decon_core::StageOutput {
+                            schema_version: decon_core::SCHEMA_VERSION,
+                            stage: "identify".to_string(),
+                            status: decon_core::StageStatus::Ok,
+                            data,
+                            stats: Some(stats),
+                        };
+                        print_json(&out);
+                    }
+                }
                 ExitCode::from(EXIT_OK)
             }
             Ok(decon_pipeline::IdentifyRunOutcome::Cancelled {
@@ -2713,7 +2782,12 @@ fn stage_exit_code(err: &decon_pipeline::GenerateError) -> u8 {
     }
 }
 
-fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+fn cmd_relationships(
+    dir: &Path,
+    checkpoint_dir: &Path,
+    cfg: &RunConfig,
+    format: OutputFormat,
+) -> ExitCode {
     let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
         Ok(v) => v,
         Err(code) => return code,
@@ -2772,12 +2846,35 @@ fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> Exit
         .await
         {
             Ok(result) => {
-                eprintln!(
-                    "relationships: completed (summary_len={}, rels={})",
-                    result.project_summary.len(),
-                    result.relationships.len()
-                );
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                match format {
+                    OutputFormat::Text => {
+                        eprintln!(
+                            "relationships: completed (summary_len={}, rels={})",
+                            result.project_summary.len(),
+                            result.relationships.len()
+                        );
+                        eprintln!("checkpoint: {}", checkpoint_dir.display());
+                    }
+                    OutputFormat::Json => {
+                        let data = decon_core::RelationshipsOutput {
+                            relationships: result.relationships.clone(),
+                            evidence: Vec::new(),
+                        };
+                        let stats = decon_core::StageStats {
+                            items_processed: Some(result.relationships.len() as u32),
+                            llm_calls: None,
+                            elapsed_ms: None,
+                        };
+                        let out = decon_core::StageOutput {
+                            schema_version: decon_core::SCHEMA_VERSION,
+                            stage: "relationships".to_string(),
+                            status: decon_core::StageStatus::Ok,
+                            data,
+                            stats: Some(stats),
+                        };
+                        print_json(&out);
+                    }
+                }
                 let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
@@ -2790,7 +2887,7 @@ fn cmd_relationships(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> Exit
     })
 }
 
-fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
+fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputFormat) -> ExitCode {
     let (mut checkpoint, files) = match load_stage_checkpoint(checkpoint_dir) {
         Ok(v) => v,
         Err(code) => return code,
@@ -2834,11 +2931,47 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig) -> ExitCode {
         .await
         {
             Ok(result) => {
-                eprintln!(
-                    "order: completed (chapters={})",
-                    result.ordered_indices.len()
-                );
-                eprintln!("checkpoint: {}", checkpoint_dir.display());
+                match format {
+                    OutputFormat::Text => {
+                        eprintln!(
+                            "order: completed (chapters={})",
+                            result.ordered_indices.len()
+                        );
+                        eprintln!("checkpoint: {}", checkpoint_dir.display());
+                    }
+                    OutputFormat::Json => {
+                        // Derive chapter titles from the abstraction names
+                        // in the checkpoint, indexed by ordered_indices.
+                        let identify = decon_pipeline::load_identify_result(&checkpoint);
+                        let titles: Vec<String> = result
+                            .ordered_indices
+                            .iter()
+                            .filter_map(|&idx| {
+                                identify
+                                    .as_ref()
+                                    .and_then(|r| r.abstractions.get(idx))
+                                    .map(|a| a.name.clone())
+                            })
+                            .collect();
+                        let data = decon_core::OrderOutput {
+                            ordered_indices: result.ordered_indices.clone(),
+                            titles,
+                        };
+                        let stats = decon_core::StageStats {
+                            items_processed: Some(result.ordered_indices.len() as u32),
+                            llm_calls: None,
+                            elapsed_ms: None,
+                        };
+                        let out = decon_core::StageOutput {
+                            schema_version: decon_core::SCHEMA_VERSION,
+                            stage: "order".to_string(),
+                            status: decon_core::StageStatus::Ok,
+                            data,
+                            stats: Some(stats),
+                        };
+                        print_json(&out);
+                    }
+                }
                 let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
