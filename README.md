@@ -175,7 +175,7 @@ For recovery procedures, common issues, and fixes, see
 | [Best Practices](docs/best-practices.md) | Tutorial quality rules (scope, budget, mermaid) |
 | [Migration from Python](docs/migrating-from-python.md) | Guide for Python `decon` users |
 | [Move to Rust](docs/move-to-rust.md) | Migration design, pipeline model, phase plan |
-| [ADRs](docs/adr/) | Architecture Decision Records (0001–0014) |
+| [ADRs](docs/adr/) | Architecture Decision Records (0001–0015) |
 
 ---
 

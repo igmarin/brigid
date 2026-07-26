@@ -55,6 +55,11 @@ current roadmap):
 - **Incremental tutorial regeneration** — `--since` limits the crawl to
   changed files today; re-using prior chapter content for unchanged modules
   during `generate` is a future enhancement.
+- **MCP server** — a proposed `decon serve` command (ADR 0015) would expose
+  the checkpoint's knowledge graph as MCP resources/tools/prompts, letting
+  AI assistants (Cursor, Claude, Windsurf) query the codebase knowledge
+  on demand instead of bulk-loading tutorial files. Scoped as read-only
+  first, post-v1.0.0.
 
 The Python entrypoint has been deprecated — see
 [`docs/migrating-from-python.md`](migrating-from-python.md) for the
