@@ -247,12 +247,15 @@ pub fn select_chapter_file_context(
     let mut context = String::new();
     let mut total: usize = 0;
 
+    // Build a HashMap once for O(1) per-file content lookup instead of O(n)
+    // linear scan on every candidate path (issue #216).
+    let file_map: HashMap<&str, &str> = file_contents
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+
     for path in &candidates {
-        let content = file_contents
-            .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, c)| c.as_str())
-            .unwrap_or("");
+        let content = file_map.get(path.as_str()).copied().unwrap_or("");
 
         let truncated = truncate_content(content, max_file_chars);
         let content_size = truncated.text.chars().count();
@@ -1142,6 +1145,47 @@ We learned routing.\n";
         let ctx = select_chapter_file_context(&a, &files, 100_000, 12_000);
         assert!(ctx.contains("src/core.rs"), "{ctx}");
         assert!(ctx.contains("content"), "{ctx}");
+    }
+
+    #[test]
+    fn file_context_large_list_returns_correct_content() {
+        // Build a list of 500 files; the target is in the middle.
+        let target_path = "src/middle.rs";
+        let target_content = "TARGET_CONTENT_MIDDLE";
+        let mut files: Vec<(String, String)> = Vec::with_capacity(500);
+        for i in 0..250 {
+            files.push((format!("src/file_{i}.rs"), format!("content_{i}")));
+        }
+        files.push((target_path.to_string(), target_content.to_string()));
+        for i in 251..501 {
+            files.push((format!("src/file_{i}.rs"), format!("content_{i}")));
+        }
+        let mut a = Abstraction::new("Core", "desc", Tier::M, "module");
+        a.entry_files = vec![target_path.to_string()];
+        let ctx = select_chapter_file_context(&a, &files, 1_000_000, 12_000);
+        assert!(
+            ctx.contains(target_content),
+            "expected target content in context:\n{ctx}"
+        );
+    }
+
+    #[test]
+    fn file_context_large_list_end_of_list() {
+        // Worst-case for O(n) scan: the target file is the LAST entry.
+        let target_path = "src/last.rs";
+        let target_content = "TARGET_CONTENT_LAST";
+        let mut files: Vec<(String, String)> = Vec::with_capacity(500);
+        for i in 0..499 {
+            files.push((format!("src/file_{i}.rs"), format!("content_{i}")));
+        }
+        files.push((target_path.to_string(), target_content.to_string()));
+        let mut a = Abstraction::new("Core", "desc", Tier::M, "module");
+        a.entry_files = vec![target_path.to_string()];
+        let ctx = select_chapter_file_context(&a, &files, 1_000_000, 12_000);
+        assert!(
+            ctx.contains(target_content),
+            "expected last-file content in context:\n{ctx}"
+        );
     }
 
     // --- write_single_chapter ---
