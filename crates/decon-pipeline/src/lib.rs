@@ -50,6 +50,7 @@ pub use generate::{
 pub use identify::{
     CandidateAbstraction, CandidateBatch, IdentifyError, IdentifyMapInput, IdentifyReduceInput,
     IdentifySingleShotInput, identify_map, identify_reduce, identify_single_shot,
+    incremental_identify,
 };
 pub use identify_checkpoint::{
     DEFAULT_MAX_ABSTRACTIONS, DEFAULT_MAX_CONCURRENCY, SINGLE_SHOT_FILE_THRESHOLD,

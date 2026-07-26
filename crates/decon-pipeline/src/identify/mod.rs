@@ -16,11 +16,13 @@
 #[allow(unused_imports)]
 use decon_core::Abstraction;
 
+mod incremental;
 mod map;
 mod reduce;
 mod single_shot;
 mod types;
 
+pub use incremental::incremental_identify;
 pub use map::{IdentifyMapInput, identify_map};
 pub use reduce::{IdentifyReduceInput, identify_reduce};
 pub use single_shot::{IdentifySingleShotInput, identify_single_shot};
