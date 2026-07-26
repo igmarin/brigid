@@ -132,6 +132,18 @@ jobs:
           name: lcov.info
           path: target/lcov.info
           retention-days: 14
+      # Upload coverage to Codecov for trend tracking, PR comments, and
+      # badge integration. Requires the CODECOV_TOKEN secret.
+      # Pinned from codecov/codecov-action@v5.4.3
+      - name: Upload to Codecov
+        if: always()
+        uses: codecov/codecov-action@1826e78c3118b59eb28a2a67f5c3a5c7259fb7f3
+        with:
+          files: target/lcov.info
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   doc:
     name: Doc
@@ -252,3 +264,29 @@ jobs:
             exit 1
           fi
           echo "No regression detected."
+
+  # Validate all GitHub Actions workflow files for syntax errors, invalid
+  # expressions, and unsupported features — e.g. brace expansion in path
+  # filters, which minimatch does not implement.
+  actionlint:
+    name: Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # Pinned from rhysd/actionlint@v1.7.7
+      - uses: rhysd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+
+  # Run criterion benchmarks on main pushes only (not on PRs, to avoid
+  # inflating PR run times). Uses --quick for faster feedback.
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Run benchmarks
+        run: cargo bench --workspace -- --quick

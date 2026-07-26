@@ -1,0 +1,30 @@
+# Codecov configuration for decon-rs
+# Docs: https://docs.codecov.com/docs/codecovyml-reference
+
+coverage:
+  status:
+    project:
+      default:
+        # Match the CI hard gate (cargo llvm-cov --fail-under-lines 85).
+        target: 85%
+        # Allow a small drop without failing the status check; the CI
+        # job itself is the hard gate, this is the trend tracker.
+        threshold: 1%
+    patch:
+      default:
+        # New code should meet the same bar.
+        target: 85%
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+# Ignore test fixtures, benchmarks, and generated files from coverage
+# reporting — they are not production code.
+ignore:
+  - "tests/fixtures/"
+  - "benches/"
+  - "target/"

@@ -14,6 +14,138 @@ tracks the latest.
 
 _No unreleased changes._
 
+## [1.0.0] - 2026-07-26
+
+First stable release. `decon` is a Rust CLI that crawls a codebase,
+identifies its core abstractions via LLM map/reduce, and produces a
+multi-chapter Markdown + Mermaid tutorial explaining how the system works.
+Built for monorepos and large codebases where "read the source" is not a
+realistic onboarding path.
+
+This release consolidates Milestones 0–6 (the full Python-to-Rust migration
+and Phase 5 foundation) plus the v1.0.0 documentation refactor and two
+proposed ADRs for the post-1.0 roadmap (MCP server, graph provider
+integration).
+
+### Added — v1.0.0 release
+
+- **Lean, user-focused README** — rewritten from 686 to 184 lines with
+  Mermaid pipeline and output-structure diagrams, quick start, CLI table,
+  and links to deep documentation (#252).
+- **`docs/usage-guide.md`** — deep command reference: every command, flag,
+  environment variable, provider setup (DeepSeek, OpenAI, Ollama, LM
+  Studio), performance tips, shell completions install, man page, examples
+  (#252).
+- **`docs/troubleshooting.md`** — exit codes, checkpoint recovery, LLM/
+  cache/budget issues, corruption, `--since` requires git (#252).
+- **`docs/project-status.md`** — milestones table (M0–M6), what works today,
+  roadmap including proposed MCP server and graph provider integration
+  (#252, #253, #255).
+- **ADR 0015** — MCP server for codebase knowledge querying (proposed,
+  post-v1.0.0). Exposes the checkpoint knowledge graph as MCP resources/
+  tools/prompts so AI assistants can query on demand (#253).
+- **ADR 0016** — Graph provider trait for structural ground truth from
+  codegraph/Graphify (proposed, post-v1.0.0). Optional `GraphProvider`
+  trait to improve abstraction identification and relationship verification
+  on large codebases (#255).
+- **Workspace layout** moved into `ARCHITECTURE.md` next to the crate
+  hierarchy diagram (#252).
+- **AI code review automation** and release/nightly CI documentation moved
+  into `CONTRIBUTING.md` (#252).
+
+### Consolidated features (M0–M6)
+
+The following capabilities were delivered across Milestones 0–6 and are
+all included in this first stable release:
+
+**Pipeline (M0–M4):**
+- Full `decon generate` pipeline: crawl → identify → relationships →
+  order → chapters → setup → overview → combine
+- Map/reduce and single-shot LLM identify with bounded concurrency
+- Checkpoint + resume (content-addressed, file-based stage outputs with
+  SHA-256 verification)
+- i18n chrome (English + Spanish)
+- `--each-app` monorepo fan-out, `--review-chapters` second LLM pass
+- Score-triggered setup guide, multi-app architecture overview
+
+**Product polish (M5):**
+- Homebrew, `cargo install`, `cargo-binstall`, GitHub Releases (Linux,
+  macOS, Windows)
+- Shell completions (bash, zsh, fish, PowerShell) and man page
+- Disk cache with LRU eviction (enabled by default)
+- `--concurrency` flag, criterion benchmarks, `decon init` wizard
+- Windows CI, Python deprecation + migration guide
+
+**Phase 5 foundation (M6):**
+- `--format json` on every stage with versioned `StageOutput<T>` envelope
+  (ADR 0012)
+- `--since <git-ref>` git-diff incremental crawl (ADR 0013)
+- Plugin trait and registry for custom kind detectors (ADR 0014)
+- Criterion benchmarks for all critical paths
+- Audit-driven hardening of error handling, lock contention, test coverage
+
+### Changed — v1.0.0 release
+
+- **README.md** rewritten: 686 → 184 lines, user-focused with Mermaid
+  diagrams, deep content moved to dedicated docs files (#252).
+- **ARCHITECTURE.md** updated: workspace layout tree added, ADR table
+  extended to 0016, related-documentation section updated (#252, #253,
+  #255).
+- **CONTRIBUTING.md** updated: AI code review automation section expanded
+  with CI/release/nightly workflow details, documentation section updated
+  (#252).
+- **Version** bumped from 0.6.0 to 1.0.0 — first stable release.
+- **Crates.io metadata** added to all workspace crates (keywords,
+  categories) for publishing readiness.
+- **Path dependencies** now specify `version.workspace = true` for
+  crates.io publishing compatibility.
+- **Release workflow** (`.github/workflows/release.yml`) now includes a
+  `publish-crates` job to publish all workspace crates to crates.io in
+  dependency order on tag push.
+- **CI workflow** (`.github/workflows/ci.yml`) now includes:
+  - **Codecov upload** — coverage reports (`lcov.info`) are uploaded to
+    Codecov for trend tracking, PR comments, and badge integration
+    (requires `CODECOV_TOKEN` secret).
+  - **actionlint** — validates all GitHub Actions workflow files for
+    syntax errors and unsupported features.
+  - **Benchmarks** — criterion benchmarks run on main pushes
+    (`cargo bench --workspace -- --quick`).
+- **`codecov.yml`** — Codecov configuration with 85% project target
+  (matches the CI hard gate), 1% threshold for trend tolerance, and
+  fixture/benchmark/target directories excluded from reporting.
+- **README badges** — CI, Codecov, crates.io, and license badges added.
+
+### ADRs in this release
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| 0001 | Content-addressed checkpoint format for resume | Accepted |
+| 0002 | `async-trait` for the `LlmClient` trait | Accepted |
+| 0003 | `tokio::sync::Semaphore` for bounded map batches | Accepted |
+| 0004 | Migration off unsound `serde_yml`/`libyml` | Superseded by 0005 |
+| 0005 | Migration to `serde_yaml_ng` fork | Accepted |
+| 0006 | File-based stage output storage with SHA-256 verification | Accepted |
+| 0007 | Generic localization framework for tutorial chrome | Accepted |
+| 0008 | Two-tier golden fixture strategy for eval regression | Accepted |
+| 0009 | Disk cache enabled by default with LRU eviction | Accepted |
+| 0010 | Release strategy (GitHub Releases, Homebrew, cargo) | Accepted |
+| 0011 | Python deprecation: migration guide over wrapper | Accepted |
+| 0012 | JSON output schema (`StageOutput<T>` envelope) | Accepted |
+| 0013 | Git-diff incremental file detection (`--since`) | Accepted |
+| 0014 | Plugin trait and registry for custom kind detectors | Accepted |
+| 0015 | MCP server for codebase knowledge querying | Proposed |
+| 0016 | Graph provider trait for structural ground truth | Proposed |
+
+### Quality gates
+
+- `cargo fmt --all -- --check` — pass
+- `cargo clippy --workspace --all-targets -- -D warnings` — pass
+- `cargo test --workspace` — 1,157+ tests pass
+- `cargo llvm-cov --workspace --fail-under-lines 85` — 95.98% coverage
+- 3-OS CI matrix (Ubuntu, macOS, Windows) — all green
+- `cargo audit` + `cargo deny` — pass
+- Eval regression gate + fixture baseline check — pass
+
 ## [0.6.0] - 2026-07-26
 
 Milestone 6 — Phase 5 Foundation + Audit Hardening. The `decon` CLI gains
