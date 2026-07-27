@@ -11,6 +11,7 @@ documentation.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true

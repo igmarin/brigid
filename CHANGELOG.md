@@ -10,6 +10,22 @@ descriptions in [`docs/move-to-rust.md`](docs/move-to-rust.md). Each milestone
 corresponds to a minor release; the workspace `version` field in `Cargo.toml`
 tracks the latest.
 
+## [1.0.1] - 2026-07-27
+
+Patch release to add per-crate README files and make the crates.io pages
+self-documenting.
+
+### Added
+
+- README.md for each workspace crate (`brigid-core`, `brigid-crawl`, `brigid-llm`, `brigid-pipeline`, `brigid-cli`) with badges, descriptions, usage examples, and links back to the main [`brigid`](https://github.com/igmarin/brigid) repository.
+- `readme = "README.md"` entry in each crate `Cargo.toml` so crates.io renders the README.
+
+### Fixed
+
+- Replaced the unsupported crates.io category slug `documentation` with `text-processing` in the workspace `Cargo.toml`.
+- Moved prompt templates into `crates/brigid-pipeline/prompts` so they are included in the published `brigid-pipeline` crate.
+- Made the release workflow's crates.io publish step idempotent, allowing re-runs to skip already-published workspace crates.
+
 ## [1.0.0] - 2026-07-27
 
 First stable release. `brigid` is a Rust CLI that crawls a codebase,

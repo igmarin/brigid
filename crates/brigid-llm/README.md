@@ -1,0 +1,54 @@
+# brigid-llm
+
+[![crates.io](https://img.shields.io/crates/v/brigid-llm.svg)](https://crates.io/crates/brigid-llm)
+[![docs.rs](https://docs.rs/brigid-llm/badge.svg?version=latest)](https://docs.rs/brigid-llm)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/igmarin/brigid/blob/main/LICENSE)
+
+LLM provider clients and the `LlmClient` trait for [`brigid`](https://github.com/igmarin/brigid).
+
+This crate provides a provider-agnostic `LlmClient` interface, an OpenAI-compatible implementation, bounded concurrency with budget enforcement, retries/backoff, and a disk cache keyed by `hash(prompt) + model + provider`. It is built on `reqwest` and `tokio`.
+
+> This is an internal library crate. If you are looking for the end-user CLI, see the main [`brigid` README](https://github.com/igmarin/brigid/blob/main/README.md) or install `brigid-cli`.
+
+---
+
+## Usage
+
+Add `brigid-llm` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+brigid-llm = "1"
+```
+
+Use the OpenAI-compatible client:
+
+```rust
+use brigid_llm::{OpenAiCompatibleClient, OpenAiClientConfig, LlmClient};
+
+let config = OpenAiClientConfig::default();
+let client = OpenAiCompatibleClient::new(config);
+// client.complete(...).await
+```
+
+See [docs.rs/brigid-llm](https://docs.rs/brigid-llm) for the full API.
+
+---
+
+## Project context
+
+`brigid-llm` is one crate in the `brigid` workspace:
+
+- `brigid-core` — pure domain types and logic
+- `brigid-crawl` — filesystem and GitHub repository crawling
+- `brigid-llm` — this crate: LLM provider clients and caching
+- `brigid-pipeline` — stage orchestration, checkpoint/resume, dry-run planning
+- `brigid-cli` — the `brigid` binary
+
+All crates are developed together in a single repository: <https://github.com/igmarin/brigid>.
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](https://github.com/igmarin/brigid/blob/main/LICENSE).

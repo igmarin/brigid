@@ -11,14 +11,15 @@ documentation.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true
 
 [dependencies]
-brigid-core = { path = "../brigid-core", version = "1.0.0" }
-brigid-crawl = { path = "../brigid-crawl", version = "1.0.0" }
-brigid-llm = { path = "../brigid-llm", version = "1.0.0" }
+brigid-core = { path = "../brigid-core", version = "1.0.1" }
+brigid-crawl = { path = "../brigid-crawl", version = "1.0.1" }
+brigid-llm = { path = "../brigid-llm", version = "1.0.1" }
 thiserror = "2.0"
 flate2 = "1"
 base64 = "0.22"
