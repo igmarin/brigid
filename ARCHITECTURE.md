@@ -55,7 +55,7 @@ brigid/
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
-│   └── adr/              # Architecture Decision Records (0001–0014)
+│   └── adr/              # Architecture Decision Records (0001–0017)
 ├── homebrew/             # Homebrew formula template (brigid.rb)
 ├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands

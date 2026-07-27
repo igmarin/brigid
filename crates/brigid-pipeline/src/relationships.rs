@@ -831,19 +831,35 @@ relationships:
 
     #[tokio::test]
     async fn secrets_redacted_before_rendering() {
+        // Single-abstraction fixture with a valid 0→0 endpoint. The shared
+        // `canned_three_relationships()` references indices 1 and 2, which
+        // would trip `EndpointOutOfRange` for a single abstraction. This
+        // test verifies secret redaction in the prompt, not parsing.
+        let single_abstraction_yaml = "\
+summary: |
+  Self-referential core.
+relationships:
+  - from_abstraction: 0
+    to_abstraction: 0
+    label: \"Internal\"
+    kind: calls
+";
+        let response = format!("Here is the analysis:\n\n```yaml\n{single_abstraction_yaml}```\n");
         struct CapturingClient {
             captured: Arc<Mutex<String>>,
+            response: String,
         }
         #[async_trait::async_trait]
         impl LlmClient for CapturingClient {
             async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
                 *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_three_relationships())
+                Ok(self.response.clone())
             }
         }
         let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let client = CapturingClient {
             captured: captured.clone(),
+            response,
         };
         let renderer = PromptRenderer::new().unwrap();
         let identify = IdentifyResult::new(vec![Abstraction {

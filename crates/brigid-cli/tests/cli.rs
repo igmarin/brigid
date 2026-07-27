@@ -760,7 +760,9 @@ fn identify_without_credentials_requires_explicit_mock_mode() {
         .assert()
         .failure()
         .code(4)
-        .stderr(predicate::str::contains("not set"));
+        .stderr(predicate::str::contains(
+            "error: identify: failed to configure LLM client",
+        ));
 
     assert!(!checkpoint_dir.exists());
 }
@@ -977,7 +979,9 @@ fn generate_without_credentials_requires_explicit_mock_mode() {
         .assert()
         .failure()
         .code(4)
-        .stderr(predicate::str::contains("not set"));
+        .stderr(predicate::str::contains(
+            "error: generate: failed to configure LLM client",
+        ));
 
     assert!(!checkpoint_dir.exists());
     assert!(!output_dir.exists());

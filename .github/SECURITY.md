@@ -8,7 +8,7 @@ Security fixes are applied to the latest released `brigid` version. Users should
 
 Do not open a public GitHub issue for a suspected vulnerability or include API keys, private source code, checkpoints, or generated tutorial content in a report.
 
-Report vulnerabilities privately through the repository owner's GitHub contact channel. Include:
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/igmarin/brigid/security/advisories/new) (the repository's "Report a vulnerability" flow). Include:
 
 - affected `brigid` version and installation method;
 - a minimal reproduction that does not expose sensitive material;

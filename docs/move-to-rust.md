@@ -401,6 +401,9 @@ are closed. The product is now polished and distributable:
 - **Native installers** — Homebrew formula, `cargo install`, `cargo-binstall`,
   and GitHub Releases with pre-built binaries for Linux (x86_64, aarch64),
   macOS (x86_64, aarch64), and Windows (x86_64) (ADR 0010).
+  > **Update:** the initial release ships pre-built binaries for Linux x86_64
+  > only. macOS and Windows users install from source via Homebrew or
+  > `cargo install`. See ADR 0010 for the current release strategy.
 - **Shell completions** — `brigid completions --shell bash|zsh|fish|powershell`
   via `clap_complete`.
 - **Man page** — `brigid manpage` generates a troff-formatted man page via
