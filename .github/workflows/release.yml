@@ -1,9 +1,13 @@
 name: Release
 
-# Builds release binaries for Linux (x86_64, aarch64), macOS (x86_64,
-# aarch64), and Windows (x86_64), packages them with the man page and shell
-# completion scripts, generates SHA-256 checksums, and creates a GitHub
-# Release with auto-generated notes extracted from CHANGELOG.md.
+# Builds a Linux x86_64 release binary, packages it with the man page and
+# shell completion scripts, generates SHA-256 checksums, creates a GitHub
+# Release with notes extracted from CHANGELOG.md, and publishes all
+# workspace crates to crates.io.
+#
+# macOS users: `brew install brigid` (Homebrew formula in homebrew/brigid.rb)
+#              or `cargo install brigid-cli` (compiles natively).
+# Windows users: `cargo install brigid-cli` (compiles natively).
 #
 # Triggers:
 #   - Tag push matching vX.Y.Z (semver).
@@ -29,30 +33,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────
-  # Docs: generate the man page and completion scripts from a native build.
-  # These are platform-independent and are bundled into every archive.
-  # ──────────────────────────────────────────────────────────────────────
-  docs:
-    name: Generate man page & completions
+  build-release:
+    name: Build Release Binary
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: stable
+          targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Build brigid-cli (native)
-        run: cargo build --release -p brigid-cli
+      - name: Build brigid-cli (release)
+        run: cargo build --release --target x86_64-unknown-linux-gnu -p brigid-cli
+      - name: Strip binary
+        run: strip target/x86_64-unknown-linux-gnu/release/brigid
+
+      # ── Docs: man page + completions ───────────────────────────────
       - name: Generate man page
-        run: ./target/release/brigid manpage --output brigid.1
+        run: ./target/x86_64-unknown-linux-gnu/release/brigid manpage --output brigid.1
       - name: Generate completion scripts
         run: |
           mkdir -p completions
-          ./target/release/brigid completions --shell bash       --output completions/brigid.bash
-          ./target/release/brigid completions --shell zsh         --output completions/_brigid
-          ./target/release/brigid completions --shell fish        --output completions/brigid.fish
-          ./target/release/brigid completions --shell powershell  --output completions/_brigid.ps1
+          ./target/x86_64-unknown-linux-gnu/release/brigid completions --shell bash       --output completions/brigid.bash
+          ./target/x86_64-unknown-linux-gnu/release/brigid completions --shell zsh         --output completions/_brigid
+          ./target/x86_64-unknown-linux-gnu/release/brigid completions --shell fish        --output completions/brigid.fish
+          ./target/x86_64-unknown-linux-gnu/release/brigid completions --shell powershell  --output completions/_brigid.ps1
       - name: Verify generated files are non-empty
         run: |
           test -s brigid.1
@@ -60,179 +67,39 @@ jobs:
           test -s completions/_brigid
           test -s completions/brigid.fish
           test -s completions/_brigid.ps1
-      - name: Upload docs artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: brigid-docs
-          path: |
-            brigid.1
-            completions/
-          retention-days: 1
 
-  # ──────────────────────────────────────────────────────────────────────
-  # Build matrix: one job per (OS, target) pair.
-  # ──────────────────────────────────────────────────────────────────────
-  build:
-    name: Build ${{ matrix.target }}
-    needs: docs
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            use-cross: false
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-            use-cross: true
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            use-cross: false
-          - os: macos-14
-            target: aarch64-apple-darwin
-            archive: tar.gz
-            use-cross: false
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            use-cross: false
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          key: ${{ matrix.target }}
-      - name: Download docs artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: brigid-docs
-          path: docs-artifact
-
-      # ── Build ──────────────────────────────────────────────────────
-      - name: Install cross
-        if: matrix.use-cross
-        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
-        with:
-          tool: cross
-      - name: Build binary (cross)
-        if: matrix.use-cross
-        run: cross build --release --target ${{ matrix.target }} -p brigid-cli
-      - name: Build binary (native)
-        if: ${{ !matrix.use-cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p brigid-cli
-
-      # ── Determine version ───────────────────────────────────────────
+      # ── Package ────────────────────────────────────────────────────
       - name: Determine version from tag
         id: version
-        shell: bash
         run: |
-          # Strip leading 'v' from the tag (e.g. v0.1.0 → 0.1.0).
           if [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             ver="${GITHUB_REF_NAME#v}"
           else
-            # workflow_dispatch — read from Cargo.toml
             ver=$(grep -m1 '^version' Cargo.toml | sed 's/.*= *"\(.*\)"/\1/')
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-
-      # ── Package (Unix) ──────────────────────────────────────────────
-      - name: Package archive (Unix)
-        if: matrix.archive == 'tar.gz'
-        shell: bash
+      - name: Prepare release archive and checksum
         run: |
+          set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          target="${{ matrix.target }}"
+          target="x86_64-unknown-linux-gnu"
           staging="brigid-${version}-${target}"
           mkdir -p "${staging}/completions"
-          # Binary
           cp "target/${target}/release/brigid" "${staging}/brigid"
           chmod +x "${staging}/brigid"
-          # Docs (man page + completion scripts)
-          cp docs-artifact/brigid.1 "${staging}/"
-          cp docs-artifact/completions/* "${staging}/completions/"
-          # README snippet for quick reference
+          cp brigid.1 "${staging}/"
+          cp completions/* "${staging}/completions/"
           cp README.md "${staging}/"
           tar czf "${staging}.tar.gz" "${staging}"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+          echo "Archive contents:"
+          tar tzf "${staging}.tar.gz"
 
-      # ── Package (Windows) ───────────────────────────────────────────
-      - name: Package archive (Windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $target = "${{ matrix.target }}"
-          $staging = "brigid-$version-$target"
-          New-Item -ItemType Directory -Force -Path "$staging\completions"
-          # Binary
-          Copy-Item "target/$target/release/brigid.exe" "$staging/brigid.exe"
-          # Docs (man page + completion scripts)
-          Copy-Item "docs-artifact/brigid.1" "$staging/"
-          Copy-Item "docs-artifact/completions/*" "$staging/completions/"
-          # README snippet for quick reference
-          Copy-Item "README.md" "$staging/"
-          Compress-Archive -Path "$staging" -DestinationPath "$staging.zip"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: brigid-${{ matrix.target }}
-          path: brigid-*-${{ matrix.target }}.*
-          retention-days: 1
-
-  # ──────────────────────────────────────────────────────────────────────
-  # Release: collect all archives, generate checksums, extract changelog
-  # notes, and create the GitHub Release (skipped in dry-run mode).
-  # ──────────────────────────────────────────────────────────────────────
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    # Skip release creation on manual dispatch when dry-run is true.
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry-run != 'true' }}
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Determine version from tag
-        id: version
-        run: |
-          if [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
-            ver="${GITHUB_REF_NAME#v}"
-          else
-            ver=$(grep -m1 '^version' Cargo.toml | sed 's/.*= *"\(.*\)"/\1/')
-          fi
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-      - name: Download all build artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          pattern: brigid-*-*
-          merge-multiple: true
-      - name: Collect release archives
-        run: |
-          mkdir -p release-assets
-          # Move all .tar.gz and .zip archives into release-assets/.
-          find . -maxdepth 1 \( -name 'brigid-*.tar.gz' -o -name 'brigid-*.zip' \) \
-            -exec mv {} release-assets/ \;
-          echo "Release archives:"
-          ls -la release-assets/
-      - name: Generate SHA-256 checksums
-        run: |
-          cd release-assets
-          sha256sum ./* > ../SHA256SUMS
-          echo "SHA-256 checksums:"
-          cat ../SHA256SUMS
+      # ── Create GitHub Release (skipped in dry-run) ────────────────
       - name: Extract release notes from CHANGELOG.md
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry-run != 'true' }}
         run: |
           version="${{ steps.version.outputs.version }}"
-          # Extract the section for this version from CHANGELOG.md.
-          # The header looks like "## [0.1.0] - 2026-07-23".
           awk -v ver="$version" '
             $0 ~ "^## \\[" ver "\\]" { found=1; next }
             found && /^## \[/ { exit }
@@ -241,9 +108,8 @@ jobs:
           if [ ! -s release-notes.md ]; then
             echo "No CHANGELOG.md entry found for version ${version}." > release-notes.md
           fi
-          echo "Release notes:"
-          cat release-notes.md
       - name: Create GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry-run != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -252,14 +118,9 @@ jobs:
           gh release create "$tag" \
             --title "brigid ${version}" \
             --notes-file release-notes.md \
-            release-assets/*
+            brigid-*.tar.gz \
+            brigid-*.tar.gz.sha256
           echo "Created release ${tag}"
-      - name: Upload SHA256SUMS to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${GITHUB_REF_NAME:-v${{ steps.version.outputs.version }}}"
-          gh release upload "$tag" SHA256SUMS --clobber
 
   # ──────────────────────────────────────────────────────────────────────
   # Publish to crates.io.
@@ -271,7 +132,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   publish-crates:
     name: Publish to crates.io
-    needs: release
+    needs: build-release
     runs-on: ubuntu-latest
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry-run != 'true' }}
     steps:
