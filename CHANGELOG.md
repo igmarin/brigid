@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `decon` are documented in this file.
+All notable changes to `brigid` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -16,7 +16,7 @@ _No unreleased changes._
 
 ## [1.0.0] - 2026-07-26
 
-First stable release. `decon` is a Rust CLI that crawls a codebase,
+First stable release. `brigid` is a Rust CLI that crawls a codebase,
 identifies its core abstractions via LLM map/reduce, and produces a
 multi-chapter Markdown + Mermaid tutorial explaining how the system works.
 Built for monorepos and large codebases where "read the source" is not a
@@ -59,7 +59,7 @@ The following capabilities were delivered across Milestones 0–6 and are
 all included in this first stable release:
 
 **Pipeline (M0–M4):**
-- Full `decon generate` pipeline: crawl → identify → relationships →
+- Full `brigid generate` pipeline: crawl → identify → relationships →
   order → chapters → setup → overview → combine
 - Map/reduce and single-shot LLM identify with bounded concurrency
 - Checkpoint + resume (content-addressed, file-based stage outputs with
@@ -73,7 +73,7 @@ all included in this first stable release:
   macOS, Windows)
 - Shell completions (bash, zsh, fish, PowerShell) and man page
 - Disk cache with LRU eviction (enabled by default)
-- `--concurrency` flag, criterion benchmarks, `decon init` wizard
+- `--concurrency` flag, criterion benchmarks, `brigid init` wizard
 - Windows CI, Python deprecation + migration guide
 
 **Phase 5 foundation (M6):**
@@ -148,7 +148,7 @@ all included in this first stable release:
 
 ## [0.6.0] - 2026-07-26
 
-Milestone 6 — Phase 5 Foundation + Audit Hardening. The `decon` CLI gains
+Milestone 6 — Phase 5 Foundation + Audit Hardening. The `brigid` CLI gains
 machine-readable JSON output for all stages, git-diff incremental tutorials,
 a plugin foundation for custom kind detectors, criterion benchmarks for all
 critical paths, and audit-driven hardening of error handling, lock
@@ -157,30 +157,30 @@ contention, and test coverage.
 ### Added
 
 - Typed JSON output schemas (`StageOutput<T>`) for all pipeline stages in
-  `decon-core::stage_output` with schema stability tests and ADR 0012
+  `brigid-core::stage_output` with schema stability tests and ADR 0012
   (#220, #221, #222, #223).
 - `--format json` flag on every stage subcommand (identify, relationships,
-  order, chapters, setup, overview, combine) and `decon generate`, emitting
+  order, chapters, setup, overview, combine) and `brigid generate`, emitting
   a `StageOutput<T>` envelope with `schema_version`, `stage`, `status`,
   `data`, and optional `stats` (#221, #222, #223).
 - Per-stage LLM call tracking in `ProgressTracker` and `StageTiming`
   (#223).
-- `git_diff` module in `decon-crawl` for detecting changed files since a
+- `git_diff` module in `brigid-crawl` for detecting changed files since a
   git ref via `git diff --name-only` (no libgit2 dependency), with
   `CrawlOptions { since }` for filtered crawl (#224, ADR 0013).
 - `--since <ref>` CLI flag and `RunConfig.since` field (config precedence:
-  CLI > file > env > defaults; `DECON_SINCE` env var) on `generate`,
+  CLI > file > env > defaults; `BRIGID_SINCE` env var) on `generate`,
   `dry-run`, `identify`, and `crawl` (#225).
 - Git revision tracking in `CheckpointV1` (`git_commit`, `since_ref`) with
   staleness detection for incremental resume (#226).
-- Incremental identify: `decon generate --since <ref>` re-analyzes only
+- Incremental identify: `brigid generate --since <ref>` re-analyzes only
   modules with changed files, merges with checkpoint abstractions, and
   re-ranks; falls back to full identify when no checkpoint or stale
   (#227).
 - Plugin trait and registry (`KindDetector`, `PluginRegistry`,
-  `DefaultKindDetector`) in `decon-core::plugin` for custom abstraction
-  kind detectors; `RunConfig.plugin_dirs` configurable via `decon.toml`
-  `[plugins] dirs = [...]` and `DECON_PLUGIN_DIRS` env var (#228, ADR 0014).
+  `DefaultKindDetector`) in `brigid-core::plugin` for custom abstraction
+  kind detectors; `RunConfig.plugin_dirs` configurable via `brigid.toml`
+  `[plugins] dirs = [...]` and `BRIGID_PLUGIN_DIRS` env var (#228, ADR 0014).
 - Criterion benchmarks for crawl walk, batch file packing, cache get/put,
   content redaction, YAML extraction, and module key computation (#229).
 - ADRs 0012–0014: JSON output schema, git-diff incremental approach,
@@ -210,19 +210,19 @@ contention, and test coverage.
 
 ## [0.5.0] - 2026-07-25
 
-Milestone 5 — Product Polish. The `decon` CLI is now a distributable product:
+Milestone 5 — Product Polish. The `brigid` CLI is now a distributable product:
 native installers, shell completions, a man page, disk cache by default,
 concurrency flags, benchmarks, an init wizard, Windows CI, and Python
 entrypoint deprecation.
 
 ### Added
 
-- Symlink cycle detection in `decon-crawl` to prevent infinite recursion
+- Symlink cycle detection in `brigid-crawl` to prevent infinite recursion
   (#196).
-- Configurable LLM host allowlist via `DECON_LLM_ALLOWED_HOSTS` env var and
-  `[[allowed_hosts]]` table in `decon.toml` (#194).
+- Configurable LLM host allowlist via `BRIGID_LLM_ALLOWED_HOSTS` env var and
+  `[[allowed_hosts]]` table in `brigid.toml` (#194).
 - Disk cache enabled by default with LRU eviction and size limits (100 MB
-  default); bypass with `DECON_NO_CACHE=1` (#197, ADR 0009).
+  default); bypass with `BRIGID_NO_CACHE=1` (#197, ADR 0009).
 - `CHANGELOG.md` and `ARCHITECTURE.md` documentation (#193).
 - Batch file writes and dev profile optimizations in the pipeline (#200).
 - Reduced lock contention in chapter summary collection (#199).
@@ -233,12 +233,12 @@ entrypoint deprecation.
 - Criterion benchmarks for seven critical pipeline paths: template rendering,
   file context selection, checkpoint roundtrip, budget estimation, chapter
   generation, combine index, mermaid sanitization (#205).
-- `decon init` wizard with `--check` validation for starter `decon.toml`
+- `brigid init` wizard with `--check` validation for starter `brigid.toml`
   (#203).
 - CLI error path tests with `assert_cmd` improving `main.rs` coverage (#204).
 - Shell completions for bash, zsh, fish, and PowerShell via `clap_complete`
   (#206).
-- Man page generation via `clap_mangen` — `decon manpage` produces a
+- Man page generation via `clap_mangen` — `brigid manpage` produces a
   troff-formatted man page covering all subcommands (#207).
 - Release workflow with native installers for Linux (x86_64, aarch64), macOS
   (x86_64, aarch64), and Windows (x86_64), plus a Homebrew formula template
@@ -266,19 +266,19 @@ entrypoint deprecation.
 
 ## [0.4.0] - 2026-07-25
 
-Milestone 4 — Full Generate Path. The complete `decon generate` pipeline is
+Milestone 4 — Full Generate Path. The complete `brigid generate` pipeline is
 working end-to-end, with i18n chrome, per-stage subcommands, monorepo fan-out,
 chapter review, frozen fixtures, and a live smoke test.
 
 ### Added
 
-- `decon generate --dir PATH [--output-dir PATH] [--language en|es]
+- `brigid generate --dir PATH [--output-dir PATH] [--language en|es]
   [--each-app] [--review-chapters]` subcommand orchestrating the full pipeline:
   identify -> relationships -> order -> chapters -> setup -> overview ->
   combine (#146, #166).
-- Per-stage subcommands for debugging individual pipeline stages: `decon
-  relationships`, `decon order`, `decon chapters`, `decon setup`, `decon
-  overview`, `decon combine` (#167).
+- Per-stage subcommands for debugging individual pipeline stages: `brigid
+  relationships`, `brigid order`, `brigid chapters`, `brigid setup`, `brigid
+  overview`, `brigid combine` (#167).
 - `--each-app` flag for per-app tutorial generation in monorepos (#168).
 - `--review-chapters` flag for optional chapter quality polishing via a second
   LLM pass per chapter (#150, #170).
@@ -330,7 +330,7 @@ plus supply-chain hardening and refactoring.
 - Checkpoint-after-identify and resume mid-identify matrix (#72, #96).
 - Ctrl+C graceful shutdown with clean checkpoint dump (exit 5) (#68, #97).
 - Opt-in live LLM smoke harness, budget-capped and feature-gated (#74, #92).
-- Config-file secret-field guard rejecting `api_key`/`token` in `decon.toml`
+- Config-file secret-field guard rejecting `api_key`/`token` in `brigid.toml`
   (#73, #85).
 - `cargo deny` (advisories + licenses + bans) added to CI alongside
   `cargo audit` (#76, #82).
@@ -343,7 +343,7 @@ plus supply-chain hardening and refactoring.
 ### Changed
 
 - Folded file sizes into `crawl_local`, eliminating dry-run re-stat (#77, #83).
-- Migrated `decon-core` off unsound `serde_yml`/`libyml`
+- Migrated `brigid-core` off unsound `serde_yml`/`libyml`
   (RUSTSEC-2025-0067/0068) to `serde_yaml_ng` (#75, #87, ADR 0005).
 - Tracked `serde_yaml` 0.9 deprecation and migrated to `serde_yaml_ng` (#114,
   #125).
@@ -369,7 +369,7 @@ plus supply-chain hardening and refactoring.
 
 ### Security
 
-- Config-file secret-field guard prevents API keys from entering `decon.toml`
+- Config-file secret-field guard prevents API keys from entering `brigid.toml`
   (#73).
 - Provider host validation before sending credentials (#117).
 - Secrets redaction applied to README and eval file reads (#112).
@@ -377,7 +377,7 @@ plus supply-chain hardening and refactoring.
 ## [0.2.0] - 2026-07-23
 
 Milestone 2 — Checkpoint, Config & Coverage. Content-addressed checkpoint
-storage, `decon.toml` configuration, and the 85% coverage hard gate.
+storage, `brigid.toml` configuration, and the 85% coverage hard gate.
 
 ### Added
 
@@ -385,7 +385,7 @@ storage, `decon.toml` configuration, and the 85% coverage hard gate.
 - Checkpoint store save/load implementing ADR 0001 (#43).
 - Resume stage-skip and partial regenerate matrix (#44).
 - `RunConfig` with CLI > file > env > defaults layering (#41).
-- `decon init`, `decon resume`, and config file/env wiring (#48).
+- `brigid init`, `brigid resume`, and config file/env wiring (#48).
 - Workspace `llvm-cov` baseline documentation for the coverage gate (#40).
 - CI enforcement of workspace `llvm-cov` >= 85% line coverage (#49).
 - ADR 0001 for the content-addressed checkpoint schema (#4, #13).
@@ -403,8 +403,8 @@ assessment, and the structural eval port. Includes the M0 spec-freeze work
 
 ### Added
 
-- Cargo workspace layout with five crates: `decon-core`, `decon-crawl`,
-  `decon-llm`, `decon-pipeline`, `decon-cli`.
+- Cargo workspace layout with five crates: `brigid-core`, `brigid-crawl`,
+  `brigid-llm`, `brigid-pipeline`, `brigid-cli`.
 - CI pipeline skeleton: fmt, clippy (`-D warnings`), test, `llvm-cov`, doc,
   `cargo audit` (#8, #9).
 - `CONTRIBUTING.md` skeleton with TDD workflow and coverage gate (#3, #12).
@@ -413,16 +413,16 @@ assessment, and the structural eval port. Includes the M0 spec-freeze work
 - M1 parity fixtures (`python-lib`, `umbrella`, `js-lib`) and frozen
   `baseline.json` with a pure-Rust regenerator (#17).
 - ADR 0001 checkpoint schema revisions (#4, #14).
-- `decon-core` module key and inventory discovery (#29).
+- `brigid-core` module key and inventory discovery (#29).
 - Monorepo scope filter with shared root scaffolding (#30).
 - Setup assessment scoring from five README signals (#31).
 - Context budget estimates for dry-run (#32).
-- `decon-crawl` local filesystem inventory with fixture parity (#33).
+- `brigid-crawl` local filesystem inventory with fixture parity (#33).
 - Dry-run plan assembly with baseline parity (#34).
 - Mermaid sanitize and light validate (#24).
 - Deterministic index diagram builders (#25).
 - Structural tutorial eval with golden fixtures (#26).
-- `decon crawl`, `decon dry-run`, and `decon eval` CLI subcommands (#27).
+- `brigid crawl`, `brigid dry-run`, and `brigid eval` CLI subcommands (#27).
 - M1 closeout documentation: README status, CONTRIBUTING, coverage summary
   (#28, #39).
 
@@ -430,9 +430,9 @@ assessment, and the structural eval port. Includes the M0 spec-freeze work
 
 - Mapped path/load errors to exit code 2 (config) in the CLI (#27).
 
-[Unreleased]: https://github.com/igmarin/decon-rs/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.5.0
-[0.4.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.4.0
-[0.3.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.3.0
-[0.2.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.2.0
-[0.1.0]: https://github.com/igmarin/decon-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/igmarin/brigid/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/igmarin/brigid/releases/tag/v0.5.0
+[0.4.0]: https://github.com/igmarin/brigid/releases/tag/v0.4.0
+[0.3.0]: https://github.com/igmarin/brigid/releases/tag/v0.3.0
+[0.2.0]: https://github.com/igmarin/brigid/releases/tag/v0.2.0
+[0.1.0]: https://github.com/igmarin/brigid/releases/tag/v0.1.0

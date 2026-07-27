@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install git pre-commit hook for rs-guard code review on decon-rs.
+# Install git pre-commit hook for rs-guard code review on brigid.
 # Usage: ./scripts/install-hooks.sh
 #
 # rs-guard must be installed separately (cargo install rs-guard, or download a
@@ -15,7 +15,7 @@ mkdir -p "${HOOK_DIR}"
 
 cat > "${HOOK_FILE}" << 'EOF'
 #!/usr/bin/env bash
-# rs-guard pre-commit hook for decon-rs.
+# rs-guard pre-commit hook for brigid.
 # Runs rs-guard on staged changes before committing.
 # Exit 2 (REQUEST_CHANGES) blocks the commit.
 # Exit 0 (APPROVE/COMMENT) allows the commit.

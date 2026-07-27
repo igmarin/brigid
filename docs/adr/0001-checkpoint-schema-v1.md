@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-`decon` runs a long, expensive pipeline against code repositories (local trees or
+`brigid` runs a long, expensive pipeline against code repositories (local trees or
 GitHub URLs). A full monorepo tutorial can require dozens of LLM map/reduce
 calls, so every expensive stage must be **idempotent and resumable**.
 
@@ -117,7 +117,7 @@ Rules:
 
 ### In-memory index
 
-During resume, `decon` scans `files.ndjson.gz` once and builds:
+During resume, `brigid` scans `files.ndjson.gz` once and builds:
 
 ```text
 path -> (compressed_byte_offset, compressed_length, sha256)
@@ -243,4 +243,4 @@ Recovery rules:
   shape.
 - `docs/best-practices.md` — tutorial quality and security rules that the
   checkpoint stages must preserve.
-- `crates/decon-pipeline/src/lib.rs` — placeholder reference to this ADR.
+- `crates/brigid-pipeline/src/lib.rs` — placeholder reference to this ADR.

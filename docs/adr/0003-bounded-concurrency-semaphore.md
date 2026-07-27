@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-`decon`'s pipeline stages fan out LLM calls in map/reduce batches. A single
+`brigid`'s pipeline stages fan out LLM calls in map/reduce batches. A single
 "identify" or "chapter" stage can issue dozens of `LlmClient::complete` calls
 against the same provider. Running all of them concurrently risks:
 
@@ -28,7 +28,7 @@ The project's review prompt (`.github/review-prompt.md`) explicitly flags
 architecture finding. So the concurrency mechanism must be bounded, and the
 bound must be configurable per batch.
 
-Additionally, the `max-llm-calls` budget (`decon-core::ProgressTracker`) must
+Additionally, the `max-llm-calls` budget (`brigid-core::ProgressTracker`) must
 be enforced **before** fanning out, so that a batch that would exceed the
 remaining budget fails fast and no calls are made — this is the fail-closed
 discipline required by the product spec.
@@ -37,7 +37,7 @@ discipline required by the product spec.
 
 Use a `tokio::sync::Semaphore` with `max_concurrency` permits to cap the number
 of concurrent in-flight `complete` calls. This is implemented in
-`crates/decon-llm/src/concurrency.rs`.
+`crates/brigid-llm/src/concurrency.rs`.
 
 ### `bounded_complete`
 
@@ -177,8 +177,8 @@ The budget is enforced **before** fanning out:
   pipeline stages that use bounded concurrency.
 - `docs/adr/0002-async-trait-llm-client.md` — the `LlmClient` trait that
   `bounded_complete` operates on.
-- `crates/decon-llm/src/concurrency.rs` — the implementation.
-- `crates/decon-core/src/progress.rs` — `ProgressTracker` and
+- `crates/brigid-llm/src/concurrency.rs` — the implementation.
+- `crates/brigid-core/src/progress.rs` — `ProgressTracker` and
   `BudgetExceeded`.
 - `.github/review-prompt.md` — flags unbounded LLM fan-out as a blocking
   finding.

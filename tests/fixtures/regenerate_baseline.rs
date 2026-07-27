@@ -6,7 +6,7 @@
 //! verified without a Python toolchain.
 //!
 //! The frozen `baseline.json` remains the independent oracle — this tool must
-//! *match* it. When `decon-crawl` is built in M1, it is tested against the same
+//! *match* it. When `brigid-crawl` is built in M1, it is tested against the same
 //! frozen baseline, keeping the parity test non-circular.
 //!
 //! ## Usage

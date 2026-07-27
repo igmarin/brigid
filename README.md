@@ -1,14 +1,14 @@
-# decon-rs
+# brigid
 ![Decon-RS Logo](https://github.com/user-attachments/assets/149638e7-1b52-4028-89c3-510a9383d15f)
 
-[![CI](https://github.com/igmarin/decon-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/igmarin/decon-rs/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/igmarin/decon-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/igmarin/decon-rs)
-[![crates.io](https://img.shields.io/crates/v/decon-cli.svg)](https://crates.io/crates/decon-cli)
+[![CI](https://github.com/igmarin/brigid/actions/workflows/ci.yml/badge.svg)](https://github.com/igmarin/brigid/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/igmarin/brigid/branch/main/graph/badge.svg)](https://codecov.io/gh/igmarin/brigid)
+[![crates.io](https://img.shields.io/crates/v/brigid-cli.svg)](https://crates.io/crates/brigid-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > Turn any codebase into a beginner-friendly tutorial — powered by LLMs, built in Rust.
 
-`decon` crawls a codebase, identifies its core abstractions, and produces a
+`brigid` crawls a codebase, identifies its core abstractions, and produces a
 multi-chapter Markdown + Mermaid tutorial that explains how the system works:
 setup, architecture, and inter-concept relationships. Built for monorepos and
 large codebases where "read the source" is not a realistic onboarding path.
@@ -39,19 +39,19 @@ to resume from the last completed stage. No work is lost.
 ```bash
 # Homebrew (macOS)
 brew tap igmarin/homebrew-tap
-brew install decon
+brew install brigid
 
 # cargo install
-cargo install decon-cli
+cargo install brigid-cli
 
 # cargo-binstall (pre-built binary)
-cargo binstall decon-cli
+cargo binstall brigid-cli
 ```
 
 Or download a binary from
-[GitHub Releases](https://github.com/igmarin/decon-rs/releases).
+[GitHub Releases](https://github.com/igmarin/brigid/releases).
 
-Verify: `decon --version`
+Verify: `brigid --version`
 
 ---
 
@@ -62,7 +62,7 @@ Verify: `decon --version`
 export DEEPSEEK_API_KEY="sk-your-key-here"
 
 # 2. Generate a tutorial from any codebase
-decon generate --dir ./my-project --output-dir ./tutorial
+brigid generate --dir ./my-project --output-dir ./tutorial
 
 # 3. Open the result
 open ./tutorial/index.md
@@ -71,7 +71,7 @@ open ./tutorial/index.md
 That's it. The tutorial is plain Markdown with Mermaid diagrams — render it
 in any Markdown viewer (GitHub, VS Code, Obsidian).
 
-> **No API key?** Set `DECON_FORCE_MOCK=1` to run the full pipeline with a
+> **No API key?** Set `BRIGID_FORCE_MOCK=1` to run the full pipeline with a
 > mock LLM client for offline testing.
 
 ---
@@ -114,21 +114,21 @@ together for monorepos and multi-app systems.
 
 | Command | What it does |
 |---------|-------------|
-| `decon generate` | Full pipeline → tutorial |
-| `decon crawl` | File inventory (zero LLM) |
-| `decon dry-run` | Plan + budget (zero LLM) |
-| `decon eval` | Tutorial quality gate (zero LLM) |
-| `decon identify` | Single stage: abstraction identification |
-| `decon relationships` | Single stage: relationship analysis |
-| `decon order` | Single stage: chapter ordering |
-| `decon chapters` | Single stage: chapter writing |
-| `decon setup` | Single stage: setup guide |
-| `decon overview` | Single stage: architecture overview |
-| `decon combine` | Single stage: index assembly |
-| `decon init` | Write a starter `decon.toml` |
-| `decon resume` | Checkpoint status report |
-| `decon completions` | Generate shell completions |
-| `decon manpage` | Generate a man page |
+| `brigid generate` | Full pipeline → tutorial |
+| `brigid crawl` | File inventory (zero LLM) |
+| `brigid dry-run` | Plan + budget (zero LLM) |
+| `brigid eval` | Tutorial quality gate (zero LLM) |
+| `brigid identify` | Single stage: abstraction identification |
+| `brigid relationships` | Single stage: relationship analysis |
+| `brigid order` | Single stage: chapter ordering |
+| `brigid chapters` | Single stage: chapter writing |
+| `brigid setup` | Single stage: setup guide |
+| `brigid overview` | Single stage: architecture overview |
+| `brigid combine` | Single stage: index assembly |
+| `brigid init` | Write a starter `brigid.toml` |
+| `brigid resume` | Checkpoint status report |
+| `brigid completions` | Generate shell completions |
+| `brigid manpage` | Generate a man page |
 
 For every flag, environment variable, and provider configuration, see the
 [Usage Guide](docs/usage-guide.md).
@@ -137,7 +137,7 @@ For every flag, environment variable, and provider configuration, see the
 
 ## Configuration
 
-`decon init` writes a starter `decon.toml`. Precedence is
+`brigid init` writes a starter `brigid.toml`. Precedence is
 **CLI > file > env > defaults**.
 
 ```toml
@@ -148,7 +148,7 @@ max_abstractions = 30
 dirs = ["./plugins"]
 ```
 
-Run `decon init --check` to validate an existing config.
+Run `brigid init --check` to validate an existing config.
 
 ---
 
@@ -179,7 +179,7 @@ For recovery procedures, common issues, and fixes, see
 | [Contributing](CONTRIBUTING.md) | TDD workflow, CI checks, PR process, commit conventions |
 | [Changelog](CHANGELOG.md) | Release history per milestone |
 | [Best Practices](docs/best-practices.md) | Tutorial quality rules (scope, budget, mermaid) |
-| [Migration from Python](docs/migrating-from-python.md) | Guide for Python `decon` users |
+| [Migration from Python](docs/migrating-from-python.md) | Guide for Python `brigid` users |
 | [Move to Rust](docs/move-to-rust.md) | Migration design, pipeline model, phase plan |
 | [ADRs](docs/adr/) | Architecture Decision Records (0001–0016) |
 

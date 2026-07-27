@@ -1,0 +1,47 @@
+[package]
+name = "brigid-cli"
+description = "brigid: deconstruct a codebase into an AI-generated tutorial (CLI binary)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "brigid"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+brigid-core = { path = "../brigid-core", version = "1.0.0" }
+brigid-crawl = { path = "../brigid-crawl", version = "1.0.0" }
+brigid-llm = { path = "../brigid-llm", version = "1.0.0" }
+brigid-pipeline = { path = "../brigid-pipeline", version = "1.0.0" }
+clap = { version = "4.6", features = ["derive"] }
+clap_mangen = "0.2"
+clap_complete = "4.6"
+serde = "1.0"
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+dirs = "6"
+
+# cargo-binstall support: allows `cargo binstall brigid-cli` to download
+# pre-built release binaries from GitHub Releases instead of compiling.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/brigid-{ version }-{ target }{ archive-suffix }"
+bin-dir = "brigid-{ version }-{ target }/{ bin }{ format-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/decon-core",
-    "crates/decon-crawl",
-    "crates/decon-llm",
-    "crates/decon-pipeline",
-    "crates/decon-cli",
+    "crates/brigid-core",
+    "crates/brigid-crawl",
+    "crates/brigid-llm",
+    "crates/brigid-pipeline",
+    "crates/brigid-cli",
 ]
 
 [workspace.package]
@@ -13,9 +13,9 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/igmarin/decon-rs"
-homepage = "https://github.com/igmarin/decon-rs"
-documentation = "https://docs.rs/decon-cli"
+repository = "https://github.com/igmarin/brigid"
+homepage = "https://github.com/igmarin/brigid"
+documentation = "https://docs.rs/brigid-cli"
 authors = ["Ismael Marín"]
 keywords = ["tutorial", "codebase", "documentation", "llm", "cli"]
 categories = ["command-line-utilities", "development-tools", "documentation"]

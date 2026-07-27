@@ -44,7 +44,7 @@ registries = []
 
 [bans]
 multiple-versions = "warn"
-# Workspace path dependencies (e.g. `decon-core = { path = "../decon-core" }`)
+# Workspace path dependencies (e.g. `brigid-core = { path = "../brigid-core" }`)
 # have no version requirement and are flagged as wildcards. Allow them so the
 # check passes for this workspace layout.
 wildcards = "allow"

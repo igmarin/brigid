@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-`decon-crawl` inventories every file under a repository root on every run.
+`brigid-crawl` inventories every file under a repository root on every run.
 For large repositories this full walk is wasteful when only a handful of
 files changed since the last run (e.g. since the last released tag). CI
 pipelines and editor integrations frequently want to analyse **only** the
@@ -30,7 +30,7 @@ We need an incremental detection mechanism that:
 
 ### 1. Shell out to `git` via `std::process::Command`
 
-A new module `decon-crawl::git_diff` provides:
+A new module `brigid-crawl::git_diff` provides:
 
 ```rust
 pub fn changed_files_since(repo_root: &Path, ref_name: &str)
@@ -88,7 +88,7 @@ The raw `git diff --name-only` output is:
 
 ### 5. `CrawlOptions` integration
 
-`decon-crawl::local` gains a `CrawlOptions` struct:
+`brigid-crawl::local` gains a `CrawlOptions` struct:
 
 ```rust
 pub struct CrawlOptions {
@@ -155,10 +155,10 @@ themselves.
 
 ## Related Documents
 
-- [`crates/decon-crawl/src/git_diff.rs`](../../crates/decon-crawl/src/git_diff.rs) —
+- [`crates/brigid-crawl/src/git_diff.rs`](../../crates/brigid-crawl/src/git_diff.rs) —
   the `changed_files_since` implementation.
-- [`crates/decon-crawl/src/local.rs`](../../crates/decon-crawl/src/local.rs) —
+- [`crates/brigid-crawl/src/local.rs`](../../crates/brigid-crawl/src/local.rs) —
   `CrawlOptions` and `crawl_local_with_options`.
 - ADR 0001 — Checkpoint schema v1 (the pipeline that consumes the crawl
   inventory).
-- Issue #224 — Add git_diff module to decon-crawl.
+- Issue #224 — Add git_diff module to brigid-crawl.

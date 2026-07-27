@@ -15,7 +15,7 @@ The **identify** stage classifies crawled files into abstraction "kinds"
 Today these kinds come exclusively from LLM output during the identify
 map/reduce (or single-shot) call. Users with domain-specific codebases —
 internal frameworks, proprietary file formats, non-standard extensions —
-have no way to teach `decon` about their own kind vocabulary without
+have no way to teach `brigid` about their own kind vocabulary without
 modifying the core pipeline or crafting elaborate LLM prompts.
 
 Issue #228 asks for a **plugin extension point** so users can plug
@@ -33,9 +33,9 @@ touching core code. The extension must be:
 
 ## Decision
 
-### 1. Object-safe `KindDetector` trait in `decon-core`
+### 1. Object-safe `KindDetector` trait in `brigid-core`
 
-A new module `decon-core::plugin` defines:
+A new module `brigid-core::plugin` defines:
 
 ```rust
 pub trait KindDetector: Send + Sync {
@@ -93,7 +93,7 @@ the content contains `pub mod` / `mod` (Rust) declarations, it returns
 ### 4. `RunConfig.plugin_dirs`
 
 `RunConfig` gains a `plugin_dirs: Option<Vec<PathBuf>>` field,
-configurable via `decon.toml`:
+configurable via `brigid.toml`:
 
 ```toml
 [plugins]
@@ -101,7 +101,7 @@ dirs = ["./plugins", "./custom-detectors"]
 ```
 
 The nested `[plugins]` table is lifted into the flat `plugin_dirs` field
-during config parsing (TOML and YAML). The `DECON_PLUGIN_DIRS`
+during config parsing (TOML and YAML). The `BRIGID_PLUGIN_DIRS`
 environment variable (colon-separated) is also supported.
 
 **Dynamic loading from shared libraries (`.so`/`.dylib`/`.dll`) is
@@ -113,8 +113,8 @@ future milestone (see §Future extension points).
 ### 5. Identify stage integration
 
 The identify stage enriches abstractions via
-`decon_core::plugin::enrich_abstraction_kinds` (and the pipeline-level
-wrapper `decon_pipeline::identify::enrich_identify_kinds`). The
+`brigid_core::plugin::enrich_abstraction_kinds` (and the pipeline-level
+wrapper `brigid_pipeline::identify::enrich_identify_kinds`). The
 enrichment is **gap-filling only**: abstractions whose `kind` is already
 non-empty (the normal case — the LLM set it) are left untouched. Only
 abstractions with an empty `kind` are classified by the registry.
@@ -166,7 +166,7 @@ Use a generic parameter instead of `dyn`.
 Define the trait over a WASM ABI so plugins run in a sandbox.
 
 - **Pros:** Memory safety isolation; language-agnostic plugins.
-- **Cons:** Adds a WASM runtime dependency to `decon-core` (which is
+- **Cons:** Adds a WASM runtime dependency to `brigid-core` (which is
   intentionally I/O-free and lightweight); significant complexity for
   an MVP; the trait shape would be constrained by the ABI.
 - **Rejected:** Premature for this milestone. The object-safe trait is
@@ -218,14 +218,14 @@ Define the trait over a WASM ABI so plugins run in a sandbox.
 
 ## Related Documents
 
-- [`crates/decon-core/src/plugin.rs`](../../crates/decon-core/src/plugin.rs) —
+- [`crates/brigid-core/src/plugin.rs`](../../crates/brigid-core/src/plugin.rs) —
   the `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector`, and
   `enrich_abstraction_kinds` implementation.
-- [`crates/decon-core/src/config.rs`](../../crates/decon-core/src/config.rs) —
+- [`crates/brigid-core/src/config.rs`](../../crates/brigid-core/src/config.rs) —
   `RunConfig.plugin_dirs` and the `[plugins] dirs` lifting logic.
-- [`crates/decon-pipeline/src/identify/mod.rs`](../../crates/decon-pipeline/src/identify/mod.rs) —
+- [`crates/brigid-pipeline/src/identify/mod.rs`](../../crates/brigid-pipeline/src/identify/mod.rs) —
   `enrich_identify_kinds` pipeline integration.
-- [`crates/decon-pipeline/src/identify_runner.rs`](../../crates/decon-pipeline/src/identify_runner.rs) —
+- [`crates/brigid-pipeline/src/identify_runner.rs`](../../crates/brigid-pipeline/src/identify_runner.rs) —
   `identify_with_cancellation` registry wiring.
 - ADR 0001 — Checkpoint schema v1 (the pipeline that consumes the
   identify result).

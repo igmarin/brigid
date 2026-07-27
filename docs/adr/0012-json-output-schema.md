@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The `decon` CLI needs machine-readable JSON output for integration with CI
+The `brigid` CLI needs machine-readable JSON output for integration with CI
 pipelines, editor plugins, and programmatic consumers. Prior to this ADR,
 only a handful of subcommands (`crawl`, `dry-run`, `eval`, `resume`)
 supported `--format json`, each with an ad-hoc JSON shape. The pipeline
@@ -31,7 +31,7 @@ cause silent failures. We need a design that:
 ### 1. `StageOutput<T>` Envelope
 
 All JSON output uses a generic envelope type defined in
-`decon-core::stage_output`:
+`brigid-core::stage_output`:
 
 ```rust
 pub struct StageOutput<T> {
@@ -51,7 +51,7 @@ the stage-specific payload (e.g., `IdentifyOutput`, `GenerateOutput`). The
 ### 2. `schema_version` Field
 
 The envelope includes a `schema_version` field (currently `1`), exported as
-`SCHEMA_VERSION` from `decon-core::stage_output`. This version number applies
+`SCHEMA_VERSION` from `brigid-core::stage_output`. This version number applies
 to the **envelope structure** and the **set of stage output types**. It does
 not version individual stage payloads independently.
 
@@ -92,7 +92,7 @@ stage output type:
 - `combine.json`
 - `generate.json`
 
-Tests in `decon-core::stage_output::tests` (prefixed `schema_stability_*`)
+Tests in `brigid-core::stage_output::tests` (prefixed `schema_stability_*`)
 construct sample data, serialize it with `serde_json`, and compare against
 the frozen snapshot using `assert-json-diff::assert_json_eq!`. If a
 developer accidentally changes a field name or type, the test fails and
@@ -180,11 +180,11 @@ Embed the schema version in the CLI flag (e.g., `--format json:v1`).
 
 ## Related Documents
 
-- [`crates/decon-core/src/stage_output.rs`](../../crates/decon-core/src/stage_output.rs) —
+- [`crates/brigid-core/src/stage_output.rs`](../../crates/brigid-core/src/stage_output.rs) —
   the `StageOutput<T>` envelope and all stage output types.
 - [`tests/fixtures/json-schemas/`](../../tests/fixtures/json-schemas/) —
   frozen JSON snapshots for schema stability tests.
 - ADR 0001 — Checkpoint schema v1 (the checkpoint format that `generate`
   produces).
-- Issue #223 — Add `--format json` to `decon generate` + JSON schema
+- Issue #223 — Add `--format json` to `brigid generate` + JSON schema
   stability tests + ADR 0012.

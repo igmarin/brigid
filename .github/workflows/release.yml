@@ -42,30 +42,30 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Build decon-cli (native)
-        run: cargo build --release -p decon-cli
+      - name: Build brigid-cli (native)
+        run: cargo build --release -p brigid-cli
       - name: Generate man page
-        run: ./target/release/decon manpage --output decon.1
+        run: ./target/release/brigid manpage --output brigid.1
       - name: Generate completion scripts
         run: |
           mkdir -p completions
-          ./target/release/decon completions --shell bash       --output completions/decon.bash
-          ./target/release/decon completions --shell zsh         --output completions/_decon
-          ./target/release/decon completions --shell fish        --output completions/decon.fish
-          ./target/release/decon completions --shell powershell  --output completions/_decon.ps1
+          ./target/release/brigid completions --shell bash       --output completions/brigid.bash
+          ./target/release/brigid completions --shell zsh         --output completions/_brigid
+          ./target/release/brigid completions --shell fish        --output completions/brigid.fish
+          ./target/release/brigid completions --shell powershell  --output completions/_brigid.ps1
       - name: Verify generated files are non-empty
         run: |
-          test -s decon.1
-          test -s completions/decon.bash
-          test -s completions/_decon
-          test -s completions/decon.fish
-          test -s completions/_decon.ps1
+          test -s brigid.1
+          test -s completions/brigid.bash
+          test -s completions/_brigid
+          test -s completions/brigid.fish
+          test -s completions/_brigid.ps1
       - name: Upload docs artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: decon-docs
+          name: brigid-docs
           path: |
-            decon.1
+            brigid.1
             completions/
           retention-days: 1
 
@@ -112,7 +112,7 @@ jobs:
       - name: Download docs artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: decon-docs
+          name: brigid-docs
           path: docs-artifact
 
       # ── Build ──────────────────────────────────────────────────────
@@ -123,10 +123,10 @@ jobs:
           tool: cross
       - name: Build binary (cross)
         if: matrix.use-cross
-        run: cross build --release --target ${{ matrix.target }} -p decon-cli
+        run: cross build --release --target ${{ matrix.target }} -p brigid-cli
       - name: Build binary (native)
         if: ${{ !matrix.use-cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p decon-cli
+        run: cargo build --release --target ${{ matrix.target }} -p brigid-cli
 
       # ── Determine version ───────────────────────────────────────────
       - name: Determine version from tag
@@ -149,13 +149,13 @@ jobs:
         run: |
           version="${{ steps.version.outputs.version }}"
           target="${{ matrix.target }}"
-          staging="decon-${version}-${target}"
+          staging="brigid-${version}-${target}"
           mkdir -p "${staging}/completions"
           # Binary
-          cp "target/${target}/release/decon" "${staging}/decon"
-          chmod +x "${staging}/decon"
+          cp "target/${target}/release/brigid" "${staging}/brigid"
+          chmod +x "${staging}/brigid"
           # Docs (man page + completion scripts)
-          cp docs-artifact/decon.1 "${staging}/"
+          cp docs-artifact/brigid.1 "${staging}/"
           cp docs-artifact/completions/* "${staging}/completions/"
           # README snippet for quick reference
           cp README.md "${staging}/"
@@ -168,12 +168,12 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $target = "${{ matrix.target }}"
-          $staging = "decon-$version-$target"
+          $staging = "brigid-$version-$target"
           New-Item -ItemType Directory -Force -Path "$staging\completions"
           # Binary
-          Copy-Item "target/$target/release/decon.exe" "$staging/decon.exe"
+          Copy-Item "target/$target/release/brigid.exe" "$staging/brigid.exe"
           # Docs (man page + completion scripts)
-          Copy-Item "docs-artifact/decon.1" "$staging/"
+          Copy-Item "docs-artifact/brigid.1" "$staging/"
           Copy-Item "docs-artifact/completions/*" "$staging/completions/"
           # README snippet for quick reference
           Copy-Item "README.md" "$staging/"
@@ -182,8 +182,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: decon-${{ matrix.target }}
-          path: decon-*-${{ matrix.target }}.*
+          name: brigid-${{ matrix.target }}
+          path: brigid-*-${{ matrix.target }}.*
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────────────
@@ -212,13 +212,13 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          pattern: decon-*-*
+          pattern: brigid-*-*
           merge-multiple: true
       - name: Collect release archives
         run: |
           mkdir -p release-assets
           # Move all .tar.gz and .zip archives into release-assets/.
-          find . -maxdepth 1 \( -name 'decon-*.tar.gz' -o -name 'decon-*.zip' \) \
+          find . -maxdepth 1 \( -name 'brigid-*.tar.gz' -o -name 'brigid-*.zip' \) \
             -exec mv {} release-assets/ \;
           echo "Release archives:"
           ls -la release-assets/
@@ -250,7 +250,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           tag="${GITHUB_REF_NAME:-v${version}}"
           gh release create "$tag" \
-            --title "decon ${version}" \
+            --title "brigid ${version}" \
             --notes-file release-notes.md \
             release-assets/*
           echo "Created release ${tag}"
@@ -264,7 +264,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # Publish to crates.io.
   # Workspace crates are published in dependency order:
-  #   decon-core → decon-crawl → decon-llm → decon-pipeline → decon-cli
+  #   brigid-core → brigid-crawl → brigid-llm → brigid-pipeline → brigid-cli
   # Each `cargo publish -p <crate>` waits for the previous to be available
   # on the registry before proceeding. Skipped in dry-run mode.
   # Requires the CRATES_TOKEN secret to be set in the repository.
@@ -279,31 +279,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: stable
-      - name: Publish decon-core
+      - name: Publish brigid-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p decon-core
-      - name: Wait for decon-core to propagate
+        run: cargo publish -p brigid-core
+      - name: Wait for brigid-core to propagate
         run: sleep 20
-      - name: Publish decon-crawl
+      - name: Publish brigid-crawl
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p decon-crawl
-      - name: Wait for decon-crawl to propagate
+        run: cargo publish -p brigid-crawl
+      - name: Wait for brigid-crawl to propagate
         run: sleep 20
-      - name: Publish decon-llm
+      - name: Publish brigid-llm
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p decon-llm
-      - name: Wait for decon-llm to propagate
+        run: cargo publish -p brigid-llm
+      - name: Wait for brigid-llm to propagate
         run: sleep 20
-      - name: Publish decon-pipeline
+      - name: Publish brigid-pipeline
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p decon-pipeline
-      - name: Wait for decon-pipeline to propagate
+        run: cargo publish -p brigid-pipeline
+      - name: Wait for brigid-pipeline to propagate
         run: sleep 20
-      - name: Publish decon-cli
+      - name: Publish brigid-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p decon-cli
+        run: cargo publish -p brigid-cli

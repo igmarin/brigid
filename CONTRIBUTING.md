@@ -1,6 +1,6 @@
-# Contributing to `decon`
+# Contributing to `brigid`
 
-Thanks for helping make `decon` a fast, reliable tool for turning code monoliths
+Thanks for helping make `brigid` a fast, reliable tool for turning code monoliths
 into structured tutorials. This guide covers how to build, test, and land
 changes in the workspace.
 
@@ -10,26 +10,26 @@ You need a recent Rust toolchain. The workspace declares `rust-version = "1.85"`
 
 ```bash
 # Clone and enter the workspace
-git clone https://github.com/igmarin/decon-rs.git
-cd decon-rs
+git clone https://github.com/igmarin/brigid.git
+cd brigid
 
 # Build the whole workspace
 cargo build --workspace
 
 # Run the CLI
-cargo run -p decon-cli -- --help
-cargo run -p decon-cli -- crawl --dir tests/fixtures/python-lib
-cargo run -p decon-cli -- dry-run --dir tests/fixtures/umbrella --format json
-cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini
+cargo run -p brigid-cli -- --help
+cargo run -p brigid-cli -- crawl --dir tests/fixtures/python-lib
+cargo run -p brigid-cli -- dry-run --dir tests/fixtures/umbrella --format json
+cargo run -p brigid-cli -- eval --out tests/fixtures/tutorials/good-mini
 
-# Full generate pipeline (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY)
-cargo run -p decon-cli -- generate --dir tests/fixtures/umbrella \
+# Full generate pipeline (requires DEEPSEEK_API_KEY or BRIGID_LLM_API_KEY)
+cargo run -p brigid-cli -- generate --dir tests/fixtures/umbrella \
   --output-dir /tmp/tutorial --language en
 ```
 
 ### Windows
 
-`decon` builds and tests natively on Windows with the MSVC toolchain. Install
+`brigid` builds and tests natively on Windows with the MSVC toolchain. Install
 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 (the C++ workload) and [Rust](https://rustup.rs/) via `rustup-init.exe`, then
 use the same `cargo` commands. CI runs the test and clippy jobs on
@@ -79,17 +79,17 @@ rustc tests/fixtures/regenerate_baseline.rs -o /tmp/regen_baseline && \
   /tmp/regen_baseline tests/fixtures/ --check
 
 # Eval regression gate (good-mini passes at threshold 80)
-cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
+cargo run -p brigid-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
 
 # Benchmarks (criterion — optional, for performance tracking)
-cargo bench -p decon-pipeline
+cargo bench -p brigid-pipeline
 ```
 
 
 ## Optional live LLM tests
 
 Live tests make **real, paid API calls** (to DeepSeek by default) and cost a
-few cents per run. They are feature-gated behind `decon-pipeline/live-llm`
+few cents per run. They are feature-gated behind `brigid-pipeline/live-llm`
 and skip automatically (printing `skipped:` to stderr) when no API key is
 present, so enabling the feature is always safe.
 
@@ -97,33 +97,33 @@ Default CI does **not** enable `live-llm`, so these tests are never compiled
 or run there.
 
 ```sh
-# Run live smoke tests (requires DEEPSEEK_API_KEY or DECON_LLM_API_KEY)
-cargo test --workspace --features decon-pipeline/live-llm \
+# Run live smoke tests (requires DEEPSEEK_API_KEY or BRIGID_LLM_API_KEY)
+cargo test --workspace --features brigid-pipeline/live-llm \
   --test live_smoke -- --nocapture
 ```
 
-Budget is capped at `DECON_MAX_LLM_CALLS` (default `5`) calls per test via a
+Budget is capped at `BRIGID_MAX_LLM_CALLS` (default `5`) calls per test via a
 `ProgressTracker`. The identify test also writes responses to a disk cache
-under `target/decon-llm-cache` so re-runs with an unchanged prompt are free.
+under `target/brigid-llm-cache` so re-runs with an unchanged prompt are free.
 
 
 ## Testing strategy
 
-`decon` uses several layers of tests, each suited to a different concern:
+`brigid` uses several layers of tests, each suited to a different concern:
 
 | Layer | Tooling | What it covers |
 |-------|---------|----------------|
-| **Unit tests** (`#[test]`) | `cargo test` | Pure domain logic in `decon-core` (budget, scope, mermaid, eval, config, plugin) and stage helpers. Fast, no I/O. |
+| **Unit tests** (`#[test]`) | `cargo test` | Pure domain logic in `brigid-core` (budget, scope, mermaid, eval, config, plugin) and stage helpers. Fast, no I/O. |
 | **Integration tests** (`tests/`) | `cargo test --test …` | Stage orchestration, checkpoint roundtrips, CLI exit codes, JSON schema stability. |
 | **HTTP contract tests** | [`wiremock`](https://crates.io/crates/wiremock) | LLM provider client retry/backoff, timeout, and error handling against a mock OpenAI-compatible server — no real network. |
 | **Property tests** | [`proptest`](https://crates.io/crates/proptest) | Pure-logic invariants: budget packing, module-key normalization, mermaid sanitize idempotence. |
-| **CLI tests** | [`assert_cmd`](https://crates.io/crates/assert_cmd) | `decon --help`, exit codes, `--format json` dry-run shape, error messages. |
-| **Live LLM smoke** | feature-gated `decon-pipeline/live-llm` | Real, paid API calls (DeepSeek) against a tiny fixture; budget-capped via `DECON_MAX_LLM_CALLS`. Runs **nightly** in CI, never on PR/push. Skips automatically when no key is present. |
-| **Eval regression** | `decon eval` on golden fixtures | Structural tutorial quality gate (`good-mini` passes, `broken-mini` fails at threshold 80). |
+| **CLI tests** | [`assert_cmd`](https://crates.io/crates/assert_cmd) | `brigid --help`, exit codes, `--format json` dry-run shape, error messages. |
+| **Live LLM smoke** | feature-gated `brigid-pipeline/live-llm` | Real, paid API calls (DeepSeek) against a tiny fixture; budget-capped via `BRIGID_MAX_LLM_CALLS`. Runs **nightly** in CI, never on PR/push. Skips automatically when no key is present. |
+| **Eval regression** | `brigid eval` on golden fixtures | Structural tutorial quality gate (`good-mini` passes, `broken-mini` fails at threshold 80). |
 
 Guidelines:
 
-- **Prefer unit tests** for pure logic; keep `decon-core` I/O-free so it stays
+- **Prefer unit tests** for pure logic; keep `brigid-core` I/O-free so it stays
   fast and deterministic.
 - Use **wiremock** for any HTTP-touching code — never hit a live provider in
   unit or PR CI.
@@ -179,40 +179,40 @@ on regression.
 
 | Area | Crate / path | Notes |
 |------|----------------|-------|
-| Module keys / inventory | `decon-core::module` | Pure |
-| Scope filter (`--apps`) | `decon-core::scope` | Pure |
-| Setup assessment | `decon-core::setup` | Pure |
-| Context budget | `decon-core::budget` | Pure |
-| Mermaid sanitize | `decon-core::mermaid` | Pure; table-driven tests |
-| Index diagrams | `decon-core::diagrams` | Always sanitize/validate |
-| Structural eval | `decon-core::eval` | Fixtures under `tests/fixtures/tutorials/` |
-| RunConfig | `decon-core::config` | CLI > file > env > defaults |
-| Checkpoint types | `decon-core::checkpoint` | ADR 0001 metadata; ADR 0006 stage outputs |
-| Progress / LLM budget | `decon-core::progress` | Fail-closed max calls |
-| Secrets redaction | `decon-core::secrets` | Paths + content heuristics |
-| i18n chrome | `decon-core::i18n` | `Locale` + `ChromeStrings` (en/es); ADR 0007 |
-| Chapter domain types | `decon-core::chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` |
-| M4 domain types | `decon-core::generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
-| M4 domain types | `decon-core::abstraction` | `RelationshipsResult`, `Relationship` |
-| LLM disk cache | `decon-llm::cache` | Hash-keyed response cache; enabled by default with LRU eviction (ADR 0009) |
-| LLM provider client | `decon-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff + host allowlist |
-| Bounded concurrency | `decon-llm::concurrency` | Semaphore-gated map batches |
-| Checkpoint store | `decon-pipeline::checkpoint_store` | save/load bundle; file-based stage outputs (ADR 0006) |
-| Resume helpers | `decon-pipeline::resume` | stage-skip / invalidate |
-| Local crawl | `decon-crawl::local` | FS I/O; symlink cycle detection |
-| Dry-run plan | `decon-pipeline::dry_run` | Orchestration |
-| Identify stage | `decon-pipeline::identify` | Map/reduce + single-shot |
-| Relationships stage | `decon-pipeline::relationships` | Budgeted evidence selection |
-| Order stage | `decon-pipeline::order` | Chapter ordering + validation |
-| Chapters stage | `decon-pipeline::chapters` | Bounded-concurrent chapter writing |
-| Setup guide stage | `decon-pipeline::setup_guide` | Score-triggered generation |
-| Overview stage | `decon-pipeline::overview` | Multi-app architecture overview |
-| Combine stage | `decon-pipeline::combine` | Index + diagrams + i18n chrome + sanitize |
-| Generate orchestration | `decon-pipeline::generate` | Full pipeline + `--each-app` fan-out |
-| Chapter review | `decon-pipeline::review` | `--review-chapters` second LLM pass |
-| Prompt rendering | `decon-pipeline::prompts` | minijinja templates |
-| Benchmarks | `decon-pipeline::benches/` | criterion benchmarks for critical paths |
-| CLI | `decon-cli` | Thin wrappers + `assert_cmd` tests; completions + man page |
+| Module keys / inventory | `brigid-core::module` | Pure |
+| Scope filter (`--apps`) | `brigid-core::scope` | Pure |
+| Setup assessment | `brigid-core::setup` | Pure |
+| Context budget | `brigid-core::budget` | Pure |
+| Mermaid sanitize | `brigid-core::mermaid` | Pure; table-driven tests |
+| Index diagrams | `brigid-core::diagrams` | Always sanitize/validate |
+| Structural eval | `brigid-core::eval` | Fixtures under `tests/fixtures/tutorials/` |
+| RunConfig | `brigid-core::config` | CLI > file > env > defaults |
+| Checkpoint types | `brigid-core::checkpoint` | ADR 0001 metadata; ADR 0006 stage outputs |
+| Progress / LLM budget | `brigid-core::progress` | Fail-closed max calls |
+| Secrets redaction | `brigid-core::secrets` | Paths + content heuristics |
+| i18n chrome | `brigid-core::i18n` | `Locale` + `ChromeStrings` (en/es); ADR 0007 |
+| Chapter domain types | `brigid-core::chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` |
+| M4 domain types | `brigid-core::generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
+| M4 domain types | `brigid-core::abstraction` | `RelationshipsResult`, `Relationship` |
+| LLM disk cache | `brigid-llm::cache` | Hash-keyed response cache; enabled by default with LRU eviction (ADR 0009) |
+| LLM provider client | `brigid-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff + host allowlist |
+| Bounded concurrency | `brigid-llm::concurrency` | Semaphore-gated map batches |
+| Checkpoint store | `brigid-pipeline::checkpoint_store` | save/load bundle; file-based stage outputs (ADR 0006) |
+| Resume helpers | `brigid-pipeline::resume` | stage-skip / invalidate |
+| Local crawl | `brigid-crawl::local` | FS I/O; symlink cycle detection |
+| Dry-run plan | `brigid-pipeline::dry_run` | Orchestration |
+| Identify stage | `brigid-pipeline::identify` | Map/reduce + single-shot |
+| Relationships stage | `brigid-pipeline::relationships` | Budgeted evidence selection |
+| Order stage | `brigid-pipeline::order` | Chapter ordering + validation |
+| Chapters stage | `brigid-pipeline::chapters` | Bounded-concurrent chapter writing |
+| Setup guide stage | `brigid-pipeline::setup_guide` | Score-triggered generation |
+| Overview stage | `brigid-pipeline::overview` | Multi-app architecture overview |
+| Combine stage | `brigid-pipeline::combine` | Index + diagrams + i18n chrome + sanitize |
+| Generate orchestration | `brigid-pipeline::generate` | Full pipeline + `--each-app` fan-out |
+| Chapter review | `brigid-pipeline::review` | `--review-chapters` second LLM pass |
+| Prompt rendering | `brigid-pipeline::prompts` | minijinja templates |
+| Benchmarks | `brigid-pipeline::benches/` | criterion benchmarks for critical paths |
+| CLI | `brigid-cli` | Thin wrappers + `assert_cmd` tests; completions + man page |
 
 ## Coverage gate
 
@@ -244,13 +244,13 @@ Milestone 2 and runs on every PR via `cargo llvm-cov --workspace
 
 ## Code conventions
 
-- **Library crates** (`decon-core`, `decon-crawl`, `decon-llm`,
-  `decon-pipeline`) perform no CLI or main-binary logic and stay easy to unit
+- **Library crates** (`brigid-core`, `brigid-crawl`, `brigid-llm`,
+  `brigid-pipeline`) perform no CLI or main-binary logic and stay easy to unit
   test.
 - **Public APIs must have rustdoc.** Each library crate declares
   `#![deny(missing_docs)]`.
 - Prefer typed errors with `thiserror` in libraries; user-facing messages and
-  exit codes live in `decon-cli`.
+  exit codes live in `brigid-cli`.
 - Use `clap` derive for CLI flags. Keep the binary a thin wrapper around the
   pipeline crates.
 - All GitHub Actions we use are pinned by full commit SHA.
@@ -259,11 +259,11 @@ Milestone 2 and runs on every PR via `cargo llvm-cov --workspace
 
 ```text
 crates/
-  decon-core/      pure domain: models, traits, mermaid, budgeting
-  decon-crawl/     local + GitHub fetching
-  decon-llm/       provider clients, retries, caching
-  decon-pipeline/  stage orchestration, checkpoint/resume
-  decon-cli/       clap binary and exit codes
+  brigid-core/      pure domain: models, traits, mermaid, budgeting
+  brigid-crawl/     local + GitHub fetching
+  brigid-llm/       provider clients, retries, caching
+  brigid-pipeline/  stage orchestration, checkpoint/resume
+  brigid-cli/       clap binary and exit codes
 ```
 
 Add new crates under `crates/` and register them in the root `Cargo.toml`
@@ -356,7 +356,7 @@ Fixes #210
    [Commit messages](#commit-messages).
 3. Ensure `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`,
    `cargo llvm-cov --fail-under-lines 85`, `cargo audit`, `cargo deny check`,
-   and the eval regression gate (`cargo run -p decon-cli -- eval --out
+   and the eval regression gate (`cargo run -p brigid-cli -- eval --out
    tests/fixtures/tutorials/good-mini --threshold 80`) pass locally.
 4. Open a PR that references the issue number (e.g. `Closes #3`).
 5. Wait for CI (Ubuntu + macOS + Windows matrix for test/clippy) and any
@@ -365,10 +365,10 @@ Fixes #210
 
 ## Getting help
 
-- **Bugs and feature requests** — open a [GitHub issue](https://github.com/igmarin/decon-rs/issues).
-  Include the `decon --version`, the command you ran, and the full stderr
+- **Bugs and feature requests** — open a [GitHub issue](https://github.com/igmarin/brigid/issues).
+  Include the `brigid --version`, the command you ran, and the full stderr
   output (redact API keys).
-- **Questions and discussion** — use [GitHub Discussions](https://github.com/igmarin/decon-rs/discussions)
+- **Questions and discussion** — use [GitHub Discussions](https://github.com/igmarin/brigid/discussions)
   for "how do I…" questions that are not bugs.
 - **Architecture questions** — check [`ARCHITECTURE.md`](ARCHITECTURE.md) and
   [`docs/adr/`](docs/adr/) first; most design decisions are recorded there.

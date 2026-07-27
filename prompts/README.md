@@ -1,7 +1,7 @@
 # Prompt Catalog
 
 Versioned prompt templates ported from the Python reference implementation
-(`PocketFlow-Tutorial-Codebase-Knowledge`) for the `decon-rs` pipeline.
+(`PocketFlow-Tutorial-Codebase-Knowledge`) for the `brigid` pipeline.
 
 ## Template syntax
 
@@ -26,11 +26,11 @@ variables listed in the **Inputs** column.
 
 ## Integration notes
 
-- The `decon-pipeline` crate must supply the exact variable names listed in the
+- The `brigid-pipeline` crate must supply the exact variable names listed in the
   **Inputs** column. Any mismatch will cause a minijinja/Tera render error.
 - At runtime the templates should be embedded with `include_str!` so the binary
   does not depend on the `prompts/` directory layout at execution time. Full
-  production embedding in `decon-pipeline` / `decon-llm` is left to the
+  production embedding in `brigid-pipeline` / `brigid-llm` is left to the
   integration PR.
 - Treat all string variables as untrusted user input: pre-validate or escape
   them before rendering. `language_instruction`, `lang_note`, and similar
@@ -69,7 +69,7 @@ are required.
   shift rendered output and stable hashes. Commit prompt file changes together
   with any updated test snapshots / fixture expectations, and bump the prompt or
   tool version when editing these files.
-- Each prompt has a render test in `crates/decon-pipeline/tests/prompts.rs`
+- Each prompt has a render test in `crates/brigid-pipeline/tests/prompts.rs`
   that renders the template with a synthetic fixture context and asserts the
   output contains the expected sections / YAML markers. When adding a new
   prompt, add a matching fixture test there.

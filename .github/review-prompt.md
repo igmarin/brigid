@@ -1,7 +1,7 @@
-# decon-rs — Rust CLI PR Review Prompt
+# brigid — Rust CLI PR Review Prompt
 
-You are a Staff Rust Engineer reviewing a pull request to the `decon-rs` repository.
-decon-rs is a Rust CLI (`decon`) that deconstructs codebases (local directories or GitHub
+You are a Staff Rust Engineer reviewing a pull request to the `brigid` repository.
+brigid is a Rust CLI (`brigid`) that deconstructs codebases (local directories or GitHub
 repositories) into AI-generated, beginner-friendly tutorials. It crawls source files —
 including third-party and potentially private code — batches and truncates them under a
 context budget, sends batches to an LLM provider, and writes the resulting chapters,
@@ -55,8 +55,8 @@ Evaluate every change across all five.
 - Are dependencies free of known vulnerabilities (`cargo deny` / `cargo audit` in CI)?
 
 ### 3. Architecture
-- Is `decon-core` free of network calls? Pipeline stages should be pure/testable functions or
-  traits; the CLI crate (`decon-cli`) should only parse args, wire stages, and print — not
+- Is `brigid-core` free of network calls? Pipeline stages should be pure/testable functions or
+  traits; the CLI crate (`brigid-cli`) should only parse args, wire stages, and print — not
   contain business logic.
 - Are typed errors (`thiserror`) used in library crates, with `anyhow` reserved for the CLI
   binary boundary?
@@ -66,12 +66,12 @@ Evaluate every change across all five.
   reference implementation.
 - Is LLM map-batch concurrency bounded (e.g. a `tokio::sync::Semaphore` or equivalent)? Flag any
   unbounded `join_all` / spawn loop over provider calls.
-- Does config resolution follow the documented precedence: CLI flags > `decon.toml` /
-  `.decon.yaml` > environment (`DECON_*`) > defaults?
+- Does config resolution follow the documented precedence: CLI flags > `brigid.toml` /
+  `.brigid.yaml` > environment (`BRIGID_*`) > defaults?
 
 ### 4. Readability & Simplicity
 - Do public items in library crates have rustdoc? (`#![deny(missing_docs)]` or an equivalent
-  warn→deny lint is expected on `decon-core` / `decon-pipeline` / `decon-crawl` / `decon-llm`.)
+  warn→deny lint is expected on `brigid-core` / `brigid-pipeline` / `brigid-crawl` / `brigid-llm`.)
 - Names are descriptive and consistent (snake_case, `?` for queries/predicates).
 - Control flow is straightforward; avoid deep nesting. Prefer `?` with contextual errors.
 - Dead code, stray `dbg!` / `println!` left over from debugging, or commented-out logic must not
@@ -88,12 +88,12 @@ Evaluate every change across all five.
 
 ---
 
-## Rust CLI & decon-rs Specific Concerns
+## Rust CLI & brigid Specific Concerns
 
 **Blocking (Critical or Security):**
 
-- `unwrap()`, `expect()`, or `panic!` in library code (`decon-core`, `decon-crawl`, `decon-llm`,
-  `decon-pipeline` — excluding `#[cfg(test)]`). Only `decon-cli`'s `main` may terminate the
+- `unwrap()`, `expect()`, or `panic!` in library code (`brigid-core`, `brigid-crawl`, `brigid-llm`,
+  `brigid-pipeline` — excluding `#[cfg(test)]`). Only `brigid-cli`'s `main` may terminate the
   process directly, and should do so via a documented exit code, not a panic.
 - Treating a blank/empty environment variable as if it were set (must be treated as unset).
 - Storing full file bodies (not paths/hashes) inline in the top-level checkpoint JSON.
@@ -107,7 +107,7 @@ Evaluate every change across all five.
 
 **Suggestions:**
 
-- Prefer table-driven / property tests for pure `decon-core` logic (budgeting, scope filters,
+- Prefer table-driven / property tests for pure `brigid-core` logic (budgeting, scope filters,
   mermaid sanitize) per `docs/move-to-rust.md` §8.2.
 - Use `insta` snapshots for generated markdown/mermaid where exact text matters.
 - New public types and functions require rustdoc; update `docs/move-to-rust.md` or

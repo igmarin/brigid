@@ -12,9 +12,9 @@ fork in issue #114.
 
 ## Context
 
-`decon` reads layered configuration from `decon.toml` (TOML) and `.decon.yaml`
+`brigid` reads layered configuration from `brigid.toml` (TOML) and `.brigid.yaml`
 (YAML), plus YAML/JSON blocks extracted from messy LLM output. The YAML parsing
-path lives in `crates/decon-core/src/config.rs` (`parse_yaml_config`).
+path lives in `crates/brigid-core/src/config.rs` (`parse_yaml_config`).
 
 The project originally used `serde_yml` 0.0.12 for YAML deserialization.
 `serde_yml` transitively depends on `libyml` 0.0.5. Both crates were flagged by
@@ -33,7 +33,7 @@ dependencies free of known vulnerabilities (`cargo deny` / `cargo audit` in
 CI)?").
 
 The migration was tracked in issue #75 and landed in commit `56f829d`
-("Migrate decon-core off unsound serde_yml/libyml (#75)").
+("Migrate brigid-core off unsound serde_yml/libyml (#75)").
 
 ### Additional constraint: the secret-field guard
 
@@ -46,11 +46,11 @@ secret-like keys are still rejected.
 ## Decision
 
 Replace `serde_yml` with `serde_yaml` 0.9 (the `dtolnay/serde-yaml` crate) in
-`decon-core`'s YAML parsing path.
+`brigid-core`'s YAML parsing path.
 
 ### Dependency change
 
-`crates/decon-core/Cargo.toml`:
+`crates/brigid-core/Cargo.toml`:
 
 ```toml
 serde_yaml = "0.9"
@@ -60,7 +60,7 @@ serde_yaml = "0.9"
 
 ### Code change
 
-`crates/decon-core/src/config.rs`, `parse_yaml_config`:
+`crates/brigid-core/src/config.rs`, `parse_yaml_config`:
 
 ```rust
 pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
@@ -134,7 +134,7 @@ ignore = []
 
 ## Consequences
 
-- **Positive**: `decon-core` no longer depends on any crate flagged by
+- **Positive**: `brigid-core` no longer depends on any crate flagged by
   RUSTSEC-2025-0067 or RUSTSEC-2025-0068. `cargo deny` and `cargo audit` pass
   with zero ignored advisories.
 - **Positive**: The secret-field guard flow (parse to `serde_json::Value`,
@@ -158,9 +158,9 @@ ignore = []
 
 - `docs/adr/0001-checkpoint-schema-v1.md` — checkpoint config is loaded through
   the YAML/TOML config parsing path affected by this migration.
-- `crates/decon-core/src/config.rs` — `parse_yaml_config` and
+- `crates/brigid-core/src/config.rs` — `parse_yaml_config` and
   `check_for_secret_fields`.
-- `crates/decon-core/Cargo.toml` — `serde_yaml = "0.9"` dependency.
+- `crates/brigid-core/Cargo.toml` — `serde_yaml = "0.9"` dependency.
 - `deny.toml` — `ignore = []` after removing the RUSTSEC-2025-0067/0068
   entries.
 - `.github/review-prompt.md` §2 — the security standard that motivated the

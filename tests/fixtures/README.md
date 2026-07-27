@@ -1,7 +1,7 @@
 # Test fixtures
 
 These fixtures provide stable, minimal repositories for M1 parity testing:
-the Rust `decon` dry-run output will be compared against the parity baseline
+the Rust `brigid` dry-run output will be compared against the parity baseline
 recorded here.
 
 ## Layout
@@ -44,7 +44,7 @@ CI runs `--check` on every push to guard against accidental fixture drift.
 ### How the regenerator relates to M1
 
 The regenerator is a **minimal, standalone reimplementation** of the reference
-heuristics — it is NOT `decon-crawl`. When `decon-crawl` is built in M1, it is
+heuristics — it is NOT `brigid-crawl`. When `brigid-crawl` is built in M1, it is
 tested against the same frozen `baseline.json`, keeping the parity test
 non-circular: two independent implementations must agree on the same oracle.
 
@@ -67,5 +67,5 @@ and nightly LLM smoke (see ADR 0008 for the two-tier strategy):
 | `tutorials/llm-generated/` | 2 (nightly) | Frozen LLM-generated baseline for nightly score comparison |
 
 Tier 1 fixtures are hand-crafted and deterministic. Tier 2 is a frozen
-snapshot of live `decon generate` output; refresh it manually when the
+snapshot of live `brigid generate` output; refresh it manually when the
 pipeline intentionally changes output quality.

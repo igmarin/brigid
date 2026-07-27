@@ -35,7 +35,7 @@
         "has_env_docs": true,
         "has_run_instructions": true,
         "has_prerequisites": true,
-        "readme_length": 504
+        "readme_length": 502
       },
       "gaps": [],
       "config_files": [
@@ -139,7 +139,7 @@
         "has_env_docs": true,
         "has_run_instructions": true,
         "has_prerequisites": true,
-        "readme_length": 543
+        "readme_length": 541
       },
       "gaps": [],
       "config_files": [
@@ -187,7 +187,7 @@
         "has_env_docs": true,
         "has_run_instructions": true,
         "has_prerequisites": true,
-        "readme_length": 383
+        "readme_length": 381
       },
       "gaps": [],
       "config_files": [
