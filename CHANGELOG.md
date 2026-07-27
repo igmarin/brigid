@@ -10,11 +10,7 @@ descriptions in [`docs/move-to-rust.md`](docs/move-to-rust.md). Each milestone
 corresponds to a minor release; the workspace `version` field in `Cargo.toml`
 tracks the latest.
 
-## [Unreleased]
-
-_No unreleased changes._
-
-## [1.0.0] - 2026-07-26
+## [1.0.0] - 2026-07-27
 
 First stable release. `brigid` is a Rust CLI that crawls a codebase,
 identifies its core abstractions via LLM map/reduce, and produces a
