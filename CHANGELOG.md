@@ -65,8 +65,8 @@ all included in this first stable release:
 - Score-triggered setup guide, multi-app architecture overview
 
 **Product polish (M5):**
-- Homebrew, `cargo install`, `cargo-binstall`, GitHub Releases (Linux,
-  macOS, Windows)
+- Homebrew (source build), `cargo install`, `cargo-binstall`, GitHub
+  Releases (Linux x86_64 binary; macOS/Windows compile from source)
 - Shell completions (bash, zsh, fish, PowerShell) and man page
 - Disk cache with LRU eviction (enabled by default)
 - `--concurrency` flag, criterion benchmarks, `brigid init` wizard

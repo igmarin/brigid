@@ -44,11 +44,11 @@ brew install brigid
 # cargo install
 cargo install brigid-cli
 
-# cargo-binstall (pre-built binary)
+# cargo-binstall (pre-built Linux binary, compiles from source on macOS/Windows)
 cargo binstall brigid-cli
 ```
 
-Or download a binary from
+Or download the Linux binary from
 [GitHub Releases](https://github.com/igmarin/brigid/releases).
 
 Verify: `brigid --version`
