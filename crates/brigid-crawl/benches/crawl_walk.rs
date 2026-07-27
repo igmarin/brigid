@@ -7,8 +7,8 @@
 //! iterative directory traversal, stats every file, and returns a sorted
 //! inventory of relative POSIX paths with parallel byte sizes.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_crawl::crawl_local;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;

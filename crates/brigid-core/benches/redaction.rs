@@ -6,8 +6,8 @@
 //! and large (500 KB) inputs. The redactor scans each line for secret-shaped
 //! `KEY=value` pairs and `Bearer` tokens, replacing them with a placeholder.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::redact_content;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build a synthetic input of approximately `bytes` length.

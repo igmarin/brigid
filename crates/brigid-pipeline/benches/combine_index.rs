@@ -6,12 +6,12 @@
 //! abstractions, relationships, chapter order, chapter content, and i18n
 //! chrome strings. Includes Mermaid diagram generation and sanitization.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::{
     Abstraction, AbstractionKind, Chapter, ChapterOrder, ChapterResult, ChromeStrings, Locale,
     ModuleKey, Relationship, RelationshipsResult, Tier,
 };
 use brigid_pipeline::combine::build_index_markdown;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build `n` abstractions with fixed content.

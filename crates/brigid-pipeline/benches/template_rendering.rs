@@ -6,8 +6,8 @@
 //! with fixed contexts. This exercises template parsing (cached in the
 //! Environment) and variable substitution.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_pipeline::prompts::{PromptId, PromptRenderer, sanitize_template_input};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
 use std::time::Duration;
 

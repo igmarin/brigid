@@ -7,9 +7,9 @@
 //! `max_file_chars`, then greedily fills batches whose total capped size does
 //! not exceed `batch_char_budget`.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::budget::BudgetConfig;
 use brigid_pipeline::batch_files_by_size;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build `n` synthetic file paths and parallel sizes.

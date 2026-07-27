@@ -6,9 +6,9 @@
 //! applies per-file caps, computes path stubs for overflow, packs modules into
 //! batches, and estimates token counts.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::budget::{BudgetConfig, FileSize, estimate_budget, truncate_content};
 use brigid_core::module::ModuleKey;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build `n` files spread across `m` modules with `chars_per_file` each.

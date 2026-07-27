@@ -7,8 +7,8 @@
 //! async `tokio::fs` I/O (M6-PERF-3), so each iteration drives a tokio runtime
 //! via `block_on`.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_llm::{CacheKeyInput, DiskCache, cache_key};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;

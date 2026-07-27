@@ -6,9 +6,9 @@
 //! atomic write, SHA-256 manifest, JSON metadata, then load + verify + decode.
 //! Uses `tempfile` for isolation and fixed inputs for determinism.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::{Chapter, ChapterResult, CheckpointV1, RunConfig, StageId, Tier};
 use brigid_pipeline::checkpoint_store::{CheckpointStore, records_from_files};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

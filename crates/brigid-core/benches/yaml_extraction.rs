@@ -6,8 +6,8 @@
 //! The extractor locates a ```yaml fenced block (or bare fence / bare YAML
 //! heuristic), strips wrapping prose, and dedents the content.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::extract_yaml_block;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build a synthetic LLM response containing a ```yaml fenced block whose

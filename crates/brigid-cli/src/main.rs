@@ -10,7 +10,6 @@ use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use brigid_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
     OverviewOutput, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats, StageStatus,
@@ -23,6 +22,7 @@ use brigid_pipeline::{
     CheckpointStore, DryRunError, check_identity, dry_run_with_options, is_checkpoint_stale,
     next_stage, pending_stages,
 };
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 /// Success.
 const EXIT_OK: u8 = 0;
@@ -1943,13 +1943,15 @@ fn cmd_identify(
 
     let (strategy, reduce_input) = if single_shot {
         (
-            brigid_pipeline::IdentifyStrategy::SingleShot(brigid_pipeline::IdentifySingleShotInput {
-                files: crawl_result.files,
-                project_name,
-                language_instruction: String::new(),
-                lang_note: String::new(),
-                max_abstraction_num: max_abstractions,
-            }),
+            brigid_pipeline::IdentifyStrategy::SingleShot(
+                brigid_pipeline::IdentifySingleShotInput {
+                    files: crawl_result.files,
+                    project_name,
+                    language_instruction: String::new(),
+                    lang_note: String::new(),
+                    max_abstraction_num: max_abstractions,
+                },
+            ),
             None,
         )
     } else {
@@ -2004,9 +2006,10 @@ fn cmd_identify(
     // client fails on the first call with the requested LlmError variant.
     // Guarded by cfg(debug_assertions) so it cannot affect release builds.
     #[cfg(debug_assertions)]
-    let client: Box<dyn brigid_llm::LlmClient> = if let Some(kind) = env::var("BRIGID_LLM_MOCK_FAIL")
-        .ok()
-        .filter(|s| !s.is_empty())
+    let client: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
+        env::var("BRIGID_LLM_MOCK_FAIL")
+            .ok()
+            .filter(|s| !s.is_empty())
     {
         let err = match kind.as_str() {
             "timeout" => brigid_llm::LlmError::Timeout,
@@ -2827,9 +2830,13 @@ fn cmd_generate_each_app(
             cancel.cancel();
         }
 
-        let outcome =
-            brigid_pipeline::run_generate_each_app(client.as_ref(), &renderer, &cancel, &gen_config)
-                .await;
+        let outcome = brigid_pipeline::run_generate_each_app(
+            client.as_ref(),
+            &renderer,
+            &cancel,
+            &gen_config,
+        )
+        .await;
 
         match outcome {
             Ok(brigid_pipeline::EachAppOutcome::Completed(summaries)) => {
@@ -2899,7 +2906,13 @@ fn cmd_generate_each_app(
 
 fn load_stage_checkpoint(
     checkpoint_dir: &Path,
-) -> Result<(brigid_core::CheckpointV1, Vec<brigid_core::FileBundleRecord>), ExitCode> {
+) -> Result<
+    (
+        brigid_core::CheckpointV1,
+        Vec<brigid_core::FileBundleRecord>,
+    ),
+    ExitCode,
+> {
     if !checkpoint_dir.is_dir() {
         eprintln!(
             "error: checkpoint directory '{}' does not exist or is not a directory",
@@ -2987,15 +3000,15 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
             brigid_pipeline::relationships::RelationshipsError::Llm(_),
         )
         | brigid_pipeline::GenerateError::Order(brigid_pipeline::order::OrderError::Llm(_))
-        | brigid_pipeline::GenerateError::Chapters(brigid_pipeline::chapters::ChaptersError::Llm(
-            _,
-        ))
+        | brigid_pipeline::GenerateError::Chapters(
+            brigid_pipeline::chapters::ChaptersError::Llm(_),
+        )
         | brigid_pipeline::GenerateError::Setup(
             brigid_pipeline::setup_guide::SetupGuideError::Llm(_),
         )
-        | brigid_pipeline::GenerateError::Overview(brigid_pipeline::overview::OverviewError::Llm(
-            _,
-        )) => EXIT_LLM,
+        | brigid_pipeline::GenerateError::Overview(
+            brigid_pipeline::overview::OverviewError::Llm(_),
+        ) => EXIT_LLM,
         brigid_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
         _ => EXIT_FAIL,
     }
@@ -3888,8 +3901,10 @@ mod tests {
 
     #[test]
     fn error_suggestion_budget_mentions_max_llm_calls() {
-        let err =
-            brigid_pipeline::GenerateError::Budget(brigid_core::BudgetExceeded { used: 10, max: 10 });
+        let err = brigid_pipeline::GenerateError::Budget(brigid_core::BudgetExceeded {
+            used: 10,
+            max: 10,
+        });
         let hint = error_suggestion(&err).expect("budget error should have a hint");
         assert!(
             hint.contains("--max-llm-calls"),

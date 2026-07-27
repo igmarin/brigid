@@ -6,11 +6,11 @@
 //! chapter templates), secret redaction, MockClient LLM call, mermaid
 //! sanitization, and evidence-footer attachment. No network or real LLM calls.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, Tier};
 use brigid_llm::MockClient;
 use brigid_pipeline::chapters::{DiagramLevel, write_single_chapter};
 use brigid_pipeline::prompts::PromptRenderer;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 

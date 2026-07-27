@@ -602,7 +602,9 @@ fn config_missing_file_exits_config() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains("error: config:"))
-        .stderr(predicate::str::contains("read /no/such/brigid-missing.toml"));
+        .stderr(predicate::str::contains(
+            "read /no/such/brigid-missing.toml",
+        ));
 }
 
 #[test]
@@ -774,7 +776,11 @@ fn identify_missing_dir_exits_config() {
 #[test]
 fn resume_nonexistent_checkpoint_dir_exits_config_with_specific_message() {
     brigid()
-        .args(["resume", "--checkpoint", "/no/such/brigid-resume-79-missing"])
+        .args([
+            "resume",
+            "--checkpoint",
+            "/no/such/brigid-resume-79-missing",
+        ])
         .assert()
         .failure()
         .code(2)

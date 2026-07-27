@@ -6,9 +6,9 @@
 //! file indices, and budget sizes. This is a pure function (no I/O) that
 //! collects candidate paths, truncates content, and builds the context string.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::{Abstraction, AbstractionKind, Tier};
 use brigid_pipeline::chapters::select_chapter_file_context;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build an abstraction with `n` entry files and `n` file indices.

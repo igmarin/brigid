@@ -6,8 +6,8 @@
 //! derivation splits a relative POSIX path on `/` and applies umbrella
 //! (`apps/<name>/…`) and root-level rules to produce a coarse module key.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::module_key;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// Build a relative POSIX path with `depth` components.

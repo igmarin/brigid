@@ -7,8 +7,8 @@
 //! These are pure functions (no I/O) that scrub labels, cap participants, and
 //! validate diagram syntax.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use brigid_core::{sanitize_markdown_mermaid_blocks, sanitize_mermaid, validate_mermaid};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 /// A simple flowchart with `n` nodes.
