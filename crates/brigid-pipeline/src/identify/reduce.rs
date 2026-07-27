@@ -361,6 +361,29 @@ mod reduce_tests {
     }
 
     #[tokio::test]
+    async fn missing_tier_and_kind_use_defaults() {
+        let yaml = "\
+```yaml
+- name: \"Core System\"
+  description: \"The main system\"
+  file_indices: [0, 1, 2, 3]
+```
+";
+        let client = MockClient::new(yaml.to_string());
+        let renderer = PromptRenderer::new().unwrap();
+        let input = sample_reduce_input(sample_candidates());
+        let result = identify_reduce(&client, &renderer, &input, None)
+            .await
+            .expect("partial yaml should succeed with defaults");
+        assert_eq!(result.abstractions.len(), 1);
+        assert_eq!(result.abstractions[0].name, "Core System");
+        assert_eq!(result.abstractions[0].tier, Tier::M);
+        assert_eq!(result.abstractions[0].kind.as_str(), "");
+        assert!(result.abstractions[0].apps.is_empty());
+        assert!(result.abstractions[0].entry_files.is_empty());
+    }
+
+    #[tokio::test]
     async fn no_yaml_block_returns_extract_error() {
         let client = MockClient::new("just prose, no structured output here".to_string());
         let renderer = PromptRenderer::new().unwrap();

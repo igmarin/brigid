@@ -231,6 +231,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_tier_and_kind_use_defaults() {
+        // LLMs may omit optional fields; we should default tier to M and kind
+        // to empty so plugins can enrich the kind later.
+        let yaml = "\
+```yaml
+- name: \"Core Module\"
+  description: \"The main module\"
+  file_indices: [0, 1]
+```
+";
+        let client = MockClient::new(yaml.to_string());
+        let renderer = PromptRenderer::new().unwrap();
+        let input = sample_input();
+        let result = identify_single_shot(&client, &renderer, &input, None)
+            .await
+            .expect("partial yaml should succeed with defaults");
+        assert_eq!(result.abstractions.len(), 1);
+        assert_eq!(result.abstractions[0].name, "Core Module");
+        assert_eq!(result.abstractions[0].tier, Tier::M);
+        assert_eq!(result.abstractions[0].kind.as_str(), "");
+        assert!(result.abstractions[0].apps.is_empty());
+        assert!(result.abstractions[0].entry_files.is_empty());
+    }
+
+    #[tokio::test]
     async fn malformed_yaml_preserves_typed_serde_yaml_error() {
         let yaml = "```yaml\n- name: \"Broken\n  description: : :\n```\n";
         let client = MockClient::new(yaml.to_string());

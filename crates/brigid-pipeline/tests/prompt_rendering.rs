@@ -347,7 +347,7 @@ fn identify_single_shot_snapshot_is_stable() {
         "snapshot header changed; expected to start with {expected_header:?}, got: {out:?}"
     );
     // Deterministic length check catches accidental whitespace/template drift.
-    let expected_len = 1214;
+    let expected_len = 1792;
     assert_eq!(
         out.len(),
         expected_len,
@@ -368,7 +368,7 @@ fn identify_map_snapshot_is_stable() {
         out.starts_with(expected_header),
         "snapshot header changed; expected to start with {expected_header:?}, got: {out:?}"
     );
-    let expected_len = 1002;
+    let expected_len = 1409;
     assert_eq!(
         out.len(),
         expected_len,
@@ -389,7 +389,7 @@ fn identify_reduce_snapshot_is_stable() {
         out.starts_with(expected_header),
         "snapshot header changed; expected to start with {expected_header:?}, got: {out:?}"
     );
-    let expected_len = 995;
+    let expected_len = 1142;
     assert_eq!(
         out.len(),
         expected_len,

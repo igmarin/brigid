@@ -12,6 +12,10 @@ For each abstraction, provide:
 1. A concise `name`{{ name_lang_hint }}.
 2. A beginner-friendly `description` explaining what it is with a simple analogy, in around 100 words{{ desc_lang_hint }}.
 3. A list of relevant `file_indices` (integers) using the format `idx # path/comment`.
+4. A `tier` — one of `S` (small/leaf utility, short chapter), `M` (medium/core concept, full chapter), or `L` (large/hub, multi-file orchestrator).
+5. A `kind` — a free-form label such as `module`, `class`, `service`, `config`, `function`, `documentation`, or `utility`.
+6. (Optional) `apps` — a list of monorepo app names this abstraction touches.
+7. (Optional) `entry_files` — the best 1-3 real file paths to open first when studying this abstraction.
 
 List of file indices and paths present in the context:
 {{ file_listing }}
@@ -27,11 +31,19 @@ Format the output as a YAML list of dictionaries:
   file_indices:
     - 0 # path/to/file1.py
     - 3 # path/to/related.py
+  tier: "M"
+  kind: "service"
+  apps: []
+  entry_files: []
 - name: |
     Query Optimization{{ name_lang_hint }}
   description: |
     Another core concept, similar to a blueprint for objects.{{ desc_lang_hint }}
   file_indices:
     - 5 # path/to/another.js
+  tier: "S"
+  kind: "class"
+  apps: []
+  entry_files: []
 # ... up to {{ max_abstraction_num }} abstractions
 ```

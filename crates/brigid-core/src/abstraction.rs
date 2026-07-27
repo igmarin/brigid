@@ -50,6 +50,14 @@ pub enum Tier {
     L,
 }
 
+impl Default for Tier {
+    /// Default tier is medium (`M`) — a safe middle ground when the LLM omits
+    /// the field or when a heuristic has not yet classified the abstraction.
+    fn default() -> Self {
+        Self::M
+    }
+}
+
 impl Tier {
     /// Canonical wire string (`"S"`, `"M"`, or `"L"`).
     #[must_use]
@@ -132,6 +140,14 @@ impl From<&str> for AbstractionKind {
     }
 }
 
+impl Default for AbstractionKind {
+    /// Default to an empty string so that [`crate::plugin::KindDetector`]
+    /// enrichment can recognize the abstraction as needing a kind.
+    fn default() -> Self {
+        Self(String::new())
+    }
+}
+
 /// A core concept identified in the codebase (M3 "identify" stage).
 ///
 /// Built from LLM output plus heuristic enrichment (tier, kind, apps,
@@ -145,12 +161,18 @@ pub struct Abstraction {
     /// Indices into the crawled file inventory backing this abstraction.
     pub file_indices: Vec<usize>,
     /// Complexity tier controlling tutorial depth and diagram requirements.
+    /// Defaults to [`Tier::M`] when omitted from LLM output.
+    #[serde(default)]
     pub tier: Tier,
     /// Free-form kind label (see [`AbstractionKind`]).
+    /// Defaults to an empty string so plugins can enrich a missing kind.
+    #[serde(default)]
     pub kind: AbstractionKind,
     /// Monorepo apps this abstraction touches (empty for single-app repos).
+    #[serde(default)]
     pub apps: Vec<String>,
     /// Best real paths to open first when studying this abstraction.
+    #[serde(default)]
     pub entry_files: Vec<String>,
 }
 
@@ -395,6 +417,31 @@ mod tests {
     fn identify_result_from_invalid_value_errors() {
         let bad = serde_json::json!({"nope": 1});
         assert!(IdentifyResult::from_checkpoint_value(bad).is_err());
+    }
+
+    #[test]
+    fn tier_default_is_medium() {
+        assert_eq!(Tier::default(), Tier::M);
+    }
+
+    #[test]
+    fn abstraction_kind_default_is_empty() {
+        assert_eq!(AbstractionKind::default().as_str(), "");
+    }
+
+    #[test]
+    fn abstraction_deserializes_with_missing_optional_fields() {
+        let json = r#"{
+            "name": "Core",
+            "description": "The core system",
+            "file_indices": [0, 1]
+        }"#;
+        let a: Abstraction = serde_json::from_str(json).unwrap();
+        assert_eq!(a.name, "Core");
+        assert_eq!(a.tier, Tier::M);
+        assert_eq!(a.kind.as_str(), "");
+        assert!(a.apps.is_empty());
+        assert!(a.entry_files.is_empty());
     }
 
     #[test]

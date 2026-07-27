@@ -10,7 +10,7 @@ Rules:
 - Prefer concepts that explain how the system is carved into apps/engines and how they collaborate.
 - Keep the most important domain concepts even if they live in a single app.
 - file_indices MUST be chosen from the candidate file_indices (global indices already).
-- Each final abstraction needs a clear beginner-friendly description.
+- Each final abstraction needs a clear beginner-friendly description, a `tier` (`S`, `M`, or `L`), and a `kind` (e.g. `module`, `class`, `service`, `config`).
 
 {{ language_instruction }}Candidates:
 {{ candidates_blob }}
@@ -25,4 +25,8 @@ Return ONLY a YAML list (max {{ max_abstraction_num }} items):
   file_indices:
     - 12 # path optional comment
     - 44
+  tier: "M"
+  kind: "module"
+  apps: []
+  entry_files: []
 ```

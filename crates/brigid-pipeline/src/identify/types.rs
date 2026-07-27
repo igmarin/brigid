@@ -87,12 +87,18 @@ pub struct CandidateAbstraction {
     /// the file listing.
     pub file_indices: Vec<usize>,
     /// Complexity tier controlling tutorial depth and diagram requirements.
+    /// Defaults to [`Tier::M`] when omitted from LLM output.
+    #[serde(default)]
     pub tier: Tier,
     /// Free-form kind label (see [`AbstractionKind`]).
+    /// Defaults to an empty string so plugins can enrich a missing kind.
+    #[serde(default)]
     pub kind: AbstractionKind,
     /// Monorepo apps this candidate touches (empty for single-app repos).
+    #[serde(default)]
     pub apps: Vec<String>,
     /// Best real paths to open first when studying this candidate.
+    #[serde(default)]
     pub entry_files: Vec<String>,
     /// Which batch (0-based) this candidate came from.
     pub batch_idx: usize,

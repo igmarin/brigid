@@ -314,7 +314,9 @@ struct RawCandidate {
     name: String,
     description: String,
     file_indices: Vec<usize>,
+    #[serde(default)]
     tier: brigid_core::Tier,
+    #[serde(default)]
     kind: brigid_core::AbstractionKind,
     #[serde(default)]
     apps: Vec<String>,
@@ -491,6 +493,23 @@ mod map_tests {
             }
             other => panic!("expected FileIndexOutOfRange, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_candidates_uses_defaults_for_missing_tier_and_kind() {
+        let yaml = "\
+- name: \"Module A\"
+  description: \"desc a\"
+  file_indices: [0, 1]
+";
+        let candidates = parse_candidates(yaml, 0).expect("should parse with defaults");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "Module A");
+        assert_eq!(candidates[0].tier, Tier::M);
+        assert_eq!(candidates[0].kind.as_str(), "");
+        assert!(candidates[0].apps.is_empty());
+        assert!(candidates[0].entry_files.is_empty());
+        assert_eq!(candidates[0].batch_idx, 0);
     }
 
     #[tokio::test]
