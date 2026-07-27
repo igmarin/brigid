@@ -116,41 +116,37 @@ fn print_cache_stats(cache: Option<&brigid_llm::DiskCache>) {
     }
 }
 
-/// Build a live [`brigid_llm::LlmClient`] from the environment when an API key
-/// is present, optionally with a disk cache.
+/// Whether the user explicitly requested deterministic placeholder output.
+fn force_mock_client() -> bool {
+    env::var("BRIGID_FORCE_MOCK")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// Build a live [`brigid_llm::LlmClient`] from the environment, optionally
+/// with a disk cache.
 ///
-/// Returns `None` when no non-empty `BRIGID_LLM_API_KEY` / `DEEPSEEK_API_KEY`
-/// is set or the client cannot be constructed, so callers can fall back to a
-/// mock client for offline/test runs.
+/// Callers must only select a mock client when [`force_mock_client`] returns
+/// `true`. Missing credentials or invalid client configuration are surfaced as
+/// errors so a successful command never emits placeholder output by accident.
 fn build_real_llm_client(
     cache: Option<brigid_llm::DiskCache>,
     custom_hosts: &[String],
-) -> Option<Box<dyn brigid_llm::LlmClient>> {
-    if env::var("BRIGID_FORCE_MOCK")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .is_some()
-    {
-        return None;
-    }
-    let key_ok = |var: &str| env::var(var).ok().filter(|s| !s.is_empty()).is_some();
-    if !key_ok("BRIGID_LLM_API_KEY") && !key_ok("DEEPSEEK_API_KEY") {
-        return None;
-    }
+) -> Result<Box<dyn brigid_llm::LlmClient>, brigid_llm::LlmError> {
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    let config = brigid_llm::OpenAiClientConfig::from_env().ok()?;
+    let config = brigid_llm::OpenAiClientConfig::from_env()?;
     let config = custom_hosts
         .iter()
         .fold(config, |acc, h| acc.with_allowed_host(h));
-    let client = brigid_llm::OpenAiCompatibleClient::new(config).ok()?;
+    let client = brigid_llm::OpenAiCompatibleClient::new(config)?;
     let client = if let Some(cache) = cache {
         client.with_cache(cache)
     } else {
         client
     };
-    Some(Box::new(client))
+    Ok(Box::new(client))
 }
 
 /// Deconstruct a codebase into an AI-generated tutorial.
@@ -1988,46 +1984,52 @@ fn cmd_identify(
         files: records,
     };
 
-    // Set up the LLM client. Without a real API key, use a mock that returns
-    // a minimal valid YAML abstraction list. This lets the subcommand be
-    // exercised end-to-end in tests. M4 will wire the real provider client.
-    // We warn the user so they know the output is a placeholder, not a real
-    // LLM analysis.
-    let api_key = env::var("BRIGID_LLM_API_KEY").ok();
-    if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
         eprintln!(
-            "warning: identify: no BRIGID_LLM_API_KEY set — using a mock client. \
-             The output will be a placeholder, not a real LLM analysis. \
-             Set BRIGID_LLM_API_KEY to use a real provider (M4)."
+            "warning: identify: BRIGID_FORCE_MOCK is set — using a mock client. \
+             The output will be a placeholder, not a real LLM analysis."
         );
-    }
-    let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
-    // Debug/test-only affordance: when BRIGID_LLM_MOCK_FAIL is set, the mock
-    // client fails on the first call with the requested LlmError variant.
-    // Guarded by cfg(debug_assertions) so it cannot affect release builds.
-    #[cfg(debug_assertions)]
-    let client: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
-        env::var("BRIGID_LLM_MOCK_FAIL")
-            .ok()
-            .filter(|s| !s.is_empty())
-    {
-        let err = match kind.as_str() {
-            "timeout" => brigid_llm::LlmError::Timeout,
-            "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-            "provider" => brigid_llm::LlmError::Provider {
-                status: 502,
-                body: "mock provider error".to_string(),
-            },
-            "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-            _ => brigid_llm::LlmError::network("mock network failure"),
-        };
-        Box::new(brigid_llm::MockClient::new("").fail_on(0, err))
+        let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+        #[cfg(debug_assertions)]
+        {
+            if let Some(kind) = env::var("BRIGID_LLM_MOCK_FAIL")
+                .ok()
+                .filter(|value| !value.is_empty())
+            {
+                let error = match kind.as_str() {
+                    "timeout" => brigid_llm::LlmError::Timeout,
+                    "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
+                    "provider" => brigid_llm::LlmError::Provider {
+                        status: 502,
+                        body: "mock provider error".to_string(),
+                    },
+                    "parse" => brigid_llm::LlmError::parse("mock parse failure"),
+                    _ => brigid_llm::LlmError::network("mock network failure"),
+                };
+                Box::new(brigid_llm::MockClient::new("").fail_on(0, error))
+            } else {
+                Box::new(brigid_llm::MockClient::new(placeholder_yaml))
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Box::new(brigid_llm::MockClient::new(placeholder_yaml))
+        }
     } else {
-        Box::new(brigid_llm::MockClient::new(placeholder_yaml))
+        match build_real_llm_client(
+            build_llm_cache(cfg),
+            cfg.allowed_hosts.as_deref().unwrap_or(&[]),
+        ) {
+            Ok(client) => {
+                eprintln!("identify: using live LLM provider");
+                client
+            }
+            Err(error) => {
+                eprintln!("error: identify: failed to configure LLM client: {error}");
+                return ExitCode::from(EXIT_LLM);
+            }
+        }
     };
-    #[cfg(not(debug_assertions))]
-    let client: Box<dyn brigid_llm::LlmClient> =
-        Box::new(brigid_llm::MockClient::new(placeholder_yaml));
 
     let renderer = match brigid_pipeline::PromptRenderer::new() {
         Ok(r) => r,
@@ -2309,88 +2311,91 @@ fn cmd_generate(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = match build_real_llm_client(
-        cache.clone(),
-        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
-    ) {
-        Some(c) => {
-            print_progress(verbosity, "generate: using live LLM provider");
-            c
-        }
-        None => {
-            print_progress(
-                verbosity,
-                "warning: generate: no BRIGID_LLM_API_KEY set -- using a mock client. \
-                 The output will be a placeholder, not a real LLM analysis. \
-                 Set BRIGID_LLM_API_KEY to use a real provider (M4).",
-            );
-            let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
-            let placeholder_rel =
-                "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
-            let placeholder_order = "```yaml\n- 0\n```\n";
-            let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
-            let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
-            let placeholder_overview =
-                "# Architecture Overview\n\nThis project has multiple modules.\n";
+    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+        print_progress(
+            verbosity,
+            "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
+             The output will be a placeholder, not a real LLM analysis.",
+        );
+        let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+        let placeholder_rel =
+            "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+        let placeholder_order = "```yaml\n- 0\n```\n";
+        let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+        let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+        let placeholder_overview =
+            "# Architecture Overview\n\nThis project has multiple modules.\n";
 
-            let mut responses: Vec<String> = Vec::new();
-            if single_shot {
-                responses.push(placeholder_yaml.to_string());
-            } else {
-                responses.push(placeholder_yaml.to_string());
-                responses.push(placeholder_yaml.to_string());
-            }
-            responses.push(placeholder_rel.to_string());
-            responses.push(placeholder_order.to_string());
+        let mut responses: Vec<String> = Vec::new();
+        if single_shot {
+            responses.push(placeholder_yaml.to_string());
+        } else {
+            responses.push(placeholder_yaml.to_string());
+            responses.push(placeholder_yaml.to_string());
+        }
+        responses.push(placeholder_rel.to_string());
+        responses.push(placeholder_order.to_string());
+        for _ in 0..max_abstractions {
+            responses.push(placeholder_chapter.to_string());
+        }
+        if review_chapters {
             for _ in 0..max_abstractions {
                 responses.push(placeholder_chapter.to_string());
             }
-            if review_chapters {
-                for _ in 0..max_abstractions {
-                    responses.push(placeholder_chapter.to_string());
-                }
+        }
+        if !no_setup {
+            let do_setup =
+                force_setup || dry_run_plan.setup.score < 50 || dry_run_plan.setup.gaps.len() >= 3;
+            if do_setup {
+                responses.push(placeholder_setup.to_string());
             }
-            if !no_setup {
-                let do_setup = force_setup
-                    || dry_run_plan.setup.score < 50
-                    || dry_run_plan.setup.gaps.len() >= 3;
-                if do_setup {
-                    responses.push(placeholder_setup.to_string());
-                }
-            }
-            if !no_overview && modules.len() > 1 {
-                responses.push(placeholder_overview.to_string());
-            }
+        }
+        if !no_overview && modules.len() > 1 {
+            responses.push(placeholder_overview.to_string());
+        }
 
-            #[cfg(debug_assertions)]
-            let mock: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
-                env::var("BRIGID_LLM_MOCK_FAIL")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            {
-                let err = match kind.as_str() {
-                    "timeout" => brigid_llm::LlmError::Timeout,
-                    "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-                    "provider" => brigid_llm::LlmError::Provider {
-                        status: 502,
-                        body: "mock provider error".to_string(),
-                    },
-                    "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-                    _ => brigid_llm::LlmError::network("mock network failure"),
-                };
-                Box::new(brigid_llm::MockClient::new("").fail_on(0, err))
-            } else {
-                Box::new(
-                    brigid_llm::MockClient::with_responses(responses)
-                        .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
-                )
+        #[cfg(debug_assertions)]
+        let mock: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
+            env::var("BRIGID_LLM_MOCK_FAIL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        {
+            let err = match kind.as_str() {
+                "timeout" => brigid_llm::LlmError::Timeout,
+                "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
+                "provider" => brigid_llm::LlmError::Provider {
+                    status: 502,
+                    body: "mock provider error".to_string(),
+                },
+                "parse" => brigid_llm::LlmError::parse("mock parse failure"),
+                _ => brigid_llm::LlmError::network("mock network failure"),
             };
-            #[cfg(not(debug_assertions))]
-            let mock: Box<dyn brigid_llm::LlmClient> = Box::new(
+            Box::new(brigid_llm::MockClient::new("").fail_on(0, err))
+        } else {
+            Box::new(
                 brigid_llm::MockClient::with_responses(responses)
                     .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
-            );
-            mock
+            )
+        };
+        #[cfg(not(debug_assertions))]
+        let mock: Box<dyn brigid_llm::LlmClient> = Box::new(
+            brigid_llm::MockClient::with_responses(responses)
+                .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
+        );
+        mock
+    } else {
+        match build_real_llm_client(
+            cache.clone(),
+            run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+        ) {
+            Ok(client) => {
+                print_progress(verbosity, "generate: using live LLM provider");
+                client
+            }
+            Err(error) => {
+                eprintln!("error: generate: failed to configure LLM client: {error}");
+                return ExitCode::from(EXIT_LLM);
+            }
         }
     };
 
@@ -2692,84 +2697,88 @@ fn cmd_generate_each_app(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = match build_real_llm_client(
-        cache.clone(),
-        run_config.allowed_hosts.as_deref().unwrap_or(&[]),
-    ) {
-        Some(c) => {
-            print_progress(verbosity, "generate: using live LLM provider");
-            c
+    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+        print_progress(
+            verbosity,
+            "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
+             The output will be a placeholder, not a real LLM analysis.",
+        );
+        let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
+        let placeholder_rel =
+            "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
+        let placeholder_order = "```yaml\n- 0\n```\n";
+        let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
+        let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
+        let placeholder_overview =
+            "# Architecture Overview\n\nThis project has multiple modules.\n";
+
+        let mut single_app_responses: Vec<String> = Vec::new();
+        if single_shot {
+            single_app_responses.push(placeholder_yaml.to_string());
+        } else {
+            single_app_responses.push(placeholder_yaml.to_string());
+            single_app_responses.push(placeholder_yaml.to_string());
         }
-        None => {
-            print_progress(
-                verbosity,
-                "warning: generate: no BRIGID_LLM_API_KEY set -- using a mock client. \
-                 The output will be a placeholder, not a real LLM analysis. \
-                 Set BRIGID_LLM_API_KEY to use a real provider (M4).",
-            );
-            let placeholder_yaml = "```yaml\n- name: \"Placeholder\"\n  description: \"Auto-generated placeholder abstraction\"\n  file_indices: [0]\n  tier: \"S\"\n  kind: \"module\"\n  apps: []\n  entry_files: []\n```\n";
-            let placeholder_rel =
-                "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
-            let placeholder_order = "```yaml\n- 0\n```\n";
-            let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
-            let placeholder_setup = "# Setup: project\n\n## Prerequisites\n\nInstall dependencies.\n\n## Run\n\n```bash\nmake run\n```\n";
-            let placeholder_overview =
-                "# Architecture Overview\n\nThis project has multiple modules.\n";
-
-            let mut single_app_responses: Vec<String> = Vec::new();
-            if single_shot {
-                single_app_responses.push(placeholder_yaml.to_string());
-            } else {
-                single_app_responses.push(placeholder_yaml.to_string());
-                single_app_responses.push(placeholder_yaml.to_string());
-            }
-            single_app_responses.push(placeholder_rel.to_string());
-            single_app_responses.push(placeholder_order.to_string());
+        single_app_responses.push(placeholder_rel.to_string());
+        single_app_responses.push(placeholder_order.to_string());
+        single_app_responses.push(placeholder_chapter.to_string());
+        if review_chapters {
             single_app_responses.push(placeholder_chapter.to_string());
-            if review_chapters {
-                single_app_responses.push(placeholder_chapter.to_string());
-            }
-            if !no_setup {
-                single_app_responses.push(placeholder_setup.to_string());
-            }
-            if !no_overview {
-                single_app_responses.push(placeholder_overview.to_string());
-            }
+        }
+        if !no_setup {
+            single_app_responses.push(placeholder_setup.to_string());
+        }
+        if !no_overview {
+            single_app_responses.push(placeholder_overview.to_string());
+        }
 
-            let mut responses: Vec<String> = Vec::new();
-            for _ in 0..20 {
-                responses.extend(single_app_responses.clone());
-            }
+        let mut responses: Vec<String> = Vec::new();
+        for _ in 0..20 {
+            responses.extend(single_app_responses.clone());
+        }
 
-            #[cfg(debug_assertions)]
-            let mock: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
-                env::var("BRIGID_LLM_MOCK_FAIL")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            {
-                let err = match kind.as_str() {
-                    "timeout" => brigid_llm::LlmError::Timeout,
-                    "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-                    "provider" => brigid_llm::LlmError::Provider {
-                        status: 502,
-                        body: "mock provider error".to_string(),
-                    },
-                    "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-                    _ => brigid_llm::LlmError::network("mock network failure"),
-                };
-                Box::new(brigid_llm::MockClient::new("").fail_on(0, err))
-            } else {
-                Box::new(
-                    brigid_llm::MockClient::with_responses(responses)
-                        .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
-                )
+        #[cfg(debug_assertions)]
+        let mock: Box<dyn brigid_llm::LlmClient> = if let Some(kind) =
+            env::var("BRIGID_LLM_MOCK_FAIL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        {
+            let err = match kind.as_str() {
+                "timeout" => brigid_llm::LlmError::Timeout,
+                "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
+                "provider" => brigid_llm::LlmError::Provider {
+                    status: 502,
+                    body: "mock provider error".to_string(),
+                },
+                "parse" => brigid_llm::LlmError::parse("mock parse failure"),
+                _ => brigid_llm::LlmError::network("mock network failure"),
             };
-            #[cfg(not(debug_assertions))]
-            let mock: Box<dyn brigid_llm::LlmClient> = Box::new(
+            Box::new(brigid_llm::MockClient::new("").fail_on(0, err))
+        } else {
+            Box::new(
                 brigid_llm::MockClient::with_responses(responses)
                     .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
-            );
-            mock
+            )
+        };
+        #[cfg(not(debug_assertions))]
+        let mock: Box<dyn brigid_llm::LlmClient> = Box::new(
+            brigid_llm::MockClient::with_responses(responses)
+                .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder_yaml)),
+        );
+        mock
+    } else {
+        match build_real_llm_client(
+            cache.clone(),
+            run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+        ) {
+            Ok(client) => {
+                print_progress(verbosity, "generate: using live LLM provider");
+                client
+            }
+            Err(error) => {
+                eprintln!("error: generate: failed to configure LLM client: {error}");
+                return ExitCode::from(EXIT_LLM);
+            }
         }
     };
 

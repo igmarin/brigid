@@ -37,8 +37,9 @@ Release history with per-change details lives in
   stage output storage with SHA-256 verification (ADR 0006).
 - **LLM provider client** — OpenAI-compatible HTTP with retry/backoff/timeout,
   host allowlist, disk cache with LRU eviction, bounded concurrency.
-- **Distribution** — Homebrew, `cargo install`, `cargo-binstall`, GitHub
-  Releases (Linux, macOS, Windows), shell completions, man page.
+- **Distribution** — Homebrew and `cargo install` source builds on macOS and
+  Windows; GitHub Releases and `cargo-binstall` pre-built Linux x86_64 archive;
+  shell completions and man page.
 - **Quality gates** — fmt, clippy (`-D warnings`), 3-OS test matrix, ≥85%
   coverage, `cargo audit`, `cargo deny`, eval regression, fixture baseline.
 

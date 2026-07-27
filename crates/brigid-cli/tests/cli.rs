@@ -13,6 +13,14 @@ fn brigid() -> Command {
     cmd
 }
 
+fn brigid_without_llm_credentials() -> Command {
+    let mut cmd = Command::cargo_bin("brigid").expect("brigid binary should build");
+    cmd.env_remove("BRIGID_FORCE_MOCK");
+    cmd.env_remove("BRIGID_LLM_API_KEY");
+    cmd.env_remove("DEEPSEEK_API_KEY");
+    cmd
+}
+
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -740,6 +748,24 @@ fn identify_single_shot_completes_and_writes_checkpoint() {
 }
 
 #[test]
+fn identify_without_credentials_requires_explicit_mock_mode() {
+    let dir = fixtures_dir().join("python-lib");
+    let checkpoint_dir = temp_dir("identify-no-credentials-checkpoint");
+
+    brigid_without_llm_credentials()
+        .args(["identify", "--dir"])
+        .arg(&dir)
+        .args(["--single-shot", "--checkpoint-dir"])
+        .arg(&checkpoint_dir)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("not set"));
+
+    assert!(!checkpoint_dir.exists());
+}
+
+#[test]
 fn identify_empty_dir_exits_config() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let n = SystemTime::now()
@@ -933,6 +959,28 @@ fn generate_empty_dir_exits_config() {
         .code(2);
 
     let _ = std::fs::remove_dir_all(&empty);
+}
+
+#[test]
+fn generate_without_credentials_requires_explicit_mock_mode() {
+    let dir = fixtures_dir().join("python-lib");
+    let checkpoint_dir = temp_dir("generate-no-credentials-checkpoint");
+    let output_dir = temp_dir("generate-no-credentials-output");
+
+    brigid_without_llm_credentials()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--single-shot", "--checkpoint-dir"])
+        .arg(&checkpoint_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicate::str::contains("not set"));
+
+    assert!(!checkpoint_dir.exists());
+    assert!(!output_dir.exists());
 }
 
 #[test]

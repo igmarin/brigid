@@ -8,8 +8,8 @@ provider configuration. If you just want to get started quickly, see the
 
 ## Installation
 
-`brigid` ships as a single static binary for Linux (x86_64, aarch64),
-macOS (x86_64, aarch64), and Windows (x86_64).
+`brigid` ships a pre-built binary for Linux x86_64. macOS and Windows users
+install from source with Homebrew or `cargo install`.
 
 ### Homebrew (macOS)
 
