@@ -4,7 +4,7 @@ title: "Migrating from Python"
 nav_order: 5
 ---
 
-# Migrating from the Python `decon` to the Rust `decon` CLI
+# Migrating from the Python `decon` to the Rust `brigid` CLI
 
 The original `decon` was a Python/PocketFlow reference implementation. It has
 been rewritten in Rust as a single, fast, distributable binary. The Python
@@ -14,8 +14,8 @@ will be removed in a future release.
 This guide helps existing Python users switch to the Rust CLI with minimal
 friction.
 
-> **TL;DR** — Install the Rust binary (`brew install decon` or
-> `cargo install decon-cli`), replace `python main.py` with `decon`, and update
+> **TL;DR** — Install the Rust binary (`brew install brigid` or
+> `cargo install brigid-cli`), replace `python main.py` with `brigid`, and update
 > your environment variables. The pipeline behavior is the same; only the
 > runtime changed.
 
@@ -50,48 +50,48 @@ migration design.
 
 ```bash
 brew tap igmarin/homebrew-tap
-brew install decon
+brew install brigid
 ```
 
-This installs the `decon` binary, man page (`man 1 decon`), and shell
+This installs the `brigid` binary, man page (`man 1 brigid`), and shell
 completions (bash, zsh, fish) automatically.
 
 ### cargo install
 
 ```bash
-cargo install decon-cli
+cargo install brigid-cli
 ```
 
 Or install directly from the git repository:
 
 ```bash
-cargo install --git https://github.com/igmarin/decon-rs decon-cli
+cargo install --git https://github.com/igmarin/brigid brigid-cli
 ```
 
 ### cargo-binstall (fast binary download)
 
 If you have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall)
-installed, `decon-cli` ships with binstall metadata so it downloads a
+installed, `brigid-cli` ships with binstall metadata so it downloads a
 pre-built binary instead of compiling from source:
 
 ```bash
-cargo binstall decon-cli
+cargo binstall brigid-cli
 ```
 
 ### Direct download
 
-1. Go to the [Releases page](https://github.com/igmarin/decon-rs/releases).
+1. Go to the [Releases page](https://github.com/igmarin/brigid/releases).
 2. Download the archive matching your platform, e.g.
-   `decon-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+   `brigid-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
 3. Verify the SHA-256 checksum against the `SHA256SUMS` file in the release.
-4. Extract the archive and move the `decon` binary to your `PATH`:
+4. Extract the archive and move the `brigid` binary to your `PATH`:
 
    ```bash
-   tar xzf decon-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-   sudo mv decon-0.1.0-x86_64-unknown-linux-gnu/decon /usr/local/bin/
+   tar xzf brigid-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   sudo mv brigid-0.1.0-x86_64-unknown-linux-gnu/brigid /usr/local/bin/
    ```
 
-5. Verify: `decon --version`
+5. Verify: `brigid --version`
 
 ### Verifying checksums
 
@@ -111,31 +111,31 @@ positional arguments. Here is the mapping:
 
 | Python command | Rust command | Notes |
 |----------------|--------------|-------|
-| `python main.py --dir PATH --model gpt-4o` | `decon generate --dir PATH` | Full pipeline. Model is set via env, not a flag. |
-| `python main.py --repo URL` | `decon generate --repo URL` | GitHub repo fetch (same as Python) |
-| `python main.py --dir PATH --language es` | `decon generate --dir PATH --language es` | i18n chrome (English + Spanish) |
-| `make tutorial` | `decon generate --dir .` | Direct CLI call; Makefile wrapper still works |
-| `make dry-run` | `decon dry-run --dir .` | Zero-LLM plan: crawl + scope + setup assessment |
-| `make crawl` | `decon crawl --dir . --format json` | File inventory |
-| `make eval` | `decon eval --out output/Project` | Structural quality gate |
-| `python main.py --each-app` | `decon generate --dir . --each-app` | Per-app tutorials in monorepos |
-| N/A | `decon resume --checkpoint PATH` | Resume from checkpoint (new) |
-| N/A | `decon init --dir PATH` | Write starter `decon.toml` (new) |
-| N/A | `decon identify --dir PATH` | Run identify stage only (new, for debugging) |
-| N/A | `decon relationships --dir PATH` | Run relationships stage only (new) |
+| `python main.py --dir PATH --model gpt-4o` | `brigid generate --dir PATH` | Full pipeline. Model is set via env, not a flag. |
+| `python main.py --repo URL` | `brigid generate --repo URL` | GitHub repo fetch (same as Python) |
+| `python main.py --dir PATH --language es` | `brigid generate --dir PATH --language es` | i18n chrome (English + Spanish) |
+| `make tutorial` | `brigid generate --dir .` | Direct CLI call; Makefile wrapper still works |
+| `make dry-run` | `brigid dry-run --dir .` | Zero-LLM plan: crawl + scope + setup assessment |
+| `make crawl` | `brigid crawl --dir . --format json` | File inventory |
+| `make eval` | `brigid eval --out output/Project` | Structural quality gate |
+| `python main.py --each-app` | `brigid generate --dir . --each-app` | Per-app tutorials in monorepos |
+| N/A | `brigid resume --checkpoint PATH` | Resume from checkpoint (new) |
+| N/A | `brigid init --dir PATH` | Write starter `brigid.toml` (new) |
+| N/A | `brigid identify --dir PATH` | Run identify stage only (new, for debugging) |
+| N/A | `brigid relationships --dir PATH` | Run relationships stage only (new) |
 
 ### Per-stage subcommands (new in Rust)
 
 The Rust CLI exposes individual pipeline stages as subcommands for debugging:
 
 ```bash
-decon identify --dir PATH
-decon relationships --dir PATH --checkpoint-dir /tmp/ckpt
-decon order --dir PATH --checkpoint-dir /tmp/ckpt
-decon chapters --dir PATH --checkpoint-dir /tmp/ckpt
-decon setup --dir PATH --checkpoint-dir /tmp/ckpt
-decon overview --dir PATH --checkpoint-dir /tmp/ckpt
-decon combine --dir PATH --checkpoint-dir /tmp/ckpt
+brigid identify --dir PATH
+brigid relationships --dir PATH --checkpoint-dir /tmp/ckpt
+brigid order --dir PATH --checkpoint-dir /tmp/ckpt
+brigid chapters --dir PATH --checkpoint-dir /tmp/ckpt
+brigid setup --dir PATH --checkpoint-dir /tmp/ckpt
+brigid overview --dir PATH --checkpoint-dir /tmp/ckpt
+brigid combine --dir PATH --checkpoint-dir /tmp/ckpt
 ```
 
 These were not available in the Python implementation.
@@ -150,16 +150,16 @@ flags**.
 
 | Python env var | Rust env var | Purpose |
 |----------------|--------------|---------|
-| `OPENAI_API_KEY` | `DECON_LLM_API_KEY` | API key (checked first) |
+| `OPENAI_API_KEY` | `BRIGID_LLM_API_KEY` | API key (checked first) |
 | `GEMINI_API_KEY` | — | Not yet supported; use OpenAI-compatible providers |
-| `LLM_PROVIDER` | — | Removed; the client is OpenAI-compatible, configured via `DECON_LLM_BASE_URL` |
-| `OPENAI_API_BASE` | `DECON_LLM_BASE_URL` | Provider endpoint (default: `https://api.deepseek.com/v1`) |
-| — | `DEEPSEEK_API_KEY` | Fallback API key (if `DECON_LLM_API_KEY` is unset) |
-| — | `DECON_LLM_MODEL` | Model identifier (default: `deepseek-chat`) |
-| — | `DECON_LLM_ALLOWED_HOSTS` | Extra hosts for Authorization-header allowlist |
-| — | `DECON_LLM_CACHE_DIR` | Disk cache root for LLM responses |
-| — | `DECON_NO_CACHE` | Set to `1` to disable disk cache |
-| — | `DECON_FORCE_MOCK` | Force mock client (offline) |
+| `LLM_PROVIDER` | — | Removed; the client is OpenAI-compatible, configured via `BRIGID_LLM_BASE_URL` |
+| `OPENAI_API_BASE` | `BRIGID_LLM_BASE_URL` | Provider endpoint (default: `https://api.deepseek.com/v1`) |
+| — | `DEEPSEEK_API_KEY` | Fallback API key (if `BRIGID_LLM_API_KEY` is unset) |
+| — | `BRIGID_LLM_MODEL` | Model identifier (default: `deepseek-chat`) |
+| — | `BRIGID_LLM_ALLOWED_HOSTS` | Extra hosts for Authorization-header allowlist |
+| — | `BRIGID_LLM_CACHE_DIR` | Disk cache root for LLM responses |
+| — | `BRIGID_NO_CACHE` | Set to `1` to disable disk cache |
+| — | `BRIGID_FORCE_MOCK` | Force mock client (offline) |
 
 ### DeepSeek (default provider)
 
@@ -168,24 +168,24 @@ DeepSeek is the default — no extra configuration beyond the API key:
 ```bash
 export DEEPSEEK_API_KEY="sk-your-key-here"
 # or use the generic name (checked first):
-export DECON_LLM_API_KEY="sk-your-key-here"
+export BRIGID_LLM_API_KEY="sk-your-key-here"
 ```
 
 ### OpenAI
 
 ```bash
-export DECON_LLM_API_KEY="sk-your-openai-key"
-export DECON_LLM_BASE_URL="https://api.openai.com/v1"
-export DECON_LLM_MODEL="gpt-4o"
+export BRIGID_LLM_API_KEY="sk-your-openai-key"
+export BRIGID_LLM_BASE_URL="https://api.openai.com/v1"
+export BRIGID_LLM_MODEL="gpt-4o"
 ```
 
 ### Local providers (Ollama, LM Studio)
 
 ```bash
 # Ollama
-export DECON_LLM_API_KEY="ollama"
-export DECON_LLM_BASE_URL="http://localhost:11434/v1"
-export DECON_LLM_MODEL="llama3"
+export BRIGID_LLM_API_KEY="ollama"
+export BRIGID_LLM_BASE_URL="http://localhost:11434/v1"
+export BRIGID_LLM_MODEL="llama3"
 ```
 
 > **Important:** The Rust CLI never treats a blank/empty environment variable
@@ -196,18 +196,18 @@ export DECON_LLM_MODEL="llama3"
 
 ## Configuration file
 
-The Rust CLI supports a `decon.toml` configuration file (new — not in Python):
+The Rust CLI supports a `brigid.toml` configuration file (new — not in Python):
 
 ```bash
-decon init --dir /path/to/project
+brigid init --dir /path/to/project
 ```
 
-This writes a starter `decon.toml` with documented defaults. Config precedence
-is: **CLI flags > `decon.toml` > environment variables > built-in defaults**.
+This writes a starter `brigid.toml` with documented defaults. Config precedence
+is: **CLI flags > `brigid.toml` > environment variables > built-in defaults**.
 
-API keys are **never** written to `decon.toml` — only read from the
+API keys are **never** written to `brigid.toml` — only read from the
 environment. A secret-field guard rejects `api_key` or `token` fields in
-`decon.toml` at load time.
+`brigid.toml` at load time.
 
 ---
 
@@ -228,15 +228,15 @@ environment. A secret-field guard rejects `api_key` or `token` fields in
 | i18n chrome (English + Spanish) | ✅ | ✅ | `--language en\|es` |
 | Checkpoint / resume | ✅ | ✅ | Content-addressed (ADR 0001) + file-based storage (ADR 0006) |
 | Ctrl+C graceful shutdown | Partial | ✅ | Saves checkpoint, exit code 5 |
-| Dry-run (zero LLM) | ✅ | ✅ | `decon dry-run` |
-| Eval (structural quality gate) | ✅ | ✅ | `decon eval` |
+| Dry-run (zero LLM) | ✅ | ✅ | `brigid dry-run` |
+| Eval (structural quality gate) | ✅ | ✅ | `brigid eval` |
 | `--each-app` monorepo fan-out | ✅ | ✅ | |
 | `--review-chapters` polishing | ❌ | ✅ | Second LLM pass per chapter (new) |
 | Per-stage subcommands | ❌ | ✅ | Debug individual stages (new) |
-| `decon.toml` config file | ❌ | ✅ | Typed config with precedence (new) |
-| `decon init` wizard | ❌ | ✅ | Write starter config (new) |
-| `decon resume` status check | ❌ | ✅ | Inspect checkpoint without re-running (new) |
-| Man page | ❌ | ✅ | `decon manpage` (new) |
+| `brigid.toml` config file | ❌ | ✅ | Typed config with precedence (new) |
+| `brigid init` wizard | ❌ | ✅ | Write starter config (new) |
+| `brigid resume` status check | ❌ | ✅ | Inspect checkpoint without re-running (new) |
+| Man page | ❌ | ✅ | `brigid manpage` (new) |
 | Shell completions | ❌ | ✅ | bash, zsh, fish, PowerShell (new) |
 | Disk cache for LLM responses | ❌ | ✅ | Hash(prompt)+model+provider keyed (new) |
 | Host allowlist for API keys | ❌ | ✅ | Prevents header leakage (new) |
@@ -253,8 +253,8 @@ The Rust CLI maps outcomes to stable exit codes so CI and scripts can branch:
 |------|---------|------------|
 | `0` | Success | — |
 | `1` | Generic failure | Check stderr |
-| `2` | Config / path / I/O error | Verify `--dir` exists, `decon.toml` is valid |
-| `3` | Budget exhausted | Raise `max_llm_calls` in `decon.toml` |
+| `2` | Config / path / I/O error | Verify `--dir` exists, `brigid.toml` is valid |
+| `3` | Budget exhausted | Raise `max_llm_calls` in `brigid.toml` |
 | `4` | LLM provider error | Network, timeout, rate-limit, or parse error |
 | `5` | Cancelled (Ctrl+C / SIGTERM) | Partial checkpoint saved; re-run to resume |
 
@@ -274,45 +274,45 @@ Rust CLI works for your use cases, you can stop using the Python entrypoint.
 ### Will my existing output tutorials still work?
 
 Yes. The output format (Markdown + Mermaid chapters, `index.md`, diagrams) is
-the same. The Rust `decon eval` command can evaluate tutorials generated by
+the same. The Rust `brigid eval` command can evaluate tutorials generated by
 either implementation.
 
 ### Can I still use the Makefile?
 
-Yes. Update your Makefile targets to call `decon` instead of
+Yes. Update your Makefile targets to call `brigid` instead of
 `python main.py`:
 
 ```makefile
 tutorial:
-	decon generate --dir . --output-dir output/$(PROJECT)
+	brigid generate --dir . --output-dir output/$(PROJECT)
 
 dry-run:
-	decon dry-run --dir . --format json
+	brigid dry-run --dir . --format json
 
 eval:
-	decon eval --out output/$(PROJECT)
+	brigid eval --out output/$(PROJECT)
 ```
 
 ### What happened to `LLM_PROVIDER`?
 
 The Rust CLI uses a single OpenAI-compatible HTTP client. Instead of selecting
 a provider by name, you set the base URL and model via environment variables
-(`DECON_LLM_BASE_URL`, `DECON_LLM_MODEL`). This is simpler and works with any
+(`BRIGID_LLM_BASE_URL`, `BRIGID_LLM_MODEL`). This is simpler and works with any
 OpenAI-compatible provider (DeepSeek, OpenAI, Ollama, LM Studio, vLLM, etc.).
 
 ### What happened to Gemini support?
 
 Direct Gemini API support has not yet been ported. If your provider exposes an
-OpenAI-compatible endpoint, point `DECON_LLM_BASE_URL` at it. Native Gemini
+OpenAI-compatible endpoint, point `BRIGID_LLM_BASE_URL` at it. Native Gemini
 support may be added in a future release.
 
 ### How do I resume a failed run?
 
 ```bash
-decon resume --checkpoint /path/to/checkpoint-dir --format json
+brigid resume --checkpoint /path/to/checkpoint-dir --format json
 ```
 
-This shows which stages completed. Re-running the same `decon generate` command
+This shows which stages completed. Re-running the same `brigid generate` command
 resumes from the last completed stage automatically — completed stages are
 skipped.
 
@@ -326,7 +326,7 @@ SHA-256 verification. See [ADR 0001](adr/0001-checkpoint-schema-v1.md) and
 ### How do I force offline / mock mode?
 
 ```bash
-export DECON_FORCE_MOCK=1
+export BRIGID_FORCE_MOCK=1
 ```
 
 This forces the mock LLM client even when a real API key is present — useful
@@ -338,7 +338,7 @@ Not yet. Option A (a thin Python wrapper package that delegates to the Rust
 binary via `subprocess`) was considered but the Python code lives in a separate
 repository. The recommended path is to switch to the Rust CLI directly. If a
 Python wrapper is needed for backward compatibility, it can be built as a
-separate package that shells out to `decon`.
+separate package that shells out to `brigid`.
 
 ### Where can I learn more about the migration design?
 

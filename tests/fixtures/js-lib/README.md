@@ -1,6 +1,6 @@
 # js-lib
 
-A tiny TypeScript package used as a decon-rs test fixture.
+A tiny TypeScript package used as a brigid test fixture.
 
 ## Prerequisites
 

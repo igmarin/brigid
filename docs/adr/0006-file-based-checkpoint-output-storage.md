@@ -153,8 +153,8 @@ schema version bump is required.
 
 - [ADR 0001](0001-checkpoint-schema-v1.md) — the base checkpoint format this
   ADR extends with file-based stage outputs.
-- `crates/decon-core/src/checkpoint.rs` — `StageOutputEntry`, `StageOutputs`,
+- `crates/brigid-core/src/checkpoint.rs` — `StageOutputEntry`, `StageOutputs`,
   `CheckpointV1::stage_outputs`.
-- `crates/decon-pipeline/src/checkpoint_store.rs` — `write_stage_file`,
+- `crates/brigid-pipeline/src/checkpoint_store.rs` — `write_stage_file`,
   `read_stage_file`, `is_stage_complete_with_files`, `record_stage_outputs`.
 - Issue #139 (M4-CHK-1) — tracks this design.

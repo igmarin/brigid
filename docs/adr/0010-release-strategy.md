@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-M5 (#209) introduced a release workflow to distribute `decon` as pre-built
+M5 (#209) introduced a release workflow to distribute `brigid` as pre-built
 binaries. Before this, the only installation method was building from source
 via `cargo build`. The product needs multiple distribution channels to reach
 different user audiences:
@@ -25,7 +25,7 @@ different user audiences:
 
 - The release workflow must produce binaries for Linux (x86_64, aarch64),
   macOS (x86_64, aarch64), and Windows (x86_64).
-- Each release archive must include the `decon` binary, the man page, and
+- Each release archive must include the `brigid` binary, the man page, and
   shell completion scripts (bash, zsh, fish, PowerShell).
 - SHA-256 checksums must be published for verification.
 - The Homebrew formula must support both Intel and Apple Silicon Macs.
@@ -44,8 +44,8 @@ channels:
 A GitHub Actions workflow (`.github/workflows/release.yml`) triggers on tag
 push (`v*.*.*`) or manual dispatch:
 
-1. **Docs job** — builds `decon` natively on Ubuntu, runs `decon manpage` and
-   `decon completions --shell {bash,zsh,fish,powershell}` to generate the man
+1. **Docs job** — builds `brigid` natively on Ubuntu, runs `brigid manpage` and
+   `brigid completions --shell {bash,zsh,fish,powershell}` to generate the man
    page and completion scripts. These are platform-independent and bundled
    into every archive.
 2. **Build matrix** — one job per `(OS, target)` pair:
@@ -63,7 +63,7 @@ push (`v*.*.*`) or manual dispatch:
 
 ### 2. Homebrew (macOS)
 
-A Homebrew formula template lives in `homebrew/decon.rb`. The canonical live
+A Homebrew formula template lives in `homebrew/brigid.rb`. The canonical live
 formula is maintained in the `igmarin/homebrew-tap` repository. The formula:
 
 - Supports both Intel (`on_intel`) and Apple Silicon (`on_arm`) Macs via
@@ -73,24 +73,24 @@ formula is maintained in the `igmarin/homebrew-tap` repository. The formula:
 Users install via:
 ```bash
 brew tap igmarin/homebrew-tap
-brew install decon
+brew install brigid
 ```
 
 ### 3. cargo install
 
-`decon-cli` is published to crates.io, so users can install from source:
+`brigid-cli` is published to crates.io, so users can install from source:
 ```bash
-cargo install decon-cli
+cargo install brigid-cli
 ```
 Or directly from the git repository:
 ```bash
-cargo install --git https://github.com/igmarin/decon-rs decon-cli
+cargo install --git https://github.com/igmarin/brigid brigid-cli
 ```
 
 ### 4. cargo-binstall
 
-`decon-cli` includes `[package.metadata.binstall]` configuration so that
-`cargo binstall decon-cli` downloads a pre-built binary from GitHub Releases
+`brigid-cli` includes `[package.metadata.binstall]` configuration so that
+`cargo binstall brigid-cli` downloads a pre-built binary from GitHub Releases
 instead of compiling from source. This bridges the `cargo install` and direct
 download channels.
 
@@ -131,7 +131,7 @@ documents this flow including man page and completion installation.
 ## Consequences
 
 - **Positive**: Users on all three major platforms (Linux, macOS, Windows)
-  can install `decon` in under two minutes via their preferred channel.
+  can install `brigid` in under two minutes via their preferred channel.
 - **Positive**: SHA-256 checksums enable supply-chain verification.
 - **Positive**: The dry-run mode lets maintainers validate the release build
   before publishing.
@@ -147,8 +147,8 @@ documents this flow including man page and completion installation.
 ## Related Documents
 
 - `.github/workflows/release.yml` — the release workflow.
-- `homebrew/decon.rb` — Homebrew formula template.
-- `crates/decon-cli/Cargo.toml` — `[package.metadata.binstall]` configuration.
+- `homebrew/brigid.rb` — Homebrew formula template.
+- `crates/brigid-cli/Cargo.toml` — `[package.metadata.binstall]` configuration.
 - [`CHANGELOG.md`](../../CHANGELOG.md) — release notes source.
 - [`README.md`](../../README.md) — installation instructions for all channels.
 - Issue #209 — release workflow with native installers and Homebrew formula.

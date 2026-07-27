@@ -28,7 +28,7 @@ alternatives and migrate when a suitable drop-in is available.
 | **`serde_yaml_ng`** | 0.10.0 (2024-05-26) | **Chosen** — drop-in fork of `serde_yaml` with identical API (`from_str`, `to_string`, `Error`). 6.4 M downloads, 572 reverse-dependents, MSRV 1.64. |
 | `serde_yml` | 0.0.13 (2026-05-27) | **Rejected** — now also deprecated. The 0.0.13 release is a thin compatibility shim forwarding to `noyalib`. Migrating here would simply track another deprecation. |
 | `noyalib` | 0.0.15 (2026-07-12) | **Rejected** — pure-Rust, `#![forbid(unsafe_code)]`, but still 0.0.x with ~108 K downloads and MSRV 1.85. Too new for a low-priority tech-debt migration; revisit once it stabilises past 0.0. |
-| `serde-saphyr` | 0.0.x | **Rejected** — no `Value` DOM and no `to_string` serializer. `decon-pipeline` serialises candidate abstractions to YAML (`candidates_to_yaml`), so a serializer is required. |
+| `serde-saphyr` | 0.0.x | **Rejected** — no `Value` DOM and no `to_string` serializer. `brigid-pipeline` serialises candidate abstractions to YAML (`candidates_to_yaml`), so a serializer is required. |
 | `yaml-rust2` | 0.9 | **Rejected** — lower-level parser, not serde-integrated. Would require a hand-written serde adapter. |
 
 ### Constraints preserved from ADR 0004
@@ -36,19 +36,19 @@ alternatives and migrate when a suitable drop-in is available.
 - The secret-field guard (issue #73) must remain: YAML is parsed into
   `serde_json::Value`, scanned for secret-bearing keys, then deserialised into
   `RunConfig`.
-- `decon-pipeline` uses both `from_str` (typed deserialisation) and `to_string`
+- `brigid-pipeline` uses both `from_str` (typed deserialisation) and `to_string`
   (serialisation), so the replacement crate must support both directions.
 - Error messages are asserted on variants/emptiness, not exact text (ADR 0004
   Consequences), so a parser swap with different error strings is safe.
 
 ## Decision
 
-Replace `serde_yaml` 0.9 with `serde_yaml_ng` 0.10 in both `decon-core` and
-`decon-pipeline`.
+Replace `serde_yaml` 0.9 with `serde_yaml_ng` 0.10 in both `brigid-core` and
+`brigid-pipeline`.
 
 ### Dependency change
 
-`crates/decon-core/Cargo.toml` and `crates/decon-pipeline/Cargo.toml`:
+`crates/brigid-core/Cargo.toml` and `crates/brigid-pipeline/Cargo.toml`:
 
 ```toml
 serde_yaml_ng = "0.10"
@@ -62,7 +62,7 @@ All `serde_yaml::` path references are replaced with `serde_yaml_ng::`. Because
 `serde_yaml_ng` is a fork from the final commit of `serde_yaml`, the API is
 identical — `from_str`, `to_string`, and `Error` are drop-in replacements.
 
-`crates/decon-core/src/config.rs`, `parse_yaml_config`:
+`crates/brigid-core/src/config.rs`, `parse_yaml_config`:
 
 ```rust
 pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
@@ -73,7 +73,7 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
 }
 ```
 
-`crates/decon-pipeline/src/identify.rs`:
+`crates/brigid-pipeline/src/identify.rs`:
 
 - `IdentifyError::Parse(#[from] serde_yaml_ng::Error)`
 - `serde_yaml_ng::from_str` (three call sites)
@@ -134,10 +134,10 @@ No change required. `ignore = []` remains — no advisories are ignored.
 
 - [ADR 0004](0004-yaml-parser-migration.md) — the prior migration off
   `serde_yml`/`libyml` to `serde_yaml` 0.9. Superseded by this ADR.
-- `crates/decon-core/src/config.rs` — `parse_yaml_config` and
+- `crates/brigid-core/src/config.rs` — `parse_yaml_config` and
   `check_for_secret_fields`.
-- `crates/decon-pipeline/src/identify.rs` — YAML parse/serialise call sites.
-- `crates/decon-core/Cargo.toml`, `crates/decon-pipeline/Cargo.toml` —
+- `crates/brigid-pipeline/src/identify.rs` — YAML parse/serialise call sites.
+- `crates/brigid-core/Cargo.toml`, `crates/brigid-pipeline/Cargo.toml` —
   `serde_yaml_ng = "0.10"` dependency.
 - `deny.toml` — `ignore = []`.
 - Issue #114 — tracks this migration.

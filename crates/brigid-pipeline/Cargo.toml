@@ -1,0 +1,86 @@
+[package]
+name = "brigid-pipeline"
+description = "Stage orchestration, checkpoint/resume, and dry-run planning for brigid."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+brigid-core = { path = "../brigid-core", version = "1.0.0" }
+brigid-crawl = { path = "../brigid-crawl", version = "1.0.0" }
+brigid-llm = { path = "../brigid-llm", version = "1.0.0" }
+thiserror = "2.0"
+flate2 = "1"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+# Pinned because prompt syntax is sensitive to minijinja/Jinja2 behavior and
+# golden/snapshot tests depend on exact render output.
+minijinja = "=2.20.0"
+futures = "0.3"
+# CancellationToken for graceful Ctrl+C / SIGTERM shutdown (issue #68).
+tokio-util = { version = "0.7", features = ["rt"] }
+# Signal handling (ctrl_c) for the cancellation setup helper (issue #68).
+tokio = { version = "1", features = ["macros", "rt", "sync", "signal"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile = "3.20"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
+async-trait = "0.1"
+assert_cmd = "2.2.2"
+serial_test = "3.5.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "chapter_generation"
+harness = false
+
+[[bench]]
+name = "checkpoint_roundtrip"
+harness = false
+
+[[bench]]
+name = "file_context_selection"
+harness = false
+
+[[bench]]
+name = "template_rendering"
+harness = false
+
+[[bench]]
+name = "mermaid_sanitization"
+harness = false
+
+[[bench]]
+name = "combine_index"
+harness = false
+
+[[bench]]
+name = "budget_estimation"
+harness = false
+
+[[bench]]
+name = "batch_packing"
+harness = false
+
+[features]
+# Opt-in live LLM smoke tests. When enabled, the `tests/live_smoke.rs` and
+# `tests/live_generate_smoke.rs` integration tests are compiled and may make
+# real (budget-capped) API calls to DeepSeek. Default builds and CI do NOT
+# enable this feature, so the live tests are never compiled or run there.
+# Tests also skip automatically when no API key is present in the environment.
+live-llm = []

@@ -1,6 +1,6 @@
 # LLM-Generated Frozen Fixture
 
-This directory holds a frozen tutorial fixture produced by the `decon generate`
+This directory holds a frozen tutorial fixture produced by the `brigid generate`
 pipeline against the `tests/fixtures/umbrella` input repo. It is the golden
 output used by the nightly LLM smoke job to detect quality regressions.
 
@@ -10,8 +10,8 @@ output used by the nightly LLM smoke job to detect quality regressions.
   apps: alpha, beta, gamma)
 - **Model:** DeepSeek (placeholder; refresh with a live run)
 - **Date:** 2026-01-15 (placeholder; refresh with a live run)
-- **Pipeline:** `decon generate --dir tests/fixtures/umbrella --output-dir
-  <out> --max-abstractions 5` with `DECON_MAX_LLM_CALLS=20`
+- **Pipeline:** `brigid generate --dir tests/fixtures/umbrella --output-dir
+  <out> --max-abstractions 5` with `BRIGID_MAX_LLM_CALLS=20`
 - **Eval score:** 100 (structural eval at threshold 70)
 
 ## Contents
@@ -47,12 +47,12 @@ To regenerate with a live LLM:
 
 ```sh
 export DEEPSEEK_API_KEY=<your-key>
-export DECON_MAX_LLM_CALLS=20
-cargo run -p decon-cli -- generate \
+export BRIGID_MAX_LLM_CALLS=20
+cargo run -p brigid-cli -- generate \
   --dir tests/fixtures/umbrella \
   --output-dir /tmp/llm-output \
   --max-abstractions 5
-cargo run -p decon-cli -- eval --out /tmp/llm-output --threshold 70
+cargo run -p brigid-cli -- eval --out /tmp/llm-output --threshold 70
 ```
 
 If the new output scores at or above the frozen score, copy it into this
@@ -62,7 +62,7 @@ opens an issue on regression.
 ## Verification
 
 ```sh
-cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/llm-generated --threshold 70
+cargo run -p brigid-cli -- eval --out tests/fixtures/tutorials/llm-generated --threshold 70
 ```
 
 Expected: `passed=true` with a score of 100.

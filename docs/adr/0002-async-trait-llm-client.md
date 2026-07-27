@@ -10,22 +10,22 @@ Accepted
 
 ## Context
 
-`decon` talks to LLM providers (OpenAI-compatible first, per the project's
+`brigid` talks to LLM providers (OpenAI-compatible first, per the project's
 provider priority) behind a single provider-agnostic interface. Milestone 3
-introduces the `LlmClient` trait in `decon-llm` so that the pipeline can call
+introduces the `LlmClient` trait in `brigid-llm` so that the pipeline can call
 any provider — or a `MockClient` test double — through one object-safe type.
 
 The trait is intentionally minimal: a single `async fn complete(&self, prompt:
 &str) -> Result<String, LlmError>` method. The concrete implementations that
 land in M3/M4 are:
 
-- `MockClient` (`crates/decon-llm/src/mock.rs`) — a thread-safe, network-free
+- `MockClient` (`crates/brigid-llm/src/mock.rs`) — a thread-safe, network-free
   test double backed by a `Mutex<MockState>`.
-- `OpenAiCompatibleClient` (`crates/decon-llm/src/openai_client.rs`) — an HTTP
+- `OpenAiCompatibleClient` (`crates/brigid-llm/src/openai_client.rs`) — an HTTP
   client using `reqwest` with retry/backoff/timeout and optional `DiskCache`.
 
 Both are used as `&dyn LlmClient` for dependency injection in tests and in the
-bounded-concurrency fan-out (`crates/decon-llm/src/concurrency.rs`), which takes
+bounded-concurrency fan-out (`crates/brigid-llm/src/concurrency.rs`), which takes
 `client: &dyn LlmClient`. Object safety is therefore a hard requirement: the
 pipeline must be able to hold a single `dyn LlmClient` and swap providers
 without recompiling call sites.
@@ -67,8 +67,8 @@ pub trait LlmClient: Send + Sync {
 }
 ```
 
-This is exactly what `crates/decon-llm/src/client.rs` declares. The dependency
-is declared in `crates/decon-llm/Cargo.toml`:
+This is exactly what `crates/brigid-llm/src/client.rs` declares. The dependency
+is declared in `crates/brigid-llm/Cargo.toml`:
 
 ```toml
 async-trait = "0.1"
@@ -144,11 +144,11 @@ across tokio tasks in `bounded_complete`.
 
 - `docs/adr/0001-checkpoint-schema-v1.md` — the checkpoint ADR whose resume
   behavior depends on the pipeline stages that call `LlmClient`.
-- `crates/decon-llm/src/client.rs` — the `LlmClient` trait definition.
-- `crates/decon-llm/src/mock.rs` — `MockClient` test double implementing the
+- `crates/brigid-llm/src/client.rs` — the `LlmClient` trait definition.
+- `crates/brigid-llm/src/mock.rs` — `MockClient` test double implementing the
   trait.
-- `crates/decon-llm/src/openai_client.rs` — `OpenAiCompatibleClient`
+- `crates/brigid-llm/src/openai_client.rs` — `OpenAiCompatibleClient`
   implementing the trait.
-- `crates/decon-llm/src/concurrency.rs` — `bounded_complete` consuming
+- `crates/brigid-llm/src/concurrency.rs` — `bounded_complete` consuming
   `&dyn LlmClient`.
-- `crates/decon-llm/Cargo.toml` — `async-trait = "0.1"` dependency.
+- `crates/brigid-llm/Cargo.toml` — `async-trait = "0.1"` dependency.

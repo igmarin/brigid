@@ -10,7 +10,7 @@ Proposed
 
 ## Context
 
-`decon` identifies abstractions and relationships via LLM map/reduce. On
+`brigid` identifies abstractions and relationships via LLM map/reduce. On
 small-to-medium codebases this works well — the LLM reads file snippets
 and infers module boundaries and dependencies with reasonable accuracy.
 
@@ -28,10 +28,10 @@ that structural tooling can address:
    A claimed relationship might be a hallucination. Symbol-level call
    graphs (from AST parsing) are ground truth the LLM cannot match.
 
-3. **No multimodal input.** `decon` reads code files only. Real
+3. **No multimodal input.** `brigid` reads code files only. Real
    codebases have architecture diagrams, design PDFs, whiteboard photos,
    ADR documents. Tools like Graphify extract concepts from these via
-   vision models — concepts `decon` never sees.
+   vision models — concepts `brigid` never sees.
 
 ### Tools already in the author's environment
 
@@ -53,15 +53,15 @@ The author uses two complementary tools on large codebases:
 
 ### The abstraction-level gap
 
-These tools operate at different abstraction levels than `decon`:
+These tools operate at different abstraction levels than `brigid`:
 
 | Tool | Level | What it produces |
 |------|-------|------------------|
 | codegraph | Symbol/function | Call graph, blast radius, verbatim source |
 | Graphify | Concept (multimodal) | Communities, god nodes, surprising connections |
-| decon | Concept/module | Tutorial chapters with prose and Mermaid diagrams |
+| brigid | Concept/module | Tutorial chapters with prose and Mermaid diagrams |
 
-Bridging symbol-level data (codegraph) to concept-level output (decon)
+Bridging symbol-level data (codegraph) to concept-level output (brigid)
 still requires LLM summarization — the graph data *informs* the LLM, it
 does not replace the LLM step. The improvement is "better-informed
 identification," not "structural certainty." This ADR is honest about
@@ -69,36 +69,36 @@ that limit.
 
 ### Design constraint: optional, not required
 
-The integration must be **strictly optional**. `decon` must deliver full
+The integration must be **strictly optional**. `brigid` must deliver full
 value standalone — no hard dependency on codegraph, Graphify, or any
-external graph tool. When a graph provider is present, `decon` produces
-*better* results. When none is present, `decon` works exactly as today.
+external graph tool. When a graph provider is present, `brigid` produces
+*better* results. When none is present, `brigid` works exactly as today.
 This mirrors the plugin pattern (ADR 0014): an extension point that
 defaults to no-op.
 
 ### Relationship to ADR 0015 (MCP server)
 
-ADR 0015 proposes an MCP server that exposes `decon`'s checkpoint as
+ADR 0015 proposes an MCP server that exposes `brigid`'s checkpoint as
 queryable resources/tools. That is a **consumption-side** integration —
-the user's AI assistant queries `decon`'s output.
+the user's AI assistant queries `brigid`'s output.
 
 This ADR is a **production-side** integration — external graph data
-improves `decon`'s generation quality. The two are independent: the
+improves `brigid`'s generation quality. The two are independent: the
 graph provider improves what goes *into* the checkpoint; the MCP server
 exposes what comes *out*. Both can ship independently.
 
 ## Decision
 
-### 1. `GraphProvider` trait in `decon-core`
+### 1. `GraphProvider` trait in `brigid-core`
 
-A new module `decon-core::graph_provider` defines an object-safe trait:
+A new module `brigid-core::graph_provider` defines an object-safe trait:
 
 ```rust
 /// Structural ground truth from an external graph tool.
 ///
 /// Implementations: CodegraphProvider, GraphifyProvider, NoneProvider.
 /// When present, the identify and relationships stages use this data
-/// to inform and verify LLM output. When absent (NoneProvider), decon
+/// to inform and verify LLM output. When absent (NoneProvider), brigid
 /// works exactly as today — LLM-only.
 pub trait GraphProvider: Send + Sync {
     /// Symbol-level call graph for a file (codegraph).
@@ -133,7 +133,7 @@ pub trait GraphProvider: Send + Sync {
 }
 ```
 
-Supporting types (in `decon-core::graph_provider`):
+Supporting types (in `brigid-core::graph_provider`):
 
 ```rust
 pub struct CallEdge {
@@ -202,16 +202,16 @@ Graphify at runtime — Graphify is a Claude Code skill, not a library):
 - `hub_concepts` → reads Graphify's "god nodes" (highest-degree
   concepts).
 - `multimodal_concepts` → reads concepts extracted from non-code files
-  (diagrams, PDFs, images) that `decon` cannot process itself.
+  (diagrams, PDFs, images) that `brigid` cannot process itself.
 - `call_graph_for_file` → reads Graphify's `EXTRACTED` edges only
   (tree-sitter call graph). `INFERRED` and `AMBIGUOUS` edges are LLM
-  guesses — the same problem `decon` has — and are **not** used as
+  guesses — the same problem `brigid` has — and are **not** used as
   structural ground truth.
 - `relationship_exists` → checks `EXTRACTED` edges only.
 
 **This adapter reads a file, it does not invoke Graphify.** The user runs
 `/graphify .` separately (in Claude Code), which produces `graphify-out/
-graph.json`. `decon` reads that file at generation time. No Claude Code
+graph.json`. `brigid` reads that file at generation time. No Claude Code
 runtime dependency, no double LLM pass.
 
 ### 5. Pipeline integration: identify stage
@@ -240,7 +240,7 @@ structural data informs; the LLM decides.
 **5b. Multimodal concept injection.**
 
 `provider.multimodal_concepts()` returns concepts extracted from
-diagrams, PDFs, and images that `decon` cannot read. These are injected
+diagrams, PDFs, and images that `brigid` cannot read. These are injected
 into the reduce prompt as additional context: "The following concepts
 were extracted from design documents: [list]. Consider whether any
 identified abstractions correspond to these documented concepts."
@@ -303,12 +303,12 @@ the LLM ordering prompt, not a constraint.
 ### 8. Configuration
 
 `RunConfig` gains an optional `graph_provider` field, configured via
-`decon.toml`:
+`brigid.toml`:
 
 ```toml
 [graph_provider]
 # Optional: enable structural ground truth from external tools.
-# When absent, decon runs LLM-only (NoneProvider default).
+# When absent, brigid runs LLM-only (NoneProvider default).
 
 # Option A: codegraph (SQLite index)
 type = "codegraph"
@@ -323,7 +323,7 @@ index_path = ".codegraph/graph.db"
 # providers = ["codegraph:.codegraph/graph.db", "graphify:graphify-out/graph.json"]
 ```
 
-Environment variable `DECON_GRAPH_PROVIDER` overrides the type for
+Environment variable `BRIGID_GRAPH_PROVIDER` overrides the type for
 ad-hoc runs. CLI flag `--graph-provider` overrides both.
 
 When the `[graph_provider]` table is absent, `NoneProvider` is used —
@@ -354,7 +354,7 @@ generation-side integration code.
 
 - **Pros:** Zero integration code; immediate; each tool stays
   independent.
-- **Cons:** Does NOT improve `decon`'s *generation* quality. The
+- **Cons:** Does NOT improve `brigid`'s *generation* quality. The
   abstractions and relationships in the tutorial are still LLM-only. The
   AI client has to compose the tools at query time, which is unreliable
   for complex questions.
@@ -365,7 +365,7 @@ generation-side integration code.
 
 ### Option B — Graphify as a pre-processing step (runtime dependency)
 
-Run Graphify first, feed its output into `decon`'s identify stage as
+Run Graphify first, feed its output into `brigid`'s identify stage as
 starting material. Requires Graphify at runtime.
 
 - **Pros:** Best abstraction identification (algorithmic clustering +
@@ -373,19 +373,19 @@ starting material. Requires Graphify at runtime.
 - **Cons:** Graphify is a **Claude Code skill**, not a standalone
   library. Using it at runtime means requiring Claude Code as a
   dependency, or extracting Graphify's core into a library (significant
-  coupling). Two LLM passes (Graphify's + decon's) doubles cost.
+  coupling). Two LLM passes (Graphify's + brigid's) doubles cost.
 - **Rejected:** Too much coupling. The `GraphifyProvider` adapter (§4)
   reads Graphify's *output file* instead, which gives the same data
   without the runtime dependency.
 
 ### Option C — REST API integration instead of a trait
 
-Define an HTTP API that external graph tools implement. `decon` calls
+Define an HTTP API that external graph tools implement. `brigid` calls
 the API at generation time.
 
 - **Pros:** Language-agnostic (any tool can implement the API); no
   crate-level dependency on tool-specific formats.
-- **Cons:** Requires running a server alongside `decon`; network
+- **Cons:** Requires running a server alongside `brigid`; network
   overhead; auth concerns; the user must configure and maintain a
   separate service. For a CLI tool that runs in a terminal, a local
   trait + file-based adapter is simpler.
@@ -395,41 +395,41 @@ the API at generation time.
 
 ### Option D — Hard dependency on codegraph
 
-Make codegraph a required dependency. `decon` always uses the call graph.
+Make codegraph a required dependency. `brigid` always uses the call graph.
 
 - **Pros:** Simplest implementation (no `Option`, no `NoneProvider`).
-- **Cons:** Violates the core design principle: `decon` must deliver
-  full value standalone. Users without codegraph cannot use `decon`.
+- **Cons:** Violates the core design principle: `brigid` must deliver
+  full value standalone. Users without codegraph cannot use `brigid`.
   Adds a hard dependency on an external tool's index format.
 - **Rejected:** Breaks standalone usability. The optional provider
-  pattern preserves `decon`'s independence.
+  pattern preserves `brigid`'s independence.
 
 ## Consequences
 
-- **Positive:** When codegraph is present, `decon`'s relationships are
+- **Positive:** When codegraph is present, `brigid`'s relationships are
   grounded in structural call-graph data — fewer invented relationships,
   verifiable confidence markers in chapters.
-- **Positive:** When Graphify is present, `decon`'s abstractions are
+- **Positive:** When Graphify is present, `brigid`'s abstractions are
   informed by algorithmic community detection — fewer missed
   abstractions on large codebases, and tutorials can reference
   architecture diagrams and design docs via multimodal concept
   extraction.
-- **Positive:** When both are present (`ComposedProvider`), `decon`
+- **Positive:** When both are present (`ComposedProvider`), `brigid`
   combines symbol-level precision with concept-level clustering — the
   best of both.
-- **Positive:** `NoneProvider` default means `decon` delivers full value
+- **Positive:** `NoneProvider` default means `brigid` delivers full value
   standalone. No hard dependency. Zero configuration for users without
   graph tools.
 - **Positive:** The trait is a stable extension point — new graph tools
   (Scip-Tools, LSIF-based tools, custom internal analyzers) can be added
   by implementing `GraphProvider` without touching the pipeline.
 - **Negative:** The identify and relationships stages gain conditional
-  logic (provider present vs absent). Test matrix grows: decon with
+  logic (provider present vs absent). Test matrix grows: brigid with
   NoneProvider, with CodegraphProvider, with GraphifyProvider, with
   ComposedProvider.
 - **Negative:** The abstraction-level gap is not eliminated. Symbol-level
   data (codegraph) still requires LLM summarization to become
-  concept-level output (decon). The improvement is "better-informed
+  concept-level output (brigid). The improvement is "better-informed
   guess," not "structural certainty." This is an inherent limit.
 - **Negative:** `GraphifyProvider` depends on Graphify's `graph.json`
   format, which is not a stable schema. Format changes in Graphify will
@@ -444,12 +444,12 @@ Make codegraph a required dependency. `decon` always uses the call graph.
 Before implementing the full trait, validate the quality gap on real
 codebases:
 
-1. Run `decon generate` on 3-5 large codebases (the author's new job
+1. Run `brigid generate` on 3-5 large codebases (the author's new job
    codebases) with `NoneProvider` (current behavior).
 2. Read the tutorials. Document specific failures: missed abstractions,
    invented relationships, wrong module boundaries.
 3. Run codegraph + Graphify on the same codebases.
-4. Manually compare `decon`'s abstractions/relationships against
+4. Manually compare `brigid`'s abstractions/relationships against
    codegraph's call graph and Graphify's communities.
 5. If the gap is significant (missed abstractions, false relationships),
    implement the trait. If the gap is small, defer.
@@ -465,7 +465,7 @@ codebases:
 
 2. **Custom internal analyzers** — Teams with internal code-analysis
    tools (proprietary call graphs, internal dependency trackers) can
-   implement `GraphProvider` to feed their data into `decon` without
+   implement `GraphProvider` to feed their data into `brigid` without
    modifying the pipeline.
 
 3. **LSIF / SCIP support** — A `ScipGraphProvider` reading
@@ -473,7 +473,7 @@ codebases:
    language-server-based call graphs, an alternative to codegraph's
    tree-sitter approach.
 
-4. **Provider auto-discovery** — `decon` detects `.codegraph/` or
+4. **Provider auto-discovery** — `brigid` detects `.codegraph/` or
    `graphify-out/` in the project root and auto-enables the matching
    provider without explicit configuration. Convenience feature; the
    explicit config (§8) stays as the override.
@@ -484,7 +484,7 @@ codebases:
    confidence at query time.
 
 6. **Streaming provider updates** — When a provider's data changes
-   (codegraph re-indexes, Graphify re-runs), `decon` could invalidate
+   (codegraph re-indexes, Graphify re-runs), `brigid` could invalidate
    affected stages in the checkpoint and re-run them. Builds on ADR
    0013's incremental infrastructure. Future ADR.
 

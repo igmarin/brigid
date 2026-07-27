@@ -1,7 +1,7 @@
 # Architecture
 
 This document describes the crate-level structure, data flow, and key types of
-`decon`. It is the contributor-facing companion to the user-facing
+`brigid`. It is the contributor-facing companion to the user-facing
 [`README.md`](README.md) and the migration design in
 [`docs/move-to-rust.md`](docs/move-to-rust.md). Architectural decisions are
 recorded in [`docs/adr/`](docs/adr/) and referenced where relevant below.
@@ -10,18 +10,18 @@ recorded in [`docs/adr/`](docs/adr/) and referenced where relevant below.
 
 ## Crate dependency hierarchy
 
-`decon` is a Cargo workspace of five crates. Dependencies flow strictly
+`brigid` is a Cargo workspace of five crates. Dependencies flow strictly
 downward: the CLI binary depends on the pipeline; the pipeline depends on the
 LLM client, the crawler, and core; core has no workspace dependencies and stays
 pure for easy unit testing.
 
 ```mermaid
 graph TD
-    CLI["decon-cli<br/>(thin binary: clap args, exit codes)"]
-    Pipeline["decon-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
-    LLM["decon-llm<br/>(LlmClient trait, provider clients, cache, retries)"]
-    Crawl["decon-crawl<br/>(local + GitHub file inventory)"]
-    Core["decon-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
+    CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
+    Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
+    LLM["brigid-llm<br/>(LlmClient trait, provider clients, cache, retries)"]
+    Crawl["brigid-crawl<br/>(local + GitHub file inventory)"]
+    Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 
     CLI --> Pipeline
     CLI --> LLM
@@ -35,28 +35,28 @@ graph TD
 ```
 
 The layering rule: **library crates perform no CLI or main-binary logic**.
-`decon-cli` is a thin wrapper that parses arguments, wires the pipeline, and
+`brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and
 maps errors to exit codes. Public APIs in library crates carry rustdoc
 (`#![deny(missing_docs)]`).
 
 ### Workspace layout
 
 ```
-decon-rs/
+brigid/
 ├── crates/
-│   ├── decon-core/       # Pure domain models, traits, budgeting, mermaid sanitize
-│   ├── decon-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
-│   ├── decon-llm/        # LlmClient trait, provider clients, disk cache, retries
-│   ├── decon-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
-│   └── decon-cli/        # Thin binary — clap args, completions, man page, exit codes
-│   (decon-mcp/)          # MCP server — proposed (ADR 0015), post-v1.0.0
+│   ├── brigid-core/       # Pure domain models, traits, budgeting, mermaid sanitize
+│   ├── brigid-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
+│   ├── brigid-llm/        # LlmClient trait, provider clients, disk cache, retries
+│   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
+│   └── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes
+│   (brigid-mcp/)          # MCP server — proposed (ADR 0015), post-v1.0.0
 ├── prompts/              # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 ├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
 │   └── adr/              # Architecture Decision Records (0001–0014)
-├── homebrew/             # Homebrew formula template (decon.rb)
+├── homebrew/             # Homebrew formula template (brigid.rb)
 ├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
 ```
@@ -71,21 +71,21 @@ boundary:
 ### 1. I/O isolation
 
 All filesystem, network, and subprocess I/O lives at the edges —
-`decon-crawl` (filesystem walk, `git` shell-out), `decon-llm` (HTTP provider
-calls, disk cache), and `decon-cli` (argument parsing, exit codes). The
-pipeline orchestration (`decon-pipeline`) coordinates stages but delegates
-I/O to these crates. `decon-core` is **pure**: no network, no filesystem,
+`brigid-crawl` (filesystem walk, `git` shell-out), `brigid-llm` (HTTP provider
+calls, disk cache), and `brigid-cli` (argument parsing, exit codes). The
+pipeline orchestration (`brigid-pipeline`) coordinates stages but delegates
+I/O to these crates. `brigid-core` is **pure**: no network, no filesystem,
 no `tokio`. This keeps the domain logic fast, deterministic, and easy to
 unit-test without mocks.
 
 ### 2. Fail-closed budgeting
 
-The `max_llm_calls` budget (`decon-core::progress`) is enforced
+The `max_llm_calls` budget (`brigid-core::progress`) is enforced
 **fail-closed**: if the tracker cannot confirm remaining budget, the stage
 aborts rather than exceeding the limit. This prevents runaway costs on large
 monorepos and surfaces budget exhaustion as a distinct exit code (3) instead
 of a silent hang. The same principle applies to the context budget
-(`decon-core::budget`) — per-file truncation and per-batch char budgets are
+(`brigid-core::budget`) — per-file truncation and per-batch char budgets are
 hard limits, not suggestions.
 
 ### 3. Checkpoint-first
@@ -102,8 +102,8 @@ half-written state.
 
 Domain types (`Abstraction`, `Relationship`, `Chapter`, `RunConfig`,
 `CheckpointV1`, …) and all pure logic (budgeting, scope filtering, mermaid
-sanitize, eval scoring, kind detection heuristics) live in `decon-core`.
-Stages in `decon-pipeline` are thin orchestrators that call into core for
+sanitize, eval scoring, kind detection heuristics) live in `brigid-core`.
+Stages in `brigid-pipeline` are thin orchestrators that call into core for
 the actual work. This separation means the hard IP — quality rules,
 monorepo heuristics, prompt contracts — is testable without any I/O and
 reusable by future front-ends (a hosted mode, an editor plugin) without
@@ -113,7 +113,7 @@ dragging in the CLI.
 
 ## Pipeline data flow
 
-The full `decon generate` pipeline runs a linear sequence of stages. Every
+The full `brigid generate` pipeline runs a linear sequence of stages. Every
 expensive stage is idempotent and checkpointed so a long monorepo run can
 resume after failure. The `dry-run` stage is zero-LLM and optional; it produces
 a machine-readable plan for CI and agents.
@@ -162,54 +162,54 @@ done, enabling resume from any point without re-running expensive LLM calls.
 
 | Crate | Module | Responsibility |
 |-------|--------|----------------|
-| `decon-core` | `module` | Module keys and inventory discovery (pure) |
-| `decon-core` | `scope` | Monorepo `--apps` / `--exclude-apps` filter (pure) |
-| `decon-core` | `setup` | Setup assessment scoring from five README signals (pure) |
-| `decon-core` | `budget` | Context budget: per-file truncate, per-batch char budget (pure) |
-| `decon-core` | `mermaid` | Mermaid sanitize and light validate (pure) |
-| `decon-core` | `diagrams` | Deterministic index diagram builders (always sanitize/validate) |
-| `decon-core` | `eval` | Structural tutorial quality gate (fixtures under `tests/fixtures/tutorials/`) |
-| `decon-core` | `config` | `RunConfig` layering: CLI > file > env > defaults |
-| `decon-core` | `checkpoint` | Checkpoint schema v1 types (ADR 0001 metadata; ADR 0006 stage outputs) |
-| `decon-core` | `progress` | Progress tracker and max-LLM-calls budget (fail-closed) |
-| `decon-core` | `secrets` | Secrets path classification and content redaction |
-| `decon-core` | `i18n` | `Locale` + `ChromeStrings` (en/es); ADR 0007 |
-| `decon-core` | `chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` domain types |
-| `decon-core` | `abstraction` | `Abstraction`, `Relationship`, `IdentifyResult`, `RelationshipsResult` |
-| `decon-core` | `generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
-| `decon-core` | `extract` | Robust YAML/JSON block extraction from messy LLM output |
-| `decon-core` | `stage_output` | `StageOutput<T>` JSON envelope and per-stage output types (ADR 0012) |
-| `decon-core` | `plugin` | `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector` (ADR 0014) |
-| `decon-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker, symlink cycle detection) |
-| `decon-crawl` | `git_diff` | Git-diff incremental file detection via `git` shell-out; `--since` support (ADR 0013) |
-| `decon-llm` | `client` | `LlmClient` async trait (ADR 0002) |
-| `decon-llm` | `mock` | `MockClient` test double |
-| `decon-llm` | `openai_client` | OpenAI-compatible HTTP client with retry/backoff/timeout |
-| `decon-llm` | `cache` | Disk response cache keyed by hash(prompt)+model+provider; enabled by default with LRU eviction (ADR 0009) |
-| `decon-llm` | `concurrency` | Bounded-concurrency map batches via `tokio::sync::Semaphore` (ADR 0003) |
-| `decon-pipeline` | `dry_run` | Dry-run plan assembly with baseline parity |
-| `decon-pipeline` | `identify` | Map/reduce + single-shot identify stages |
-| `decon-pipeline` | `identify_checkpoint` | Checkpoint-after-identify and resume |
-| `decon-pipeline` | `relationships` | Budgeted evidence selection |
-| `decon-pipeline` | `order` | Chapter ordering + validation |
-| `decon-pipeline` | `chapters` | Bounded-concurrent chapter writing |
-| `decon-pipeline` | `setup_guide` | Score-triggered setup guide generation |
-| `decon-pipeline` | `overview` | Multi-app architecture overview |
-| `decon-pipeline` | `combine` | Index + diagrams + i18n chrome + sanitize |
-| `decon-pipeline` | `review` | `--review-chapters` second LLM pass per chapter |
-| `decon-pipeline` | `generate` | Full pipeline orchestration + `--each-app` fan-out |
-| `decon-pipeline` | `checkpoint_store` | Save/load bundle; file-based stage outputs (ADR 0006) |
-| `decon-pipeline` | `resume` | Stage-skip / invalidate helpers |
-| `decon-pipeline` | `prompts` | `minijinja` prompt rendering |
-| `decon-pipeline` | `cancellation` | Ctrl+C / SIGTERM graceful shutdown (exit 5) |
-| `decon-cli` | `main` | Clap argument parsing, pipeline wiring, exit codes |
+| `brigid-core` | `module` | Module keys and inventory discovery (pure) |
+| `brigid-core` | `scope` | Monorepo `--apps` / `--exclude-apps` filter (pure) |
+| `brigid-core` | `setup` | Setup assessment scoring from five README signals (pure) |
+| `brigid-core` | `budget` | Context budget: per-file truncate, per-batch char budget (pure) |
+| `brigid-core` | `mermaid` | Mermaid sanitize and light validate (pure) |
+| `brigid-core` | `diagrams` | Deterministic index diagram builders (always sanitize/validate) |
+| `brigid-core` | `eval` | Structural tutorial quality gate (fixtures under `tests/fixtures/tutorials/`) |
+| `brigid-core` | `config` | `RunConfig` layering: CLI > file > env > defaults |
+| `brigid-core` | `checkpoint` | Checkpoint schema v1 types (ADR 0001 metadata; ADR 0006 stage outputs) |
+| `brigid-core` | `progress` | Progress tracker and max-LLM-calls budget (fail-closed) |
+| `brigid-core` | `secrets` | Secrets path classification and content redaction |
+| `brigid-core` | `i18n` | `Locale` + `ChromeStrings` (en/es); ADR 0007 |
+| `brigid-core` | `chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` domain types |
+| `brigid-core` | `abstraction` | `Abstraction`, `Relationship`, `IdentifyResult`, `RelationshipsResult` |
+| `brigid-core` | `generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
+| `brigid-core` | `extract` | Robust YAML/JSON block extraction from messy LLM output |
+| `brigid-core` | `stage_output` | `StageOutput<T>` JSON envelope and per-stage output types (ADR 0012) |
+| `brigid-core` | `plugin` | `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector` (ADR 0014) |
+| `brigid-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker, symlink cycle detection) |
+| `brigid-crawl` | `git_diff` | Git-diff incremental file detection via `git` shell-out; `--since` support (ADR 0013) |
+| `brigid-llm` | `client` | `LlmClient` async trait (ADR 0002) |
+| `brigid-llm` | `mock` | `MockClient` test double |
+| `brigid-llm` | `openai_client` | OpenAI-compatible HTTP client with retry/backoff/timeout |
+| `brigid-llm` | `cache` | Disk response cache keyed by hash(prompt)+model+provider; enabled by default with LRU eviction (ADR 0009) |
+| `brigid-llm` | `concurrency` | Bounded-concurrency map batches via `tokio::sync::Semaphore` (ADR 0003) |
+| `brigid-pipeline` | `dry_run` | Dry-run plan assembly with baseline parity |
+| `brigid-pipeline` | `identify` | Map/reduce + single-shot identify stages |
+| `brigid-pipeline` | `identify_checkpoint` | Checkpoint-after-identify and resume |
+| `brigid-pipeline` | `relationships` | Budgeted evidence selection |
+| `brigid-pipeline` | `order` | Chapter ordering + validation |
+| `brigid-pipeline` | `chapters` | Bounded-concurrent chapter writing |
+| `brigid-pipeline` | `setup_guide` | Score-triggered setup guide generation |
+| `brigid-pipeline` | `overview` | Multi-app architecture overview |
+| `brigid-pipeline` | `combine` | Index + diagrams + i18n chrome + sanitize |
+| `brigid-pipeline` | `review` | `--review-chapters` second LLM pass per chapter |
+| `brigid-pipeline` | `generate` | Full pipeline orchestration + `--each-app` fan-out |
+| `brigid-pipeline` | `checkpoint_store` | Save/load bundle; file-based stage outputs (ADR 0006) |
+| `brigid-pipeline` | `resume` | Stage-skip / invalidate helpers |
+| `brigid-pipeline` | `prompts` | `minijinja` prompt rendering |
+| `brigid-pipeline` | `cancellation` | Ctrl+C / SIGTERM graceful shutdown (exit 5) |
+| `brigid-cli` | `main` | Clap argument parsing, pipeline wiring, exit codes |
 
 ---
 
 ## Key types and relationships
 
 The pipeline passes domain objects between stages. All types live in
-`decon-core` so library crates stay testable without network or filesystem
+`brigid-core` so library crates stay testable without network or filesystem
 dependencies.
 
 ```mermaid
@@ -272,18 +272,18 @@ classDiagram
 
 | Type | Crate / module | Produced by | Consumed by |
 |------|----------------|-------------|-------------|
-| `Abstraction` | `decon-core::abstraction` | identify (map/reduce) | relationships, order, chapters |
-| `Relationship` | `decon-core::abstraction` | identify, relationships | combine (index diagrams) |
-| `IdentifyResult` | `decon-core::abstraction` | identify stage | relationships, order, chapters |
-| `RelationshipsResult` | `decon-core::abstraction` | relationships stage | order, combine |
-| `ChapterOrder` | `decon-core::chapter` | order stage | chapters |
-| `Chapter` | `decon-core::chapter` | chapters stage | combine |
-| `ChapterResult` | `decon-core::chapter` | chapters stage | combine, review |
-| `SetupGuide` | `decon-core::generate` | setup stage (score-triggered) | combine |
-| `ArchitectureOverview` | `decon-core::generate` | overview stage (multi-app) | combine |
-| `CombinedTutorial` | `decon-core::generate` | combine stage | eval, output write |
-| `RunConfig` | `decon-core::config` | CLI / file / env layering | every stage |
-| `CheckpointV1` | `decon-core::checkpoint` | checkpoint store | resume, every stage |
+| `Abstraction` | `brigid-core::abstraction` | identify (map/reduce) | relationships, order, chapters |
+| `Relationship` | `brigid-core::abstraction` | identify, relationships | combine (index diagrams) |
+| `IdentifyResult` | `brigid-core::abstraction` | identify stage | relationships, order, chapters |
+| `RelationshipsResult` | `brigid-core::abstraction` | relationships stage | order, combine |
+| `ChapterOrder` | `brigid-core::chapter` | order stage | chapters |
+| `Chapter` | `brigid-core::chapter` | chapters stage | combine |
+| `ChapterResult` | `brigid-core::chapter` | chapters stage | combine, review |
+| `SetupGuide` | `brigid-core::generate` | setup stage (score-triggered) | combine |
+| `ArchitectureOverview` | `brigid-core::generate` | overview stage (multi-app) | combine |
+| `CombinedTutorial` | `brigid-core::generate` | combine stage | eval, output write |
+| `RunConfig` | `brigid-core::config` | CLI / file / env layering | every stage |
+| `CheckpointV1` | `brigid-core::checkpoint` | checkpoint store | resume, every stage |
 
 ---
 
@@ -321,7 +321,7 @@ stays small and stage save/load remains fast. See
 
 On resume, each stage checks `completed_stages` in the checkpoint and skips if
 already done. The `resume` module provides stage-skip and partial-regenerate
-helpers. `decon resume --checkpoint PATH` reports the next pending stage
+helpers. `brigid resume --checkpoint PATH` reports the next pending stage
 without re-running anything. Ctrl+C triggers a graceful shutdown
 (`cancellation` module) that dumps a clean checkpoint and exits with code 5,
 so the next run resumes from the last completed stage.

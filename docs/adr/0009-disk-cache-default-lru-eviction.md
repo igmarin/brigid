@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The `decon-llm` disk cache (`DiskCache` in `decon-llm::cache`) stores LLM
+The `brigid-llm` disk cache (`DiskCache` in `brigid-llm::cache`) stores LLM
 responses keyed by `sha256(prompt + model + provider + extras)`. It was
 introduced in M3 (#45) as an opt-in structure with no live calls. During M5
 (#197), the cache was promoted to **enabled by default** with automatic LRU
@@ -18,7 +18,7 @@ eviction and a configurable size limit.
 
 ### Why cache by default?
 
-- **Re-runs are free.** The most common `decon generate` workflow is iterative:
+- **Re-runs are free.** The most common `brigid generate` workflow is iterative:
   a user runs the pipeline, inspects the output, tweaks a flag, and re-runs.
   Without caching, every re-run re-sends identical prompts to the provider,
   costing money and time for byte-identical responses.
@@ -41,12 +41,12 @@ eviction and a configurable size limit.
 
 ## Decision
 
-1. **Enable the disk cache by default.** `build_llm_cache` in `decon-cli`
-   constructs a `DiskCache` unless `DECON_NO_CACHE=1` (or `true`) is set.
+1. **Enable the disk cache by default.** `build_llm_cache` in `brigid-cli`
+   constructs a `DiskCache` unless `BRIGID_NO_CACHE=1` (or `true`) is set.
 
 2. **LRU eviction with a size limit.** The default limit is **100 MB**
-   (`DEFAULT_CACHE_SIZE_LIMIT_MB = 100` in `decon-cli`). The limit is
-   configurable via `cache_size_limit_mb` in `decon.toml`.
+   (`DEFAULT_CACHE_SIZE_LIMIT_MB = 100` in `brigid-cli`). The limit is
+   configurable via `cache_size_limit_mb` in `brigid.toml`.
 
 3. **Eviction algorithm.** Every `EVICTION_CHECK_INTERVAL` (50) writes, the
    cache scans the cache directory, sums file sizes, and if the total exceeds
@@ -59,10 +59,10 @@ eviction and a configurable size limit.
      `current_size_bytes` for observability.
 
 4. **Cache location.** Default: platform cache directory (`dirs::cache_dir()`)
-   + `/decon/llm-cache`. Override with `DECON_LLM_CACHE_DIR` env var or
-   `cache_dir` in `decon.toml`.
+   + `/brigid/llm-cache`. Override with `BRIGID_LLM_CACHE_DIR` env var or
+   `cache_dir` in `brigid.toml`.
 
-5. **Bypass mechanism.** `DECON_NO_CACHE=1` disables the cache entirely —
+5. **Bypass mechanism.** `BRIGID_NO_CACHE=1` disables the cache entirely —
    `build_llm_cache` returns `None`, and the provider client makes live calls
    on every request.
 
@@ -76,7 +76,7 @@ eviction and a configurable size limit.
   identical re-runs. The nightly CI job had to document cache setup separately.
 - **Rejected**: The default should optimize for the common case (iterative
   re-runs), not the rare case (reproducibility testing). Users who need no
-  cache can set `DECON_NO_CACHE=1`.
+  cache can set `BRIGID_NO_CACHE=1`.
 
 ### In-memory cache only (no disk persistence)
 
@@ -99,7 +99,7 @@ eviction and a configurable size limit.
 - **Pros**: Bounded staleness — old entries are automatically refreshed.
 - **Cons**: LLM providers may change models or behavior without notice, but a
   fixed TTL does not align with when those changes happen. The user is the
-  best judge of when to refresh; `DECON_NO_CACHE=1` or deleting the cache dir
+  best judge of when to refresh; `BRIGID_NO_CACHE=1` or deleting the cache dir
   is the explicit refresh mechanism.
 - **Rejected**: Size-based LRU is simpler and sufficient; TTL adds a knob
   without clear value.
@@ -113,8 +113,8 @@ eviction and a configurable size limit.
   default is generous for typical usage and configurable.
 - **Negative**: A user who changes provider model behavior (e.g. a model
   update) may see stale cached responses until they clear the cache or set
-  `DECON_NO_CACHE=1`. The cache key includes the model identifier, so changing
-  `DECON_LLM_MODEL` automatically invalidates old entries — but a silent
+  `BRIGID_NO_CACHE=1`. The cache key includes the model identifier, so changing
+  `BRIGID_LLM_MODEL` automatically invalidates old entries — but a silent
   provider-side model change would not.
 - **Negative**: The eviction scan (every 50 writes) adds a small I/O spike.
   For typical workloads this is negligible; for very large caches it may cause
@@ -122,8 +122,8 @@ eviction and a configurable size limit.
 
 ## Related Documents
 
-- `crates/decon-llm/src/cache.rs` — `DiskCache`, `CacheStats`, eviction logic.
-- `crates/decon-cli/src/main.rs` — `build_llm_cache`, `cache_is_disabled`,
+- `crates/brigid-llm/src/cache.rs` — `DiskCache`, `CacheStats`, eviction logic.
+- `crates/brigid-cli/src/main.rs` — `build_llm_cache`, `cache_is_disabled`,
   `resolve_cache_root`, `DEFAULT_CACHE_SIZE_LIMIT_MB`.
 - [ADR 0001](0001-checkpoint-schema-v1.md) — checkpoint format (complementary
   to cache).

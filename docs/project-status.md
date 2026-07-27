@@ -1,6 +1,6 @@
 # Project Status
 
-Milestone history, current capabilities, and roadmap for `decon`.
+Milestone history, current capabilities, and roadmap for `brigid`.
 
 ---
 
@@ -9,8 +9,8 @@ Milestone history, current capabilities, and roadmap for `decon`.
 | Milestone | Goal | Status |
 |-----------|------|--------|
 | **M0** — Spec Freeze | Workspace layout, CI, CONTRIBUTING, ADR 0001, prompt catalog, test fixtures, parity baseline | ✅ Done |
-| **M1** — Crawl + Dry-run + Eval | `decon crawl` / dry-run matching `baseline.json`; mermaid sanitize; setup-assessment parity; `decon eval` port | ✅ Done |
-| **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `decon.toml`; ≥85% coverage gate | ✅ Done |
+| **M1** — Crawl + Dry-run + Eval | `brigid crawl` / dry-run matching `baseline.json`; mermaid sanitize; setup-assessment parity; `brigid eval` port | ✅ Done |
+| **M2** — Checkpoint, Config & Coverage | Content-addressed checkpoint (ADR 0001); `brigid.toml`; ≥85% coverage gate | ✅ Done |
 | **M3** — LLM Identify | `LlmClient` trait + provider clients; map/reduce identify; checkpoint resume; Ctrl+C graceful shutdown | ✅ Done |
 | **M4** — Full Generate | Relationships → order → chapters → setup → overview → combine; Spanish chrome; `--each-app`; `--review-chapters`; eval regression gate | ✅ Done |
 | **M5** — Product Polish | Installers, man page, shell completions, disk cache, concurrency flags, benchmarks, init wizard, Windows CI, Python deprecation | ✅ Done |
@@ -23,7 +23,7 @@ Release history with per-change details lives in
 
 ## What works today
 
-- **Full `decon generate` pipeline** — crawl → identify → relationships →
+- **Full `brigid generate` pipeline** — crawl → identify → relationships →
   order → chapters → setup → overview → combine, with i18n chrome
   (English + Spanish), `--each-app` monorepo fan-out, and
   `--review-chapters` polishing.
@@ -55,17 +55,17 @@ current roadmap):
 - **Incremental tutorial regeneration** — `--since` limits the crawl to
   changed files today; re-using prior chapter content for unchanged modules
   during `generate` is a future enhancement.
-- **MCP server** — a proposed `decon serve` command (ADR 0015) would expose
+- **MCP server** — a proposed `brigid serve` command (ADR 0015) would expose
   the checkpoint's knowledge graph as MCP resources/tools/prompts, letting
   AI assistants (Cursor, Claude, Windsurf) query the codebase knowledge
   on demand instead of bulk-loading tutorial files. Scoped as read-only
   first, post-v1.0.0.
 - **Graph provider integration** — a proposed `GraphProvider` trait (ADR
-  0016) would let `decon` use structural ground truth from external tools
+  0016) would let `brigid` use structural ground truth from external tools
   (codegraph for call graphs, Graphify for community detection and
   multimodal concepts) to improve abstraction identification and
   relationship verification on large codebases. Strictly optional
-  (`NoneProvider` default) — `decon` delivers full value standalone, and
+  (`NoneProvider` default) — `brigid` delivers full value standalone, and
   gets *better* when graph tools are present. Post-v1.0.0, pending
   validation on real codebases.
 

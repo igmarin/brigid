@@ -153,13 +153,13 @@ Rust addresses **shipping, correctness of the pipeline shell, and local tooling*
 ### 4.1 Crate layout (recommended)
 
 ```text
-decon-rs/                    # workspace
+brigid/                    # workspace
 ├── crates/
-│   ├── decon-core/            # pure domain: models, pipeline traits, mermaid, budget
-│   ├── decon-crawl/           # local + GitHub fetch
-│   ├── decon-llm/             # provider clients (OpenAI-compatible, Gemini, …)
-│   ├── decon-pipeline/        # stage orchestration, checkpoint, dry-run plan
-│   └── decon-cli/             # clap binary
+│   ├── brigid-core/            # pure domain: models, pipeline traits, mermaid, budget
+│   ├── brigid-crawl/           # local + GitHub fetch
+│   ├── brigid-llm/             # provider clients (OpenAI-compatible, Gemini, …)
+│   ├── brigid-pipeline/        # stage orchestration, checkpoint, dry-run plan
+│   └── brigid-cli/             # clap binary
 ├── prompts/                 # versioned prompt templates (not buried in code)
 ├── tests/
 │   ├── fixtures/            # tiny repos
@@ -172,12 +172,12 @@ decon-rs/                    # workspace
 ### 4.2 CLI surface (subcommand style)
 
 ```text
-decon dry-run   --dir PATH [--apps a b] [-o output]
-decon generate  --dir PATH | --repo URL  [all quality flags]
-decon resume    --checkpoint PATH
-decon each-app  --dir MONOREPO
-decon eval      --out output/Project
-decon providers # list configured providers / models
+brigid dry-run   --dir PATH [--apps a b] [-o output]
+brigid generate  --dir PATH | --repo URL  [all quality flags]
+brigid resume    --checkpoint PATH
+brigid each-app  --dir MONOREPO
+brigid eval      --out output/Project
+brigid providers # list configured providers / models
 ```
 
 Keep compatibility aliases or a migration guide from `make tutorial` / `python main.py`.
@@ -185,8 +185,8 @@ Keep compatibility aliases or a migration guide from `make tutorial` / `python m
 ### 4.3 Config layers (precedence)
 
 1. CLI flags  
-2. `decon.toml` / `.decon.yaml` in project or cwd  
-3. Environment (`DECON_LLM_PROVIDER`, keys, …)  
+2. `brigid.toml` / `.brigid.yaml` in project or cwd  
+3. Environment (`BRIGID_LLM_PROVIDER`, keys, …)  
 4. Defaults in code  
 
 Avoid the Make “export empty string” class of bugs: **never set env keys to blank**.
@@ -238,8 +238,8 @@ Move prompts out of string soup in source:
 
 | Current Python | Rust responsibility |
 |----------------|---------------------|
-| `crawl_local_files` / `crawl_github_files` | `decon-crawl`: `ignore`/`walkdir` + globset; GitHub via REST + token |
-| `monorepo_scope` | pure functions in `decon-core` |
+| `crawl_local_files` / `crawl_github_files` | `brigid-crawl`: `ignore`/`walkdir` + globset; GitHub via REST + token |
+| `monorepo_scope` | pure functions in `brigid-core` |
 | `context_budget` | pure functions + property tests |
 | `IdentifyAbstractions` | pipeline stage + map concurrent + reduce |
 | `AnalyzeRelationships` | stage + budgeted snippet picker |
@@ -248,7 +248,7 @@ Move prompts out of string soup in source:
 | `WriteSetupGuide` | stage + setup assess pure logic |
 | `WriteArchitectureOverview` | stage |
 | `CombineTutorial` / `diagram_builder` / `mermaid_safe` / `i18n_chrome` | pure renderers + sanitize |
-| `scripts/eval_tutorial.py` | `decon eval` subcommand |
+| `scripts/eval_tutorial.py` | `brigid eval` subcommand |
 | `Makefile` | still useful; thin wrapper around binary |
 
 Pocket Flow’s graph becomes an explicit `Pipeline` enum/state machine—**clearer** than a generic node framework for this linear workflow.
@@ -262,7 +262,7 @@ Pocket Flow’s graph becomes an explicit `Pipeline` enum/state machine—**clea
 | Miss | Why it matters |
 |------|----------------|
 | **Name + positioning** | “Tutorial-Codebase-Knowledge” is a research demo name; a CLI needs a short verb/noun |
-| **First-run wizard** | `decon init` writes `decon.toml`, checks API keys, sample dry-run |
+| **First-run wizard** | `brigid init` writes `brigid.toml`, checks API keys, sample dry-run |
 | **Exit codes** | 0 ok, 2 config, 3 budget, 4 LLM, 5 partial success with checkpoint |
 | **Machine-readable dry-run** | `--format json` for CI/agents |
 | **Telemetry opt-in** | anonymous stage timings (off by default) to improve defaults |
@@ -293,7 +293,7 @@ Pocket Flow’s graph becomes an explicit `Pipeline` enum/state machine—**clea
 
 | Miss | Why it matters |
 |------|----------------|
-| **Parity tests vs baseline** | Run `decon crawl` on fixture repos; compare dry-run stats against `baseline.json` — not exact prose |
+| **Parity tests vs baseline** | Run `brigid crawl` on fixture repos; compare dry-run stats against `baseline.json` — not exact prose |
 | **Feature flags** | Ship crawl+dry-run+eval first; LLM stages second |
 | **Don’t rewrite Make away too early** | Keep Make calling the binary for human muscle memory |
 | **Skipping TDD “to go faster”** | You will re-discover every monorepo edge case without tests |
@@ -307,7 +307,7 @@ Pocket Flow’s graph becomes an explicit `Pipeline` enum/state machine—**clea
 
 - Binary signing / notarization (macOS)  
 - Plugin model for custom “kind” detectors  
-- Hosted mode later: same `decon-core`, different front-end—CLI remains the reference client  
+- Hosted mode later: same `brigid-core`, different front-end—CLI remains the reference client  
 
 ---
 
@@ -329,16 +329,16 @@ Pocket Flow’s graph becomes an explicit `Pipeline` enum/state machine—**clea
 > that output byte-for-byte, so no Python toolchain is needed to verify or
 > regenerate the baseline. CI runs `regenerate_baseline --check` on every push
 > to guard against accidental fixture drift. The regenerator is a **standalone
-> reimplementation** of the reference heuristics — it is NOT `decon-crawl`.
-> When `decon-crawl` is built in Phase 1, it is tested against the same frozen
+> reimplementation** of the reference heuristics — it is NOT `brigid-crawl`.
+> When `brigid-crawl` is built in Phase 1, it is tested against the same frozen
 > `baseline.json`, keeping the parity test non-circular.
 
 ### Phase 1 — Rust skeleton (no LLM)
 
-- `decon crawl` / dry-run plan equal to `baseline.json` on fixtures  
+- `brigid crawl` / dry-run plan equal to `baseline.json` on fixtures  
 - mermaid sanitize + index builder parity  
 - setup assessment pure logic parity (verified against `baseline.json` setup scores)  
-- `decon eval` port  
+- `brigid eval` port  
 
 **Exit criteria:** dry-run stats match `baseline.json` exactly; eval works on existing `output/` samples; **≥ 85% coverage** on core/crawl; TDD used for budget/scope/mermaid; rustdoc on public API; CONTRIBUTING describes the test workflow.
 
@@ -357,7 +357,7 @@ Tracked as GitHub milestone **M3 — LlmClient & Map-Reduce Identify**. Tickets:
 - #70 Identify map stage (batched, bounded-concurrent)
 - #71 Identify reduce stage (merge + rank → final list)
 - #72 Checkpoint-after-identify + resume mid-identify matrix
-- #73 Config-file secret-field guard (reject api_key/token in decon.toml)
+- #73 Config-file secret-field guard (reject api_key/token in brigid.toml)
 - #74 Opt-in live LLM smoke harness (budget-capped, feature-gated)
 
 Tech-debt tickets that should land with M3 (supply-chain + perf):
@@ -375,12 +375,12 @@ Tech-debt tickets that should land with M3 (supply-chain + perf):
 ### Phase 3 — Full generate path (Milestone M4 — complete)
 
 Tracked as GitHub milestone **M4 — Full Generate Path**. All 20 M4 issues
-(#131–#152) are closed. The full `decon generate` pipeline is working:
+(#131–#152) are closed. The full `brigid generate` pipeline is working:
 
-- `decon generate` subcommand orchestrating: identify → relationships → order
+- `brigid generate` subcommand orchestrating: identify → relationships → order
   → chapters → setup → overview → combine
-- Per-stage subcommands for debugging: `decon relationships`, `decon order`,
-  `decon chapters`, `decon setup`, `decon overview`, `decon combine`
+- Per-stage subcommands for debugging: `brigid relationships`, `brigid order`,
+  `brigid chapters`, `brigid setup`, `brigid overview`, `brigid combine`
 - `--each-app` flag for per-app tutorial generation in monorepos
 - `--review-chapters` flag for optional chapter quality polishing
 - i18n chrome (English + Spanish locales) via `ChromeStrings` trait
@@ -389,7 +389,7 @@ Tracked as GitHub milestone **M4 — Full Generate Path**. All 20 M4 issues
 - LLM-generated frozen fixture + nightly CI verification
 - Live full-pipeline smoke test (feature-gated)
 
-**Exit criteria:** met — `decon eval` score ≥ threshold on golden fixtures;
+**Exit criteria:** met — `brigid eval` score ≥ threshold on golden fixtures;
 eval regression gate in CI; nightly LLM smoke verifies against frozen
 `llm-generated` fixture.
 
@@ -401,23 +401,23 @@ are closed. The product is now polished and distributable:
 - **Native installers** — Homebrew formula, `cargo install`, `cargo-binstall`,
   and GitHub Releases with pre-built binaries for Linux (x86_64, aarch64),
   macOS (x86_64, aarch64), and Windows (x86_64) (ADR 0010).
-- **Shell completions** — `decon completions --shell bash|zsh|fish|powershell`
+- **Shell completions** — `brigid completions --shell bash|zsh|fish|powershell`
   via `clap_complete`.
-- **Man page** — `decon manpage` generates a troff-formatted man page via
+- **Man page** — `brigid manpage` generates a troff-formatted man page via
   `clap_mangen`.
 - **Disk cache by default** — LLM responses cached on disk with LRU eviction
-  and size limits (ADR 0009). Bypass with `DECON_NO_CACHE=1`.
+  and size limits (ADR 0009). Bypass with `BRIGID_NO_CACHE=1`.
 - **Concurrency / budget / verbose / quiet flags** — `--concurrency`,
   `--max-llm-calls`, `--verbose` / `-v`, `--quiet` / `-q`.
 - **Symlink cycle detection** — crawl aborts on symlink loops instead of
   recursing infinitely.
 - **Host allowlist** — configurable LLM provider host allowlist via
-  `DECON_LLM_ALLOWED_HOSTS` or `[[allowed_hosts]]` in `decon.toml`.
+  `BRIGID_LLM_ALLOWED_HOSTS` or `[[allowed_hosts]]` in `brigid.toml`.
 - **Criterion benchmarks** — seven benchmark suites for critical pipeline paths
   (template rendering, file context selection, checkpoint roundtrip, budget
   estimation, chapter generation, combine index, mermaid sanitization).
-- **Init wizard** — `decon init` with `--check` validation for starter
-  `decon.toml`.
+- **Init wizard** — `brigid init` with `--check` validation for starter
+  `brigid.toml`.
 - **CLI error path tests** — `assert_cmd` tests for exit codes and error
   messages, improving `main.rs` coverage.
 - **Windows CI** — test and clippy jobs run on Ubuntu, macOS, and Windows.
@@ -426,8 +426,8 @@ are closed. The product is now polished and distributable:
   [`docs/migrating-from-python.md`](./migrating-from-python.md) (ADR 0011).
   Since the Python code lives in a separate repository, Option B (migration
   guide, no wrapper) was implemented. The Rust CLI is now the canonical
-  entrypoint — `pip install decon` users should switch to `brew install decon`
-  or `cargo install decon-cli`.
+  entrypoint — `pip install decon` users should switch to `brew install brigid`
+  or `cargo install brigid-cli`.
 
 **Exit criteria:** met — installers, completions, man page, cache-by-default,
 Windows CI, and Python deprecation all landed.
@@ -439,7 +439,7 @@ The three Phase 5 foundation items are now implemented, along with audit
 hardening and performance optimizations:
 
 - **git-diff incremental file detection** (`--since <git-ref>`) —
-  `decon-crawl::git_diff` shells out to `git diff --name-only` with
+  `brigid-crawl::git_diff` shells out to `git diff --name-only` with
   triple-dot merge-base semantics and filters the crawl inventory to changed
   files. No libgit2 dependency. See
   [ADR 0013](./adr/0013-git-diff-incremental.md).
@@ -535,8 +535,8 @@ Coverage is a **floor**, not the goal—but it is a **gate**.
 | Scope | Target |
 |-------|--------|
 | Workspace overall (line coverage) | **≥ 85%** |
-| `decon-core` (pure logic) | **≥ 90%** preferred |
-| `decon-cli` | lower OK if thin; critical paths still tested |
+| `brigid-core` (pure logic) | **≥ 90%** preferred |
+| `brigid-cli` | lower OK if thin; critical paths still tested |
 | LLM HTTP clients | mock-based; don’t chase 100% on generated clients |
 
 #### How to enforce
@@ -557,7 +557,7 @@ Coverage is a **floor**, not the goal—but it is a **gate**.
 
 **85% with weak asserts is a false green.** Pair coverage gate with:
 
-- Mutation testing later (optional, `cargo-mutants` on `decon-core`)  
+- Mutation testing later (optional, `cargo-mutants` on `brigid-core`)  
 - Eval score thresholds on fixture tutorials  
 - Parity tests vs `baseline.json` on dry-run counts for frozen fixtures  
 
@@ -583,7 +583,7 @@ Documentation ships **with** the binary, not after.
 |----------|---------|
 | **ARCHITECTURE.md** (or `docs/architecture.md`) | Crates, stage diagram, data flow |
 | **CONTRIBUTING.md** | TDD workflow, coverage gate, how to run tests |
-| **Module-level rustdoc** | All public items in `decon-core` / `decon-pipeline` |
+| **Module-level rustdoc** | All public items in `brigid-core` / `brigid-pipeline` |
 | **Prompt catalog** | What each prompt is for; input/output contract |
 | **Fixture guide** | How to add a tiny repo fixture + expected dry-run stats (`tests/fixtures/README.md`) |
 
@@ -625,7 +625,7 @@ fmt → clippy -D warnings → test → llvm-cov (≥85%) → doc →
 
 | Phase | Quality bar |
 |-------|-------------|
-| Phase 1 (crawl/dry-run/eval) | TDD from day one; coverage ≥ 85% on `decon-core` + crawl already |
+| Phase 1 (crawl/dry-run/eval) | TDD from day one; coverage ≥ 85% on `brigid-core` + crawl already |
 | Phase 2 (identify) | Contract tests for map/reduce parse; mock LLM |
 | Phase 3 (full generate) | Golden eval fixtures; docs for every subcommand; eval regression gate; nightly LLM smoke |
 | Phase 4 (product polish) | man page, completions, benchmarks, Windows CI, Python deprecation |
@@ -716,7 +716,7 @@ GitHub issue so debt does not rot into "later means never".
 | #76 | High (supply chain) | M3 (resolved) | Add `cargo deny` (advisories + licenses + bans) to CI. Now running on every PR. |
 | #77 | Medium (perf) | M3 (resolved) | `dry_run` re-stats every file; folded sizes into `crawl_local`. |
 | #73 | High (security) | M3 (resolved) | Config-file secret-field guard. Landed with M3. |
-| #78 | Low (coverage) | M5 (resolved) | `decon-cli/main.rs` at 64% line coverage; add assert_cmd error-path tests. Resolved by #204. |
+| #78 | Low (coverage) | M5 (resolved) | `brigid-cli/main.rs` at 64% line coverage; add assert_cmd error-path tests. Resolved by #204. |
 | #79 | Low (UX) | M5 (resolved) | `load_file_config` extension detection + `cmd_resume` dir-exists check (rs-guard review Important #3/#4). |
 
 ### M2 review verdict (rs-guard, review-result.txt)
@@ -736,4 +736,4 @@ No code change was required for M2 itself; the forward-looking guard is #73.
 
 ---
 
-*When you start the rewrite, treat this file as the product spec for `decon-pipeline` stages; update it when stage contracts change so Python and Rust do not diverge silently.*
+*When you start the rewrite, treat this file as the product spec for `brigid-pipeline` stages; update it when stage contracts change so Python and Rust do not diverge silently.*

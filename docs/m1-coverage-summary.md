@@ -1,6 +1,6 @@
-# M1 coverage snapshot (decon-core + decon-crawl)
+# M1 coverage snapshot (brigid-core + brigid-crawl)
 
-Generated with `cargo llvm-cov --package decon-core --package decon-crawl --summary-only`.
+Generated with `cargo llvm-cov --package brigid-core --package brigid-crawl --summary-only`.
 
 | Metric | Value |
 |--------|-------|

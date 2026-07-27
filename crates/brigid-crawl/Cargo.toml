@@ -1,0 +1,31 @@
+[package]
+name = "brigid-crawl"
+description = "Local filesystem and GitHub repository crawling for brigid."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# brigid-core is intentionally not required for path inventory alone; pipeline
+# stages that attach domain types will re-introduce the dependency when needed.
+thiserror = "2.0"
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile = "3.20"
+serial_test = "3.5.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crawl_walk"
+harness = false

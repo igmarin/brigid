@@ -1,6 +1,6 @@
 # umbrella
 
-A tiny Elixir-style umbrella monorepo used as a decon-rs test fixture.
+A tiny Elixir-style umbrella monorepo used as a brigid test fixture.
 
 ## Prerequisites
 

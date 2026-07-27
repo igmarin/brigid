@@ -1,6 +1,6 @@
 # python-lib
 
-A tiny single-package Python library used as a decon-rs test fixture.
+A tiny single-package Python library used as a brigid test fixture.
 
 ## Prerequisites
 

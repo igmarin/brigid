@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The `decon eval` subcommand scores tutorial output trees on structural quality
+The `brigid eval` subcommand scores tutorial output trees on structural quality
 (mermaid validity, link resolution, evidence footers, path citations, index
 presence, setup/overview coverage). As the pipeline evolves through M4 and
 beyond, we need a regression gate that catches quality degradation — but the
@@ -57,10 +57,10 @@ The CI `eval-regression` job runs:
 
 ```bash
 # Positive: good-mini must pass at threshold 80
-cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
+cargo run -p brigid-cli -- eval --out tests/fixtures/tutorials/good-mini --threshold 80
 
 # Negative: broken-mini must fail below threshold 80
-cargo run -p decon-cli -- eval --out tests/fixtures/tutorials/broken-mini --threshold 80
+cargo run -p brigid-cli -- eval --out tests/fixtures/tutorials/broken-mini --threshold 80
 # (non-zero exit expected; CI asserts this)
 ```
 
@@ -73,7 +73,7 @@ checklist still discriminates good from bad output.
 
 A frozen LLM-generated tutorial tree lives in
 `tests/fixtures/tutorials/llm-generated/`. It was produced by running
-`decon generate` against the `umbrella` fixture with a live DeepSeek key and
+`brigid generate` against the `umbrella` fixture with a live DeepSeek key and
 committing the output. Its eval score is the **baseline** for nightly
 comparison.
 
@@ -81,7 +81,7 @@ The CI `nightly-llm` job (scheduled at 4 AM UTC, never on PR/push):
 
 1. Restores the LLM disk cache from a previous run (to reduce API cost on
    unchanged prompts).
-2. Runs `decon generate --dir tests/fixtures/umbrella --output-dir /tmp/llm-output`
+2. Runs `brigid generate --dir tests/fixtures/umbrella --output-dir /tmp/llm-output`
    with a live `DEEPSEEK_API_KEY`.
 3. Evals the live output and the frozen fixture.
 4. Compares scores: if the live score is **below** the frozen score, opens a
@@ -172,6 +172,6 @@ Tier 2 cannot run on every PR (it needs an API key and is non-deterministic).
 - `tests/fixtures/tutorials/llm-generated/` — Tier 2 frozen baseline.
 - `.github/workflows/ci.yml` — `eval-regression` job (Tier 1) and `nightly-llm`
   job (Tier 2).
-- `crates/decon-core/src/eval.rs` — the eval scoring logic both tiers exercise.
+- `crates/brigid-core/src/eval.rs` — the eval scoring logic both tiers exercise.
 - Issue #138 (M4-EVL-1) — Tier 1 eval regression gate.
 - Issue #151 (M4-SMK-1) — Tier 2 nightly LLM smoke.

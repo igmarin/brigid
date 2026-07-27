@@ -21,13 +21,13 @@ The question is **how** to deprecate the Python entrypoint:
   Rust binary. Existing `pip install decon` users get the Rust binary
   transparently.
 - **Option B — Migration guide only**: Publish a migration guide and deprecate
-  the Python package without a wrapper. Users switch to `brew install decon`
-  or `cargo install decon-cli`.
+  the Python package without a wrapper. Users switch to `brew install brigid`
+  or `cargo install brigid-cli`.
 
 ### Constraints
 
 - The Python code lives in a **separate repository** from the Rust rewrite.
-  The Rust workspace (`decon-rs`) does not contain the Python source.
+  The Rust workspace (`brigid`) does not contain the Python source.
 - The product value (pipeline stages, prompts, quality heuristics) has been
   faithfully ported to Rust and validated against a frozen baseline.
 - The Python entrypoint will receive no new features.
@@ -41,10 +41,10 @@ The Python entrypoint is deprecated via a comprehensive migration guide at
 [`docs/migrating-from-python.md`](../migrating-from-python.md). The guide
 covers:
 
-1. **Command mapping** — `python main.py` → `decon`, with a table of
+1. **Command mapping** — `python main.py` → `brigid`, with a table of
    equivalent subcommands and flags.
 2. **Environment variable changes** — `LLM_PROVIDER` / `LLM_API_KEY` →
-   `DECON_LLM_BASE_URL` / `DECON_LLM_API_KEY` / `DEEPSEEK_API_KEY`, with
+   `BRIGID_LLM_BASE_URL` / `BRIGID_LLM_API_KEY` / `DEEPSEEK_API_KEY`, with
    precedence rules.
 3. **Feature parity table** — what works in both, what is Rust-only, what is
    Python-only (nothing of significance).
@@ -111,7 +111,7 @@ notice pointing to the migration guide. No wrapper script is maintained.
   automatic transition. The migration guide mitigates this but requires users
   to read it.
 - **Negative**: Any automation scripts that call `python main.py` directly must
-  be updated to call `decon` instead. The command mapping table in the guide
+  be updated to call `brigid` instead. The command mapping table in the guide
   makes this mechanical.
 
 ## Related Documents

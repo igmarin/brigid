@@ -10,7 +10,7 @@ Proposed
 
 ## Context
 
-`decon` currently produces a **file-based tutorial**: a directory of
+`brigid` currently produces a **file-based tutorial**: a directory of
 Markdown chapters with Mermaid diagrams, an index, a setup guide, and an
 architecture overview. This is valuable for human reading and for AI
 assistants that can load files directly (Cursor, Claude, Windsurf all
@@ -25,7 +25,7 @@ must either:
    windows on large codebases), or
 2. Rely on the user manually finding the right chapter.
 
-The **structured knowledge graph** that `decon` already produces —
+The **structured knowledge graph** that `brigid` already produces —
 `Abstraction` entities with file mappings, `Relationship` edges, chapter
 ordering, setup/overview content — lives inside the checkpoint
 (`checkpoint.json` + `files.ndjson.gz`, ADR 0001 + ADR 0006) as typed
@@ -36,13 +36,13 @@ files cannot express these queries efficiently.
 The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is
 an open standard (Anthropic, ~2024) for exposing tools, resources, and
 prompts to AI assistants. MCP servers are adopted by Claude Desktop,
-Cursor, Windsurf, Continue, and others. An MCP server backed by `decon`'s
+Cursor, Windsurf, Continue, and others. An MCP server backed by `brigid`'s
 checkpoint would let a user's AI assistant **query the codebase knowledge
 graph on demand** — targeted lookups instead of bulk file loading.
 
 ### Why now, and why not in v1.0.0
 
-`decon` v1.0.0 ships the clean file-based tutorial (README refactor in
+`brigid` v1.0.0 ships the clean file-based tutorial (README refactor in
 PR #252). The MCP server is a **separate product surface** with its own
 concerns (transport, lifecycle, client compatibility) and should not
 block the v1.0.0 release. This ADR records the decision to build it as a
@@ -51,10 +51,10 @@ checkpoint, no re-generation).
 
 ### What the architecture already provides
 
-`decon` is well-positioned for an MCP server because of existing design
+`brigid` is well-positioned for an MCP server because of existing design
 decisions:
 
-- **Pure core** (ADR design principle §1): `decon-core` has no I/O —
+- **Pure core** (ADR design principle §1): `brigid-core` has no I/O —
   the domain logic (abstractions, relationships, budgeting, scope) is
   reusable by any front-end, not just the CLI.
 - **Library + thin CLI layering**: an MCP server is just another
@@ -74,43 +74,43 @@ decisions:
 | Tool: `dependency_graph(abstraction_name)` | Structured relationship query, not re-reading prose |
 | Resource: `checkpoint://abstractions` | Full abstraction list as structured JSON |
 | Resource: `checkpoint://relationships` | Relationship graph as data — the AI reasons over edges without parsing prose |
-| Tool: `relevance_ranked_context(query)` | "Top 3 chapters for 'how does caching work'" — uses `decon`'s evidence/budgeting logic |
+| Tool: `relevance_ranked_context(query)` | "Top 3 chapters for 'how does caching work'" — uses `brigid`'s evidence/budgeting logic |
 | Prompt: `onboard_to_codebase` | Pre-built onboarding prompt that loads index + setup + top chapters in order |
 
-This is the **RAG-without-embeddings** play: `decon` already did the
+This is the **RAG-without-embeddings** play: `brigid` already did the
 expensive analysis (identify, relationships, ordering). The MCP server
 turns that analysis into a queryable knowledge base the user's AI
 assistant can hit on demand.
 
 ## Decision
 
-### 1. New crate: `decon-mcp`
+### 1. New crate: `brigid-mcp`
 
-A new workspace crate `crates/decon-mcp` depends on `decon-core` and
-`decon-pipeline` (for checkpoint loading). It does **not** depend on
-`decon-cli` or `decon-llm` — the server is read-only and does not make
+A new workspace crate `crates/brigid-mcp` depends on `brigid-core` and
+`brigid-pipeline` (for checkpoint loading). It does **not** depend on
+`brigid-cli` or `brigid-llm` — the server is read-only and does not make
 LLM calls or run pipeline stages.
 
 ```
 crates/
-  decon-core/       # pure domain (already exists)
-  decon-crawl/      # filesystem (already exists)
-  decon-llm/        # LLM client (already exists)
-  decon-pipeline/   # orchestration (already exists)
-  decon-cli/        # thin CLI binary (already exists)
-  decon-mcp/        # MCP server (new) — depends on core + pipeline
+  brigid-core/       # pure domain (already exists)
+  brigid-crawl/      # filesystem (already exists)
+  brigid-llm/        # LLM client (already exists)
+  brigid-pipeline/   # orchestration (already exists)
+  brigid-cli/        # thin CLI binary (already exists)
+  brigid-mcp/        # MCP server (new) — depends on core + pipeline
 ```
 
-Dependency flow stays strictly downward: `decon-mcp` → `decon-pipeline`
-→ `decon-core`. No new edges to `decon-llm` or `decon-crawl`.
+Dependency flow stays strictly downward: `brigid-mcp` → `brigid-pipeline`
+→ `brigid-core`. No new edges to `brigid-llm` or `brigid-crawl`.
 
-### 2. New CLI command: `decon serve`
+### 2. New CLI command: `brigid serve`
 
 ```bash
-decon serve --checkpoint /path/to/checkpoint [--transport stdio|sse] [--port 3000]
+brigid serve --checkpoint /path/to/checkpoint [--transport stdio|sse] [--port 3000]
 ```
 
-- `--checkpoint` (required): path to a `decon generate` checkpoint
+- `--checkpoint` (required): path to a `brigid generate` checkpoint
   directory. The server loads it once at startup and serves from memory.
 - `--transport stdio` (default): stdio transport for local AI clients
   (Claude Desktop, Cursor local MCP). This is the standard local mode.
@@ -130,7 +130,7 @@ The initial server serves the **existing checkpoint** only. It does not:
 - Make LLM calls.
 
 If the checkpoint is stale (the codebase has changed since generation),
-the server serves stale data. The user re-runs `decon generate` to
+the server serves stale data. The user re-runs `brigid generate` to
 refresh. **Generative behavior (live re-generation, incremental updates)
 is a future phase with its own ADR.**
 
@@ -163,7 +163,7 @@ applicable, so the JSON shapes are stable and documented.
 | `find_abstraction_for_file` | `file_path: String` | `Abstraction` or null | Which abstraction owns this file? O(1) lookup via the file→abstraction index |
 | `abstraction_dependencies` | `name: String` | `Vec<Relationship>` | What does this abstraction depend on / what depends on it? |
 | `files_for_abstraction` | `name: String` | `Vec<String>` | Which source files belong to this abstraction? |
-| `relevance_ranked_chapters` | `query: String, limit: usize` | `Vec<ChapterRef>` | Top-N chapters most relevant to a natural-language query, using `decon`'s evidence-selection logic |
+| `relevance_ranked_chapters` | `query: String, limit: usize` | `Vec<ChapterRef>` | Top-N chapters most relevant to a natural-language query, using `brigid`'s evidence-selection logic |
 | `chapter_for_file` | `file_path: String` | `ChapterRef` or null | Direct shortcut: file → chapter (composes `find_abstraction_for_file` + chapter lookup) |
 | `list_abstractions` | `filter: Option<KindFilter>` | `Vec<AbstractionRef>` | List abstractions, optionally filtered by kind/tier/app |
 
@@ -178,7 +178,7 @@ applicable, so the JSON shapes are stable and documented.
 ### 5. Transport: stdio first, SSE later
 
 **Phase 1 (this ADR): stdio only.** stdio is the standard local MCP
-transport — the AI client spawns `decon serve` as a child process and
+transport — the AI client spawns `brigid serve` as a child process and
 communicates over stdin/stdout. This is how Claude Desktop, Cursor, and
 other local clients work. No port management, no network exposure, no
 auth concerns.
@@ -195,22 +195,22 @@ which includes `git_commit` and `since_ref` (ADR 0013). A tool
 `is_checkpoint_stale` compares the recorded `git_commit` against the
 current `HEAD` of the codebase (if the original `--dir` is accessible
 and is a git repo). If they differ, the metadata resource includes a
-`stale: true` flag and a human-readable hint to re-run `decon generate`.
+`stale: true` flag and a human-readable hint to re-run `brigid generate`.
 
 This does **not** auto-refresh — it only informs. The user decides when
 to re-generate.
 
 ### 7. Client configuration
 
-Users add `decon serve` to their AI client's MCP config. Example for
+Users add `brigid serve` to their AI client's MCP config. Example for
 Claude Desktop (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "decon": {
-      "command": "decon",
-      "args": ["serve", "--checkpoint", "/path/to/my-project/.decon-checkpoint"]
+    "brigid": {
+      "command": "brigid",
+      "args": ["serve", "--checkpoint", "/path/to/my-project/.brigid-checkpoint"]
     }
   }
 }
@@ -233,13 +233,13 @@ graph queries.
 - **Rejected:** No differentiator over "just read the files." The value
   is in the graph queries, not re-serving prose.
 
-### Option B — Embed the MCP server into `decon-cli` (no new crate)
+### Option B — Embed the MCP server into `brigid-cli` (no new crate)
 
-Add `decon serve` directly in `decon-cli` without a separate
-`decon-mcp` crate.
+Add `brigid serve` directly in `brigid-cli` without a separate
+`brigid-mcp` crate.
 
 - **Pros:** One fewer crate; simpler workspace.
-- **Cons:** `decon-cli` is intentionally a thin binary (clap args, exit
+- **Cons:** `brigid-cli` is intentionally a thin binary (clap args, exit
   codes). Adding a long-running MCP server with its own transport and
   lifecycle bloats the CLI crate and violates the layering rule. The
   MCP server has different dependencies (MCP SDK) that should not be
@@ -256,7 +256,7 @@ re-generation via `--since`, and on-demand stage re-runs.
 - **Pros:** Always-fresh knowledge graph; no manual re-generation.
 - **Cons:** Massively larger scope — filesystem watching, concurrent
   regeneration, LLM call management, cache invalidation, multi-client
-  consistency. Introduces LLM dependency (`decon-llm`) into the server,
+  consistency. Introduces LLM dependency (`brigid-llm`) into the server,
   breaking the read-only property. The statefulness problem (when to
   re-generate, how to coordinate across clients) is a research problem
   on its own.
@@ -282,7 +282,7 @@ Expose the same resources/tools as a REST API (`GET /abstractions`,
 ## Consequences
 
 - **Positive:** Users' AI assistants (Cursor, Claude, Windsurf) can
-  query the `decon` knowledge graph on demand — targeted lookups
+  query the `brigid` knowledge graph on demand — targeted lookups
   instead of bulk-loading tutorial files. This is a genuine
   differentiator over file-only output.
 - **Positive:** The pure-core + checkpoint architecture means the MCP
@@ -302,7 +302,7 @@ Expose the same resources/tools as a REST API (`GET /abstractions`,
   shifting spec is expected.
 - **Negative:** Stale data risk — the server serves the checkpoint as
   of generation time. If the codebase changes, the knowledge graph is
-  out of date until the user re-runs `decon generate`. Mitigated by
+  out of date until the user re-runs `brigid generate`. Mitigated by
   staleness detection (§6), but not eliminated.
 
 ## Future Extension Points
@@ -310,7 +310,7 @@ Expose the same resources/tools as a REST API (`GET /abstractions`,
 1. **Generative server (Phase 2)** — Filesystem watching + incremental
    re-generation via `--since` (ADR 0013). The server detects codebase
    changes and re-runs affected stages. Requires its own ADR and
-   introduces `decon-llm` dependency.
+   introduces `brigid-llm` dependency.
 
 2. **SSE/HTTP transport (Phase 2)** — `--transport sse` for remote or
    multi-client scenarios. Introduces auth and network security
@@ -327,7 +327,7 @@ Expose the same resources/tools as a REST API (`GET /abstractions`,
 
 5. **Streaming chapter generation** — A tool that generates a chapter
    on demand for an abstraction not yet in the checkpoint (e.g., a new
-   module added after the last `decon generate`). Bridges read-only and
+   module added after the last `brigid generate`). Bridges read-only and
    generative modes.
 
 6. **Embeddings integration** — Use the abstraction descriptions as

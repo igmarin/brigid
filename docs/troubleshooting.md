@@ -1,20 +1,20 @@
 # Troubleshooting
 
-Common issues, exit codes, and recovery procedures for `decon`.
+Common issues, exit codes, and recovery procedures for `brigid`.
 
 ---
 
 ## Exit codes
 
-`decon` maps outcomes to stable exit codes so CI and scripts can branch on
+`brigid` maps outcomes to stable exit codes so CI and scripts can branch on
 them:
 
 | Code | Meaning | What to do |
 |------|---------|------------|
 | `0` | Success | — |
 | `1` | Generic failure | Check stderr for the error message; usually an unexpected pipeline error |
-| `2` | Config / path / I/O error | Verify `--dir` exists, `decon.toml` is valid TOML, checkpoint path is correct |
-| `3` | Budget exhausted | The `max_llm_calls` limit was hit; raise it in `decon.toml` |
+| `2` | Config / path / I/O error | Verify `--dir` exists, `brigid.toml` is valid TOML, checkpoint path is correct |
+| `3` | Budget exhausted | The `max_llm_calls` limit was hit; raise it in `brigid.toml` |
 | `4` | LLM provider error | Network, timeout, rate-limit, or parse error from the provider; see [LLM provider issues](#llm-provider-issues) |
 | `5` | Cancelled (Ctrl+C / SIGTERM) | A partial checkpoint was saved; re-run the same command to resume |
 
@@ -29,7 +29,7 @@ completed stage — completed stages are skipped automatically.
 To inspect progress without re-running anything:
 
 ```bash
-decon resume --checkpoint /path/to/checkpoint-dir --format json
+brigid resume --checkpoint /path/to/checkpoint-dir --format json
 ```
 
 The checkpoint lives in the `--checkpoint-dir` (default: a temp dir under the
@@ -42,17 +42,17 @@ To start fresh, delete the checkpoint directory and re-run.
 
 ## LLM provider issues
 
-- **`DECON_LLM_API_KEY (or DEEPSEEK_API_KEY) not set`** — No API key found.
+- **`BRIGID_LLM_API_KEY (or DEEPSEEK_API_KEY) not set`** — No API key found.
   See [Usage Guide → API key setup](usage-guide.md#api-key-setup). Without a
-  key, `decon` falls back to a mock client (useful for offline tests, not for
+  key, `brigid` falls back to a mock client (useful for offline tests, not for
   real generation).
 - **`host '…' is not in the allowed hosts list`** — The `base_url` host is not
   approved to receive the `Authorization` header. Add it via
-  `DECON_LLM_ALLOWED_HOSTS` or the `[[allowed_hosts]]` table in `decon.toml`.
+  `BRIGID_LLM_ALLOWED_HOSTS` or the `[[allowed_hosts]]` table in `brigid.toml`.
 - **Rate limits / timeouts (exit 4)** — The client retries with backoff, but
   sustained rate limiting will surface as exit 4. Wait and retry, or switch to
   a provider/model with a higher rate limit.
-- **`DECON_FORCE_MOCK`** — Setting this to any non-empty value forces the mock
+- **`BRIGID_FORCE_MOCK`** — Setting this to any non-empty value forces the mock
   client even when a real key is present, for offline reproducibility.
 
 ---
@@ -63,9 +63,9 @@ LLM responses are cached on disk (keyed by hash(prompt)+model+provider) so
 re-runs with an unchanged prompt are free.
 
 - **Stale / wrong responses** — Clear the cache by deleting the cache dir
-  (default: platform cache `/decon/llm-cache`) or set `DECON_NO_CACHE=1` to
+  (default: platform cache `/brigid/llm-cache`) or set `BRIGID_NO_CACHE=1` to
   bypass it for a single run.
-- **Custom cache location** — Set `DECON_LLM_CACHE_DIR=/some/path`.
+- **Custom cache location** — Set `BRIGID_LLM_CACHE_DIR=/some/path`.
 - **Disk full** — The cache enforces a size limit (default 100 MB) and evicts
   oldest entries; if writes fail, check permissions and free space.
 
@@ -76,8 +76,8 @@ re-runs with an unchanged prompt are free.
 The `max_llm_calls` budget caps total LLM calls per run (fail-closed). If a
 large monorepo run hits the limit mid-pipeline:
 
-1. Check the checkpoint with `decon resume` to see which stages completed.
-2. Raise the budget in `decon.toml` (`max_llm_calls = 500`) or via CLI flag.
+1. Check the checkpoint with `brigid resume` to see which stages completed.
+2. Raise the budget in `brigid.toml` (`max_llm_calls = 500`) or via CLI flag.
 3. Re-run the same command — completed stages are skipped, so only the
    remaining calls count against the new budget.
 
@@ -88,7 +88,7 @@ large monorepo run hits the limit mid-pipeline:
 If a checkpoint is unreadable (truncated `checkpoint.json`, missing
 `files.ndjson.gz`, or a SHA-256 mismatch on a stage output file):
 
-1. `decon resume --checkpoint PATH` will report the error and which stage
+1. `brigid resume --checkpoint PATH` will report the error and which stage
    is affected.
 2. The safest fix is to **delete the checkpoint directory and re-run** from
    scratch. Partial checkpoints with corrupted stage outputs cannot be
