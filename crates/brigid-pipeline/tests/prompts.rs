@@ -15,11 +15,7 @@ fn render(template: &str, ctx: minijinja::Value) -> String {
 macro_rules! render_prompt {
     ($name:literal, $ctx:expr) => {
         render(
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/prompts/",
-                $name
-            )),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/", $name)),
             $ctx,
         )
     };
