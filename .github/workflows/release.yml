@@ -140,31 +140,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
           toolchain: stable
-      - name: Publish brigid-core
+      - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p brigid-core
-      - name: Wait for brigid-core to propagate
-        run: sleep 20
-      - name: Publish brigid-crawl
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p brigid-crawl
-      - name: Wait for brigid-crawl to propagate
-        run: sleep 20
-      - name: Publish brigid-llm
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p brigid-llm
-      - name: Wait for brigid-llm to propagate
-        run: sleep 20
-      - name: Publish brigid-pipeline
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p brigid-pipeline
-      - name: Wait for brigid-pipeline to propagate
-        run: sleep 20
-      - name: Publish brigid-cli
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
-        run: cargo publish -p brigid-cli
+        run: |
+          set -euo pipefail
+          for crate in brigid-core brigid-crawl brigid-llm brigid-pipeline brigid-cli; do
+            echo "Publishing ${crate}..."
+            set +e
+            cargo publish -p "${crate}" > "/tmp/publish-${crate}.log" 2>&1
+            status=$?
+            set -e
+            if [ "${status}" -eq 0 ]; then
+              echo "Published ${crate}"
+            elif grep -qiE "already (exists|uploaded|published|on crates\.io)" "/tmp/publish-${crate}.log"; then
+              echo "${crate} is already published; skipping"
+            else
+              cat "/tmp/publish-${crate}.log" >&2
+              exit 1
+            fi
+            # Give the registry time to propagate before a downstream crate
+            # declares a dependency on this version.
+            if [ "${crate}" != "brigid-cli" ]; then
+              sleep 20
+            fi
+          done

@@ -90,20 +90,20 @@ impl PromptId {
     pub const fn template_text(self) -> &'static str {
         match self {
             Self::IdentifySingleShot => {
-                include_str!("../../../prompts/identify_single_shot.md.j2")
+                include_str!("../prompts/identify_single_shot.md.j2")
             }
-            Self::IdentifyMap => include_str!("../../../prompts/identify_map.md.j2"),
-            Self::IdentifyReduce => include_str!("../../../prompts/identify_reduce.md.j2"),
+            Self::IdentifyMap => include_str!("../prompts/identify_map.md.j2"),
+            Self::IdentifyReduce => include_str!("../prompts/identify_reduce.md.j2"),
             Self::AnalyzeRelationships => {
-                include_str!("../../../prompts/analyze_relationships.md.j2")
+                include_str!("../prompts/analyze_relationships.md.j2")
             }
-            Self::OrderChapters => include_str!("../../../prompts/order_chapters.md.j2"),
-            Self::ChapterOutline => include_str!("../../../prompts/chapter_outline.md.j2"),
-            Self::WriteChapter => include_str!("../../../prompts/write_chapter.md.j2"),
-            Self::ReviewChapter => include_str!("../../../prompts/review_chapter.md.j2"),
-            Self::WriteSetupGuide => include_str!("../../../prompts/write_setup_guide.md.j2"),
+            Self::OrderChapters => include_str!("../prompts/order_chapters.md.j2"),
+            Self::ChapterOutline => include_str!("../prompts/chapter_outline.md.j2"),
+            Self::WriteChapter => include_str!("../prompts/write_chapter.md.j2"),
+            Self::ReviewChapter => include_str!("../prompts/review_chapter.md.j2"),
+            Self::WriteSetupGuide => include_str!("../prompts/write_setup_guide.md.j2"),
             Self::WriteArchitectureOverview => {
-                include_str!("../../../prompts/write_architecture_overview.md.j2")
+                include_str!("../prompts/write_architecture_overview.md.j2")
             }
         }
     }

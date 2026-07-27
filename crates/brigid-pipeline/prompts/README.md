@@ -69,7 +69,7 @@ are required.
   shift rendered output and stable hashes. Commit prompt file changes together
   with any updated test snapshots / fixture expectations, and bump the prompt or
   tool version when editing these files.
-- Each prompt has a render test in `crates/brigid-pipeline/tests/prompts.rs`
+- Each prompt has a render test in `../tests/prompts.rs`
   that renders the template with a synthetic fixture context and asserts the
   output contains the expected sections / YAML markers. When adding a new
   prompt, add a matching fixture test there.

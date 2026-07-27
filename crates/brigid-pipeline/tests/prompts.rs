@@ -17,7 +17,7 @@ macro_rules! render_prompt {
         render(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../prompts/",
+                "/prompts/",
                 $name
             )),
             $ctx,

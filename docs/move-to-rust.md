@@ -159,8 +159,8 @@ brigid/                    # workspace
 │   ├── brigid-crawl/           # local + GitHub fetch
 │   ├── brigid-llm/             # provider clients (OpenAI-compatible, Gemini, …)
 │   ├── brigid-pipeline/        # stage orchestration, checkpoint, dry-run plan
+│   │   └── prompts/            # versioned prompt templates (not buried in code)
 │   └── brigid-cli/             # clap binary
-├── prompts/                 # versioned prompt templates (not buried in code)
 ├── tests/
 │   ├── fixtures/            # tiny repos
 │   └── golden/              # eval expectations
@@ -228,7 +228,7 @@ Stable, versioned JSON (or JSON + sidecar for large file corpora):
 
 Move prompts out of string soup in source:
 
-- `prompts/identify_map.md.j2` (or handlebars / minijinja)  
+- `crates/brigid-pipeline/prompts/identify_map.md.j2` (or handlebars / minijinja)  
 - Version prompts with the tool version  
 - Snapshot tests: render prompt with fixture context → stable hash  
 

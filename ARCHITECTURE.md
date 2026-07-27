@@ -48,9 +48,9 @@ brigid/
 │   ├── brigid-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
 │   ├── brigid-llm/        # LlmClient trait, provider clients, disk cache, retries
 │   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
-│   └── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes
-│   (brigid-mcp/)          # MCP server — proposed (ADR 0015), post-v1.0.0
-├── prompts/              # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
+│   │   └── prompts/        # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
+│   ├── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes
+│   └── (brigid-mcp/)      # MCP server — proposed (ADR 0015), post-v1.0.0
 ├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
@@ -369,6 +369,6 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — TDD workflow, coverage gate, CI
   checks, PR process, commit conventions
 - [`CHANGELOG.md`](CHANGELOG.md) — release history (Keep a Changelog format)
-- [`prompts/README.md`](prompts/README.md) — prompt catalog and variable schema
+- [`crates/brigid-pipeline/prompts/README.md`](crates/brigid-pipeline/prompts/README.md) — prompt catalog and variable schema
 - [`tests/fixtures/README.md`](tests/fixtures/README.md) — fixture set and
   parity strategy
