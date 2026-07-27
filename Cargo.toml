@@ -18,7 +18,7 @@ homepage = "https://github.com/igmarin/brigid"
 documentation = "https://docs.rs/brigid-cli"
 authors = ["Ismael Marín"]
 keywords = ["tutorial", "codebase", "documentation", "llm", "cli"]
-categories = ["command-line-utilities", "development-tools", "documentation"]
+categories = ["command-line-utilities", "development-tools", "text-processing"]
 
 [workspace.dependencies]
 proptest = "1.11.0"
