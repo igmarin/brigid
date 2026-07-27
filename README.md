@@ -1,5 +1,5 @@
-# brigid
-![Decon-RS Logo](https://github.com/user-attachments/assets/149638e7-1b52-4028-89c3-510a9383d15f)
+# Brigid
+![Brigid Logo](https://github.com/user-attachments/assets/3e06809f-b89c-4b0a-ab80-43f7729ae056)
 
 [![CI](https://github.com/igmarin/brigid/actions/workflows/ci.yml/badge.svg)](https://github.com/igmarin/brigid/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/igmarin/brigid/branch/main/graph/badge.svg)](https://codecov.io/gh/igmarin/brigid)
