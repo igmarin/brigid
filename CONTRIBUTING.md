@@ -163,11 +163,12 @@ prompt in [`.github/review-prompt.md`](.github/review-prompt.md):
   in `~/.config/rs-guard/env`.
 
 A **release workflow** (`.github/workflows/release.yml`) triggers on tag push
-(`vX.Y.Z`), builds release binaries for Linux (x86_64, aarch64), macOS
-(x86_64, aarch64), and Windows (x86_64), packages them with the man page and
-completion scripts, generates SHA-256 checksums, and creates a GitHub Release
-with notes extracted from [`CHANGELOG.md`](CHANGELOG.md). It can also be
-dispatched manually in dry-run mode to validate the build without publishing.
+(`vX.Y.Z`), builds a Linux x86_64 release binary, packages it with the man
+page and completion scripts, generates a SHA-256 checksum, and creates a
+GitHub Release with notes extracted from [`CHANGELOG.md`](CHANGELOG.md).
+macOS and Windows users install from source through Homebrew or `cargo
+install`. The workflow can also be dispatched manually in dry-run mode to
+validate the build without publishing.
 
 CI also runs a **nightly LLM smoke** job (scheduled, not on PR/push) that
 generates a tutorial with a live DeepSeek key, evals the output, and compares

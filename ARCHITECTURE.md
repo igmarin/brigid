@@ -20,7 +20,7 @@ graph TD
     CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
     Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
     LLM["brigid-llm<br/>(LlmClient trait, provider clients, cache, retries)"]
-    Crawl["brigid-crawl<br/>(local + GitHub file inventory)"]
+    Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 
     CLI --> Pipeline
@@ -45,7 +45,7 @@ maps errors to exit codes. Public APIs in library crates carry rustdoc
 brigid/
 ├── crates/
 │   ├── brigid-core/       # Pure domain models, traits, budgeting, mermaid sanitize
-│   ├── brigid-crawl/      # Local + GitHub crawling (gitignore-aware, symlink-safe)
+│   ├── brigid-crawl/      # Local filesystem inventory and git-diff filtering
 │   ├── brigid-llm/        # LlmClient trait, provider clients, disk cache, retries
 │   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
 │   │   └── prompts/        # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
@@ -55,7 +55,7 @@ brigid/
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
 │   ├── best-practices.md # Language-agnostic product rules (scope, budget, quality, mermaid)
-│   └── adr/              # Architecture Decision Records (0001–0014)
+│   └── adr/              # Architecture Decision Records (0001–0017)
 ├── homebrew/             # Homebrew formula template (brigid.rb)
 ├── .github/workflows/    # CI (fmt/clippy/test/cov/doc/audit/baseline) + release + rs-guard review
 └── CONTRIBUTING.md       # TDD workflow, coverage gate, check commands
@@ -180,7 +180,7 @@ done, enabling resume from any point without re-running expensive LLM calls.
 | `brigid-core` | `extract` | Robust YAML/JSON block extraction from messy LLM output |
 | `brigid-core` | `stage_output` | `StageOutput<T>` JSON envelope and per-stage output types (ADR 0012) |
 | `brigid-core` | `plugin` | `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector` (ADR 0014) |
-| `brigid-crawl` | `local` | Local filesystem inventory (gitignore-aware, `ignore` walker, symlink cycle detection) |
+| `brigid-crawl` | `local` | Local filesystem inventory (hidden-directory skipping and symlink cycle detection; `.gitignore` support is not yet implemented) |
 | `brigid-crawl` | `git_diff` | Git-diff incremental file detection via `git` shell-out; `--since` support (ADR 0013) |
 | `brigid-llm` | `client` | `LlmClient` async trait (ADR 0002) |
 | `brigid-llm` | `mock` | `MockClient` test double |
@@ -350,6 +350,7 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0014](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
 | [0015](docs/adr/0015-mcp-server.md) | MCP server for codebase knowledge querying (proposed, post-v1.0.0) |
 | [0016](docs/adr/0016-graph-provider.md) | Graph provider trait for structural ground truth from codegraph/Graphify (proposed, post-v1.0.0) |
+| [0017](docs/adr/0017-openrouter-provider.md) | OpenRouter as a first-class LLM provider (proposed) |
 
 ---
 

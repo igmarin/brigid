@@ -51,6 +51,14 @@ pub enum RelationshipsError {
     /// The extracted YAML could not be parsed into a relationships result.
     #[error("failed to parse relationships from LLM output: {0}")]
     Parse(#[from] serde_yaml_ng::Error),
+    /// A relationship referenced an abstraction outside the identify result.
+    #[error("relationship abstraction index {index} out of range (have {total} abstractions)")]
+    EndpointOutOfRange {
+        /// The invalid relationship endpoint.
+        index: usize,
+        /// Number of identified abstractions.
+        total: usize,
+    },
     /// A checkpoint save/load failed during the relationships stage.
     #[error("checkpoint error during relationships: {0}")]
     Checkpoint(#[from] CheckpointStoreError),
@@ -284,13 +292,21 @@ pub async fn analyze_relationships(
 
     // i. Parse the extracted YAML into a RelationshipsResult.
     let raw: RawRelationships = serde_yaml_ng::from_str(&yaml_text)?;
-    let relationships = raw
-        .relationships
-        .into_iter()
-        .map(|r| {
-            brigid_core::Relationship::new(r.from_abstraction, r.to_abstraction, r.label, r.kind)
-        })
-        .collect();
+    let total = abstractions.len();
+    let mut relationships = Vec::with_capacity(raw.relationships.len());
+    for relationship in raw.relationships {
+        for index in [relationship.from_abstraction, relationship.to_abstraction] {
+            if index >= total {
+                return Err(RelationshipsError::EndpointOutOfRange { index, total });
+            }
+        }
+        relationships.push(brigid_core::Relationship::new(
+            relationship.from_abstraction,
+            relationship.to_abstraction,
+            relationship.label,
+            relationship.kind,
+        ));
+    }
 
     Ok(RelationshipsResult::new(raw.summary, relationships))
 }
@@ -734,6 +750,37 @@ relationships:
     }
 
     #[tokio::test]
+    async fn relationship_endpoint_out_of_range_returns_error() {
+        let yaml = "\
+```yaml
+summary: |-
+  A project with an invalid relationship.
+relationships:
+  - from_abstraction: 0
+    to_abstraction: 3
+    label: \"Missing target\"
+    kind: calls
+```
+";
+        let client = MockClient::new(yaml.to_string());
+        let renderer = PromptRenderer::new().unwrap();
+        let identify = IdentifyResult::new(three_abstractions_two_apps());
+        let file_contents = file_contents_for(&identify.abstractions);
+        let config = sample_config();
+        let err =
+            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
+                .await
+                .expect_err("out-of-range relationship endpoint should error");
+        assert!(
+            matches!(
+                err,
+                RelationshipsError::EndpointOutOfRange { index: 3, total: 3 }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn malformed_yaml_returns_typed_parse_error() {
         let yaml = "```yaml\nsummary: : :\nrelationships: - bad\n```\n";
         let client = MockClient::new(yaml.to_string());
@@ -784,19 +831,35 @@ relationships:
 
     #[tokio::test]
     async fn secrets_redacted_before_rendering() {
+        // Single-abstraction fixture with a valid 0→0 endpoint. The shared
+        // `canned_three_relationships()` references indices 1 and 2, which
+        // would trip `EndpointOutOfRange` for a single abstraction. This
+        // test verifies secret redaction in the prompt, not parsing.
+        let single_abstraction_yaml = "\
+summary: |
+  Self-referential core.
+relationships:
+  - from_abstraction: 0
+    to_abstraction: 0
+    label: \"Internal\"
+    kind: calls
+";
+        let response = format!("Here is the analysis:\n\n```yaml\n{single_abstraction_yaml}```\n");
         struct CapturingClient {
             captured: Arc<Mutex<String>>,
+            response: String,
         }
         #[async_trait::async_trait]
         impl LlmClient for CapturingClient {
             async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
                 *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_three_relationships())
+                Ok(self.response.clone())
             }
         }
         let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let client = CapturingClient {
             captured: captured.clone(),
+            response,
         };
         let renderer = PromptRenderer::new().unwrap();
         let identify = IdentifyResult::new(vec![Abstraction {
