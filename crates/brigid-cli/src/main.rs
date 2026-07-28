@@ -191,6 +191,22 @@ const PLACEHOLDER_SETUP: &str = "# Setup: project\n\n## Prerequisites\n\nInstall
 const PLACEHOLDER_OVERVIEW: &str = "# Architecture Overview\n\nThis project has multiple \
     modules.\n";
 
+/// Build a typed [`brigid_llm::LlmError`] for the given `BRIGID_LLM_MOCK_FAIL`
+/// fault-injection keyword.  Extracted as a pure function so it can be unit
+/// tested without mutating the process environment.
+fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
+    match kind {
+        "timeout" => brigid_llm::LlmError::Timeout,
+        "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
+        "provider" => brigid_llm::LlmError::Provider {
+            status: 502,
+            body: "mock provider error".to_string(),
+        },
+        "parse" => brigid_llm::LlmError::parse("mock parse failure"),
+        _ => brigid_llm::LlmError::network("mock network failure"),
+    }
+}
+
 /// Build a mock [`brigid_llm::LlmClient`] from a pre-assembled response sequence.
 ///
 /// In `debug_assertions` builds, the `BRIGID_LLM_MOCK_FAIL` environment variable
@@ -205,16 +221,7 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
             .ok()
             .filter(|value| !value.is_empty())
         {
-            let error = match kind.as_str() {
-                "timeout" => brigid_llm::LlmError::Timeout,
-                "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-                "provider" => brigid_llm::LlmError::Provider {
-                    status: 502,
-                    body: "mock provider error".to_string(),
-                },
-                "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-                _ => brigid_llm::LlmError::network("mock network failure"),
-            };
+            let error = mock_fail_error(&kind);
             return Box::new(brigid_llm::MockClient::new("").fail_on(0, error));
         }
     }
@@ -4307,5 +4314,37 @@ mod tests {
                 "BRIGID_FORCE_MOCK={truthy:?} should be treated as enabled"
             );
         }
+    }
+
+    #[test]
+    fn mock_fail_error_returns_expected_variant_for_each_keyword() {
+        assert!(matches!(
+            mock_fail_error("timeout"),
+            brigid_llm::LlmError::Timeout
+        ));
+        assert!(matches!(
+            mock_fail_error("ratelimit"),
+            brigid_llm::LlmError::RateLimit { retry_after: None }
+        ));
+        match mock_fail_error("provider") {
+            brigid_llm::LlmError::Provider { status, body } => {
+                assert_eq!(status, 502);
+                assert_eq!(body, "mock provider error");
+            }
+            other => panic!("expected Provider, got {other:?}"),
+        }
+        assert!(matches!(
+            mock_fail_error("parse"),
+            brigid_llm::LlmError::Parse { .. }
+        ));
+        assert!(matches!(
+            mock_fail_error("network"),
+            brigid_llm::LlmError::Network { .. }
+        ));
+        // Unknown keyword falls through to network error.
+        assert!(matches!(
+            mock_fail_error("unknown"),
+            brigid_llm::LlmError::Network { .. }
+        ));
     }
 }

@@ -1096,6 +1096,130 @@ fn generate_each_app_completes_and_writes_per_app_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Coverage: exercise the non-single-shot (map-reduce) mock response path and
+// the --review-chapters / setup-generation branches under --each-app.
+// All tests use BRIGID_FORCE_MOCK=1 (set by the `brigid()` helper).
+// ---------------------------------------------------------------------------
+
+/// Create a temporary directory with >20 source files so the identify stage
+/// picks the map+reduce path (the `use_single_shot` threshold is 20 files).
+fn make_large_fixture(tag: &str) -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = temp_base().join(format!("brigid-cli-large-fixture-{tag}-{n}"));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    for i in 0..25u32 {
+        let path = dir.join(format!("mod_{i:02}.py"));
+        std::fs::write(&path, format!("# module {i}\nx = {i}\n")).expect("write fixture file");
+    }
+    std::fs::write(dir.join("README.md"), "# Large test project\n").expect("write README");
+    dir
+}
+
+#[test]
+fn generate_without_single_shot_completes_in_mock_mode() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("brigid-cli-nosshot-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("brigid-cli-nosshot-out-{n}"));
+    let dir = make_large_fixture("noshot");
+
+    brigid()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--no-setup"])
+        .assert()
+        .success();
+
+    assert!(output_dir.join("index.md").is_file());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn generate_each_app_with_review_chapters_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("brigid-cli-eachapp-review-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("brigid-cli-eachapp-review-out-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    brigid()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args([
+            "--single-shot",
+            "--each-app",
+            "--review-chapters",
+            "--no-setup",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("each-app completed"));
+
+    assert!(output_dir.join("index.md").is_file());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    for app in &["alpha", "beta", "gamma"] {
+        let app_ckpt = temp_base().join(format!("brigid-cli-eachapp-review-ckpt-{n}-apps-{app}"));
+        let _ = std::fs::remove_dir_all(&app_ckpt);
+    }
+}
+
+#[test]
+fn generate_each_app_with_setup_completes() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let ckpt_dir = temp_base().join(format!("brigid-cli-eachapp-setup-ckpt-{n}"));
+    let output_dir = temp_base().join(format!("brigid-cli-eachapp-setup-out-{n}"));
+    let dir = fixtures_dir().join("umbrella");
+
+    brigid()
+        .args(["generate", "--dir"])
+        .arg(&dir)
+        .args(["--checkpoint-dir"])
+        .arg(&ckpt_dir)
+        .args(["--output-dir"])
+        .arg(&output_dir)
+        .args(["--single-shot", "--each-app", "--force-setup"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("each-app completed"));
+
+    assert!(output_dir.join("index.md").is_file());
+
+    let _ = std::fs::remove_dir_all(&ckpt_dir);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    for app in &["alpha", "beta", "gamma"] {
+        let app_ckpt = temp_base().join(format!("brigid-cli-eachapp-setup-ckpt-{n}-apps-{app}"));
+        let _ = std::fs::remove_dir_all(&app_ckpt);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Issue #147: per-stage subcommands for debugging individual pipeline stages.
 //
 // Each subcommand runs exactly one stage, reads inputs from checkpoint, and
