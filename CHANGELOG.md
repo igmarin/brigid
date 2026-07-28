@@ -10,6 +10,46 @@ descriptions in [`docs/move-to-rust.md`](docs/move-to-rust.md). Each milestone
 corresponds to a minor release; the workspace `version` field in `Cargo.toml`
 tracks the latest.
 
+## [1.0.2] - 2026-07-27
+
+Patch release that hardens the CLI's LLM-client selection and the
+relationships stage, adds a security policy, and closes a codecov patch
+coverage gap.
+
+### Changed
+
+- **CLI now fails closed on missing API credentials.** `build_real_llm_client`
+  returns `Result` instead of `Option`; when no `BRIGID_LLM_API_KEY` /
+  `DEEPSEEK_API_KEY` is set and `BRIGID_FORCE_MOCK` is not enabled, the CLI
+  exits with a clear LLM-configuration error instead of silently emitting
+  placeholder mock output. Anyone who relied on the silent mock fallback
+  must now set `BRIGID_FORCE_MOCK=1` explicitly.
+- **`BRIGID_FORCE_MOCK` recognizes falsy values.** `0`, `false`, `no`, `off`
+  (case-insensitive) and empty/whitespace now disable forced mock output;
+  any other non-blank value enables it. `None` (env var unset) is disabled.
+
+### Added
+
+- **`SECURITY.md`** policy with supported-versions statement and private
+  vulnerability reporting instructions via GitHub Security Advisories.
+- **Relationship endpoint range-checking.** The relationships stage now
+  validates that `from_abstraction` / `to_abstraction` indices fall within
+  the identify result, returning `RelationshipsError::EndpointOutOfRange`
+  instead of panicking on malformed LLM output.
+- **Centralized mock placeholder responses.** The `PLACEHOLDER_*` constants
+  and `mock_client` helper are now shared across `cmd_identify`,
+  `cmd_generate`, and `cmd_generate_each_app`, removing three-way
+  duplication.
+- **Mock fault-injection unit tests.** `mock_fail_error()` is extracted as a
+  pure function and unit-tested for all 5 fault keywords (`timeout`,
+  `ratelimit`, `provider`, `parse`, `network`/unknown).
+- **Integration tests** for the non-`--single-shot` mock path,
+  `--each-app --review-chapters`, and `--each-app --force-setup` branches.
+
+### Fixed
+
+- Codecov patch coverage on PR #259: 84.61% → 89.11% (target: 85%).
+
 ## [1.0.1] - 2026-07-27
 
 Patch release to add per-crate README files and make the crates.io pages

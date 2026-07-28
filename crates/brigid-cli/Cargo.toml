@@ -21,10 +21,10 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-brigid-core = { path = "../brigid-core", version = "1.0.1" }
-brigid-crawl = { path = "../brigid-crawl", version = "1.0.1" }
-brigid-llm = { path = "../brigid-llm", version = "1.0.1" }
-brigid-pipeline = { path = "../brigid-pipeline", version = "1.0.1" }
+brigid-core = { path = "../brigid-core", version = "1.0.2" }
+brigid-crawl = { path = "../brigid-crawl", version = "1.0.2" }
+brigid-llm = { path = "../brigid-llm", version = "1.0.2" }
+brigid-pipeline = { path = "../brigid-pipeline", version = "1.0.2" }
 clap = { version = "4.6", features = ["derive"] }
 clap_mangen = "0.2"
 clap_complete = "4.6"
