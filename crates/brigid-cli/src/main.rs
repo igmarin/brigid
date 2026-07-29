@@ -214,6 +214,16 @@ fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
 /// responses.  This is a developer-only fault-injection hook and is compiled out
 /// of release builds.
 fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
+    mock_client_with_diag(responses, &mut std::io::stderr())
+}
+
+/// Like [`mock_client`] but writes the fallback warning to `diag` instead of
+/// stderr, so tests can assert the diagnostic without capturing the process
+/// stderr.
+fn mock_client_with_diag(
+    responses: Vec<String>,
+    diag: &mut dyn std::io::Write,
+) -> Box<dyn brigid_llm::LlmClient> {
     let fallback = PLACEHOLDER_IDENTIFY_YAML;
     #[cfg(debug_assertions)]
     {
@@ -227,7 +237,8 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
     }
     Box::new(
         brigid_llm::MockClient::with_responses(responses).unwrap_or_else(|error| {
-            eprintln!(
+            let _ = writeln!(
+                diag,
                 "warning: mock client: falling back to default placeholder response: {error}"
             );
             brigid_llm::MockClient::new(fallback)
@@ -388,6 +399,11 @@ enum Commands {
         /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
         #[arg(long = "review-chapters", default_value_t = false)]
         review_chapters: bool,
+        /// Fail the overview stage if the LLM mentions app paths not in the
+        /// inventory. By default, invented apps are reported as a warning but
+        /// the overview is still generated.
+        #[arg(long = "strict-app-validation", default_value_t = false)]
+        strict_app_validation: bool,
         /// Tutorial writing style: `blog-post` (short, conversational — default)
         /// or `book` (long-form, multi-section chapters with more diagrams).
         #[arg(
@@ -396,6 +412,7 @@ enum Commands {
             default_value = "blog-post"
         )]
         tutorial_style: String,
+
         /// Maximum concurrent chapter writes (overrides config default of 4).
         #[arg(long = "concurrency", value_name = "N")]
         concurrency: Option<usize>,
@@ -996,7 +1013,9 @@ fn main() -> ExitCode {
             single_shot,
             each_app,
             review_chapters,
+            strict_app_validation,
             tutorial_style,
+
             concurrency,
             max_llm_calls,
             since: _,
@@ -1056,6 +1075,7 @@ fn main() -> ExitCode {
                 single_shot,
                 each_app,
                 review_chapters,
+                strict_app_validation,
                 &tutorial_style,
                 concurrency,
                 max_llm_calls,
@@ -2076,10 +2096,14 @@ fn cmd_identify(
         )
     };
 
+    let mut identify_config = cfg.clone();
+    // Write --dir into config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision).
+    identify_config.root = Some(dir.to_path_buf());
     let run_cfg = brigid_pipeline::IdentifyRunConfig {
         strategy,
         reduce_input,
-        unredacted_config: cfg.clone(),
+        unredacted_config: identify_config,
         source_revision: dir.display().to_string(),
         files: records,
     };
@@ -2261,7 +2285,9 @@ fn cmd_generate(
     single_shot: bool,
     each_app: bool,
     review_chapters: bool,
+    strict_app_validation: bool,
     tutorial_style_str: &str,
+
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
@@ -2303,6 +2329,7 @@ fn cmd_generate(
             max_abstractions,
             single_shot,
             review_chapters,
+            strict_app_validation,
             tutorial_style,
             concurrency,
             max_llm_calls,
@@ -2371,6 +2398,10 @@ fn cmd_generate(
         .join("\n");
 
     let mut run_config = cfg.clone();
+    // Write --dir into run_config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision when
+    // the same --checkpoint-dir is reused for a different project).
+    run_config.root = Some(dir.to_path_buf());
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
@@ -2462,7 +2493,50 @@ fn cmd_generate(
     let store = CheckpointStore::new(checkpoint_dir);
 
     let (mut checkpoint, existing_files) = match store.load() {
-        Ok((meta, files)) => (meta, files),
+        Ok((meta, files)) => {
+            // Checkpoint collision detection (issue #266): if the checkpoint
+            // was created for a different --dir, discard it and start fresh.
+            // Normalize both paths via canonicalize to avoid false positives
+            // from symlinks, "./" segments, etc. Fall back to string
+            // comparison if canonicalize fails (e.g., path doesn't exist yet).
+            let current_dir = dir.to_string_lossy();
+            let current_canonical = std::fs::canonicalize(dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| current_dir.to_string());
+            if let Some(ref cp_dir) = meta.source_dir {
+                let cp_canonical = std::fs::canonicalize(cp_dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| cp_dir.clone());
+                if cp_canonical != current_canonical {
+                    eprintln!(
+                        "warning: generate: checkpoint at {} was created for \
+                         '{cp_dir}' but --dir is '{}' — discarding old \
+                         checkpoint and starting fresh.",
+                        checkpoint_dir.display(),
+                        current_dir,
+                    );
+                    let mut fresh = match brigid_core::CheckpointV1::new(
+                        &run_config,
+                        run_config.redacted_for_checkpoint(),
+                        dir.display().to_string(),
+                        "0Z",
+                    ) {
+                        Ok(cp) => cp,
+                        Err(e) => {
+                            eprintln!("error: generate: checkpoint init: {e}");
+                            return ExitCode::from(EXIT_CONFIG);
+                        }
+                    };
+                    fresh.mark_stage_complete(brigid_core::StageId::Fetch, "0Z");
+                    fresh.mark_stage_complete(brigid_core::StageId::DryRun, "0Z");
+                    (fresh, records)
+                } else {
+                    (meta, files)
+                }
+            } else {
+                (meta, files)
+            }
+        }
         Err(_) => {
             let mut meta = brigid_core::CheckpointV1::new(
                 &run_config,
@@ -2546,6 +2620,7 @@ fn cmd_generate(
             run_config: run_config.clone(),
             chapter_concurrency,
             review_chapters,
+            strict_app_validation,
             tutorial_style,
         };
 
@@ -2713,7 +2788,9 @@ fn cmd_generate_each_app(
     max_abstractions: usize,
     single_shot: bool,
     review_chapters: bool,
+    strict_app_validation: bool,
     tutorial_style: brigid_core::config::TutorialStyle,
+
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
@@ -2723,6 +2800,10 @@ fn cmd_generate_each_app(
     // `--format json` for `--each-app` is not yet supported; text output only.
     let _ = format;
     let mut run_config = cfg.clone();
+    // Write --dir into run_config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision when
+    // the same --checkpoint-dir is reused for a different project).
+    run_config.root = Some(dir.to_path_buf());
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
@@ -2828,6 +2909,7 @@ fn cmd_generate_each_app(
         run_config: run_config.clone(),
         chapter_concurrency,
         review_chapters,
+        strict_app_validation,
         tutorial_style,
     };
 
@@ -4388,13 +4470,25 @@ mod tests {
         // must fall back to a single placeholder response (with a stderr
         // warning) instead of panicking. The fallback is defensive: all
         // current call sites assemble non-empty sequences, so it cannot be
-        // exercised through the CLI binary itself.
-        let client = mock_client(Vec::new());
+        // exercised through the CLI binary itself. The diagnostic writer is
+        // injected so the warning text can be asserted without capturing the
+        // process stderr.
+        let mut diag = Vec::new();
+        let client = mock_client_with_diag(Vec::new(), &mut diag);
         let response = client
             .complete("anything")
             .await
             .expect("fallback client should respond");
         assert_eq!(response, PLACEHOLDER_IDENTIFY_YAML);
+        let diag = String::from_utf8(diag).expect("diag should be valid utf-8");
+        assert!(
+            diag.contains("warning: mock client: falling back to default placeholder response"),
+            "expected fallback warning in diag, got: {diag:?}"
+        );
+        assert!(
+            diag.contains("MockClient::with_responses requires at least one response"),
+            "expected underlying construction error in diag, got: {diag:?}"
+        );
     }
 
     #[tokio::test]
