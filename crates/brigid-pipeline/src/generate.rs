@@ -929,6 +929,10 @@ pub async fn run_order_stage(
 /// results from the checkpoint, and calls [`chapters_and_checkpoint`]. Returns
 /// the [`ChapterResult`] and updates the checkpoint in place.
 ///
+/// **Note:** This standalone entry point always uses `TutorialStyle::Book`.
+/// The main `run_generate` function respects the user's `--tutorial-style`
+/// setting. Use `run_generate` for production runs.
+///
 /// # Errors
 ///
 /// Returns [`GenerateError::Config`] if the order stage is not complete.
@@ -1034,6 +1038,10 @@ pub async fn run_setup_stage(
 /// relationships results from the checkpoint, and calls
 /// [`overview_and_checkpoint`]. Returns the
 /// [`brigid_core::ArchitectureOverview`] and updates the checkpoint in place.
+///
+/// **Note:** This standalone entry point always uses `TutorialStyle::Book`.
+/// The main `run_generate` function respects the user's `--tutorial-style`
+/// setting. Use `run_generate` for production runs.
 ///
 /// # Errors
 ///
