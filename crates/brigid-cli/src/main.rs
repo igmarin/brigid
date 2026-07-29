@@ -226,8 +226,12 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
         }
     }
     Box::new(
-        brigid_llm::MockClient::with_responses(responses)
-            .unwrap_or_else(|_| brigid_llm::MockClient::new(fallback)),
+        brigid_llm::MockClient::with_responses(responses).unwrap_or_else(|error| {
+            eprintln!(
+                "warning: mock client: falling back to default placeholder response: {error}"
+            );
+            brigid_llm::MockClient::new(fallback)
+        }),
     )
 }
 
@@ -770,7 +774,8 @@ BRIGID_LLM_CACHE_DIR
 BRIGID_NO_CACHE
   Set to 1 or true to disable the disk cache.
 BRIGID_FORCE_MOCK
-  Set to any non-empty value to force the mock LLM client (offline).
+  Set to force the mock LLM client (offline). Falsy values (0, false, no,
+  off, blank; case-insensitive) do NOT enable mock mode.
 BRIGID_SINCE
   Git ref (tag, commit, or branch) for incremental git-diff crawl.
 ";
@@ -4346,5 +4351,27 @@ mod tests {
             mock_fail_error("unknown"),
             brigid_llm::LlmError::Network { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn mock_client_with_empty_responses_falls_back_to_placeholder() {
+        // `MockClient::with_responses` rejects an empty sequence; the helper
+        // must fall back to a single placeholder response (with a stderr
+        // warning) instead of panicking. The fallback is defensive: all
+        // current call sites assemble non-empty sequences, so it cannot be
+        // exercised through the CLI binary itself.
+        let client = mock_client(Vec::new());
+        let response = client
+            .complete("anything")
+            .await
+            .expect("fallback client should respond");
+        assert_eq!(response, PLACEHOLDER_IDENTIFY_YAML);
+    }
+
+    #[tokio::test]
+    async fn mock_client_with_responses_serves_sequence_without_fallback() {
+        let client = mock_client(vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(client.complete("a").await.unwrap(), "first");
+        assert_eq!(client.complete("b").await.unwrap(), "second");
     }
 }
