@@ -9,14 +9,17 @@
 //! no I/O and no dependencies beyond `std` and `thiserror`.
 //!
 //! Behaviour mirrors the Python `utils/context_budget.py::extract_yaml_block`
-//! helper:
+//! helper, with one deliberate deviation (item 3):
 //!
 //! 1. If the text contains a fenced block (```yaml / ```json / bare ```),
 //!    extract the content between the first opening fence and its closing ````
 //!    and tolerate leading/trailing prose.
 //! 2. If there are no fences, fall back to a heuristic that looks for
 //!    YAML-like `key: value` lines or the first balanced JSON `{`/`[`.
-//! 3. An opening fence with no closing fence yields [`ExtractError::UnbalancedFence`].
+//! 3. An opening fence with no closing fence (LLM truncation or a forgotten
+//!    fence) is **tolerated**: everything after the opening fence is returned
+//!    and downstream parsing validates it. Only an opening fence with no
+//!    content at all yields [`ExtractError::UnbalancedFence`].
 //! 4. No structured content at all yields [`ExtractError::NoBlockFound`].
 
 use thiserror::Error;
@@ -27,7 +30,8 @@ pub enum ExtractError {
     /// No structured block (fenced or bare) could be found in the input text.
     #[error("no structured block found in text")]
     NoBlockFound,
-    /// An opening code fence was found but never closed.
+    /// An opening code fence was found but never closed and has no content
+    /// after it to recover.
     #[error("unbalanced code fence in text")]
     UnbalancedFence,
 }
@@ -42,8 +46,9 @@ pub enum ExtractError {
 /// # Errors
 ///
 /// Returns [`ExtractError::UnbalancedFence`] when an opening fence has no
-/// closing fence, and [`ExtractError::NoBlockFound`] when no structured
-/// content can be located.
+/// closing fence **and no content after it** (an unclosed fence with content
+/// is tolerated — the content is returned for downstream validation), and
+/// [`ExtractError::NoBlockFound`] when no structured content can be located.
 pub fn extract_yaml_block(text: &str) -> Result<String, ExtractError> {
     // 1. Prefer a ```yaml tagged fence.
     if let Some(result) = extract_fenced(text, "yaml") {
@@ -67,8 +72,9 @@ pub fn extract_yaml_block(text: &str) -> Result<String, ExtractError> {
 /// # Errors
 ///
 /// Returns [`ExtractError::UnbalancedFence`] when an opening fence has no
-/// closing fence, and [`ExtractError::NoBlockFound`] when no structured
-/// content can be located.
+/// closing fence **and no content after it** (an unclosed fence with content
+/// is tolerated — the content is returned for downstream validation), and
+/// [`ExtractError::NoBlockFound`] when no structured content can be located.
 pub fn extract_json_block(text: &str) -> Result<String, ExtractError> {
     // 1. Prefer a ```json tagged fence.
     if let Some(result) = extract_fenced(text, "json") {
@@ -86,8 +92,9 @@ pub fn extract_json_block(text: &str) -> Result<String, ExtractError> {
 /// `preferred_tag` (pass `""` for a bare ```` ``` ```` fence).
 ///
 /// Returns `None` when no matching opening fence exists, `Some(Ok(..))` on a
-/// successful extraction, and `Some(Err(UnbalancedFence))` when an opening
-/// fence is never closed.
+/// successful extraction — including an unclosed fence with recoverable
+/// content — and `Some(Err(UnbalancedFence))` only when an opening fence is
+/// never closed **and** has no content after it.
 fn extract_fenced(text: &str, preferred_tag: &str) -> Option<Result<String, ExtractError>> {
     let lines: Vec<&str> = text.lines().collect();
 
@@ -114,7 +121,18 @@ fn extract_fenced(text: &str, preferred_tag: &str) -> Option<Result<String, Extr
             let content = lines[open_idx + 1..close].join("\n");
             Some(Ok(dedent_block(&content)))
         }
-        None => Some(Err(ExtractError::UnbalancedFence)),
+        None => {
+            // Tolerate an unclosed fence (LLM truncation or sloppiness):
+            // recover everything after the opening fence and let downstream
+            // parsing validate it. An opening fence with no content at all
+            // has nothing to recover and still errors.
+            let content = lines[open_idx + 1..].join("\n");
+            if content.trim().is_empty() {
+                Some(Err(ExtractError::UnbalancedFence))
+            } else {
+                Some(Ok(dedent_block(&content)))
+            }
+        }
     }
 }
 
@@ -271,10 +289,32 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_yaml_fence() {
+    fn unbalanced_yaml_fence_recovers_to_end_of_text() {
+        // LLMs sometimes omit the closing fence (truncation, sloppiness).
+        // The content after the opening fence is recoverable; downstream
+        // YAML parsing validates it.
         let input = "```yaml\nname: foo";
+        assert_eq!(extract_yaml_block(input).unwrap(), "name: foo");
+    }
+
+    #[test]
+    fn unbalanced_yaml_fence_with_trailing_prose_recovers() {
+        let input = "```yaml\nname: foo\ntier: S\nSome trailing remark.";
         assert_eq!(
-            extract_yaml_block(input),
+            extract_yaml_block(input).unwrap(),
+            "name: foo\ntier: S\nSome trailing remark."
+        );
+    }
+
+    #[test]
+    fn unbalanced_yaml_fence_without_content_errors() {
+        // An opening fence with nothing after it has nothing to recover.
+        assert_eq!(
+            extract_yaml_block("```yaml"),
+            Err(ExtractError::UnbalancedFence)
+        );
+        assert_eq!(
+            extract_yaml_block("```yaml\n  \n"),
             Err(ExtractError::UnbalancedFence)
         );
     }
@@ -378,10 +418,15 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_json_fence() {
+    fn unbalanced_json_fence_recovers_to_end_of_text() {
         let input = "```json\n{\"name\": \"foo\"}";
+        assert_eq!(extract_json_block(input).unwrap(), "{\"name\": \"foo\"}");
+    }
+
+    #[test]
+    fn unbalanced_json_fence_without_content_errors() {
         assert_eq!(
-            extract_json_block(input),
+            extract_json_block("```json"),
             Err(ExtractError::UnbalancedFence)
         );
     }
