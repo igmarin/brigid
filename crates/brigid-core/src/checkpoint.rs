@@ -277,6 +277,12 @@ pub struct CheckpointV1 {
     /// runs and older checkpoints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_ref: Option<String>,
+    /// The absolute or relative source directory path (`--dir`) captured at
+    /// checkpoint creation, used to detect checkpoint collisions when the
+    /// same `--checkpoint-dir` is reused for a different project. `None` for
+    /// older checkpoints predating this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<String>,
     /// Bookkeeping metadata.
     pub metadata: CheckpointMeta,
 }
@@ -321,6 +327,10 @@ impl CheckpointV1 {
             stage_outputs: None,
             git_commit: None,
             since_ref: None,
+            source_dir: unredacted_config
+                .root
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             metadata: CheckpointMeta {
                 created_at: created.clone(),
                 updated_at: created,
@@ -472,6 +482,7 @@ pub fn current_git_head(repo_root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn sample_config() -> RunConfig {
         RunConfig {
@@ -752,5 +763,64 @@ mod tests {
         let cp = CheckpointV1::new_with_repo(&cfg, cfg.clone(), "rev", "t0", None, None).unwrap();
         assert!(cp.git_commit.is_none());
         assert!(cp.since_ref.is_none());
+    }
+
+    #[test]
+    fn source_dir_captured_from_config_root() {
+        let mut cfg = sample_config();
+        cfg.root = Some(PathBuf::from("/projects/alv"));
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        assert_eq!(cp.source_dir.as_deref(), Some("/projects/alv"));
+    }
+
+    #[test]
+    fn source_dir_none_when_root_unset() {
+        let mut cfg = sample_config();
+        cfg.root = None;
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        assert!(cp.source_dir.is_none());
+    }
+
+    #[test]
+    fn source_dir_round_trips_through_json() {
+        let mut cfg = sample_config();
+        cfg.root = Some(PathBuf::from("./my-project"));
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        let json = cp.to_json().unwrap();
+        let restored = CheckpointV1::from_json(&json).unwrap();
+        assert_eq!(restored.source_dir, cp.source_dir);
+    }
+
+    #[test]
+    fn source_dir_absent_in_old_checkpoints_deserializes_as_none() {
+        // A checkpoint with root=None serializes without the source_dir field
+        // (skip_serializing_if = "Option::is_none"). Deserializing that JSON
+        // must yield source_dir=None (serde default), simulating an old
+        // checkpoint that predates the field.
+        let mut cfg = sample_config();
+        cfg.root = None;
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        assert!(cp.source_dir.is_none());
+        let json = cp.to_json().unwrap();
+        assert!(
+            !json.contains("source_dir"),
+            "source_dir should be absent from JSON when None"
+        );
+        let restored = CheckpointV1::from_json(&json).unwrap();
+        assert!(restored.source_dir.is_none());
+    }
+
+    #[test]
+    fn config_hash_differs_for_different_root_dirs() {
+        let mut cfg_a = sample_config();
+        cfg_a.root = Some(PathBuf::from("./alv"));
+        let mut cfg_b = sample_config();
+        cfg_b.root = Some(PathBuf::from("./rtd-api"));
+        let hash_a = config_hash(&cfg_a).unwrap();
+        let hash_b = config_hash(&cfg_b).unwrap();
+        assert_ne!(
+            hash_a, hash_b,
+            "different --dir values must produce different config hashes"
+        );
     }
 }
