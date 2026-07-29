@@ -68,6 +68,8 @@ pub struct OverviewInput {
     /// When `true`, invented app names cause [`OverviewError::AppValidation`].
     /// When `false`, invented apps are accepted silently (lenient mode).
     pub strict_app_validation: bool,
+    /// Tutorial writing style (selects overview template).
+    pub tutorial_style: brigid_core::config::TutorialStyle,
 }
 
 /// Decide whether to generate an architecture overview.
@@ -111,7 +113,11 @@ pub async fn write_architecture_overview(
         "relationships": relationships_text,
     });
 
-    let prompt = renderer.render(PromptId::WriteArchitectureOverview, &context)?;
+    let overview_prompt = match input.tutorial_style {
+        brigid_core::config::TutorialStyle::Book => PromptId::WriteArchitectureOverview,
+        brigid_core::config::TutorialStyle::BlogPost => PromptId::WriteArchitectureOverviewBlog,
+    };
+    let prompt = renderer.render(overview_prompt, &context)?;
     let response = client.complete(&prompt).await?;
 
     if response.trim().is_empty() {
@@ -364,6 +370,7 @@ mod tests {
             relationships: sample_relationships(),
             lang_note: String::new(),
             strict_app_validation: true,
+            tutorial_style: brigid_core::config::TutorialStyle::Book,
         }
     }
 

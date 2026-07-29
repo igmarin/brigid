@@ -132,6 +132,10 @@ pub struct GenerateConfig {
     /// paths not in the inventory. When `false` (default), invented apps are
     /// reported as a warning but the overview is still generated.
     pub strict_app_validation: bool,
+    /// Tutorial writing style: `book` (long-form) or `blog-post` (short,
+    /// conversational). Controls which prompt templates are used for chapter
+    /// outlines and the architecture overview.
+    pub tutorial_style: brigid_core::config::TutorialStyle,
 }
 
 /// Run the full generate pipeline with cancellation support.
@@ -353,6 +357,7 @@ pub async fn run_generate(
             lang: locale.as_str().to_string(),
             diagram_level: config.diagram_level,
             max_concurrency: config.chapter_concurrency,
+            tutorial_style: config.tutorial_style,
             ..Default::default()
         };
         chapters_and_checkpoint(
@@ -382,6 +387,7 @@ pub async fn run_generate(
         let mut chapters = chapters;
         let allowed_paths: Vec<String> = file_contents.iter().map(|(p, _)| p.clone()).collect();
         let diagram_level = config.diagram_level;
+        let tutorial_style = config.tutorial_style;
         let lang_str = locale.as_str().to_string();
         let review_result = crate::review::review_chapters(
             &mut chapters,
@@ -391,7 +397,7 @@ pub async fn run_generate(
             cancel,
             &lang_str,
             move |ch: &brigid_core::Chapter| {
-                crate::chapters::diagram_quota_for_tier(ch.tier, diagram_level)
+                crate::chapters::diagram_quota_for_tier(ch.tier, diagram_level, tutorial_style)
             },
             &allowed_paths,
             config.chapter_concurrency,
@@ -469,6 +475,7 @@ pub async fn run_generate(
             relationships: relationships.relationships.clone(),
             lang_note: language_instruction.clone(),
             strict_app_validation: config.strict_app_validation,
+            tutorial_style: config.tutorial_style,
         };
         let ov = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
         overview = Some(ov);
@@ -926,6 +933,10 @@ pub async fn run_order_stage(
 /// results from the checkpoint, and calls [`chapters_and_checkpoint`]. Returns
 /// the [`ChapterResult`] and updates the checkpoint in place.
 ///
+/// **Note:** This standalone entry point always uses `TutorialStyle::Book`.
+/// The main `run_generate` function respects the user's `--tutorial-style`
+/// setting. Use `run_generate` for production runs.
+///
 /// # Errors
 ///
 /// Returns [`GenerateError::Config`] if the order stage is not complete.
@@ -955,6 +966,7 @@ pub async fn run_chapters_stage(
         lang: locale.as_str().to_string(),
         diagram_level,
         max_concurrency: chapter_concurrency,
+        tutorial_style: brigid_core::config::TutorialStyle::Book,
         ..Default::default()
     };
     let result = chapters_and_checkpoint(
@@ -1031,6 +1043,10 @@ pub async fn run_setup_stage(
 /// [`overview_and_checkpoint`]. Returns the
 /// [`brigid_core::ArchitectureOverview`] and updates the checkpoint in place.
 ///
+/// **Note:** This standalone entry point always uses `TutorialStyle::Book`.
+/// The main `run_generate` function respects the user's `--tutorial-style`
+/// setting. Use `run_generate` for production runs.
+///
 /// # Errors
 ///
 /// Returns [`GenerateError::Config`] if the relationships stage is not
@@ -1057,6 +1073,7 @@ pub async fn run_overview_stage(
         relationships: relationships.relationships.clone(),
         lang_note: lang_note.to_string(),
         strict_app_validation: true,
+        tutorial_style: brigid_core::config::TutorialStyle::Book,
     };
     let overview = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
     Ok(overview)
@@ -1278,6 +1295,7 @@ mod tests {
             chapter_concurrency: 4,
             review_chapters: false,
             strict_app_validation: false,
+            tutorial_style: brigid_core::config::TutorialStyle::Book,
         }
     }
 
@@ -1789,6 +1807,7 @@ mod tests {
             chapter_concurrency: 4,
             review_chapters: false,
             strict_app_validation: false,
+            tutorial_style: brigid_core::config::TutorialStyle::Book,
         }
     }
 

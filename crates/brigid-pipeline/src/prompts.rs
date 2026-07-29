@@ -55,16 +55,20 @@ pub enum PromptId {
     AnalyzeRelationships,
     /// `order_chapters.md.j2` — pedagogical chapter ordering.
     OrderChapters,
-    /// `chapter_outline.md.j2` — mandatory chapter structure fragment.
+    /// `chapter_outline.md.j2` — mandatory chapter structure fragment (book style).
     ChapterOutline,
+    /// `chapter_outline_blog.md.j2` — blog-post chapter structure fragment.
+    ChapterOutlineBlog,
     /// `write_chapter.md.j2` — generate a single tutorial chapter.
     WriteChapter,
     /// `review_chapter.md.j2` — optional quality pass over a chapter.
     ReviewChapter,
     /// `write_setup_guide.md.j2` — onboarding/setup chapter.
     WriteSetupGuide,
-    /// `write_architecture_overview.md.j2` — chapter-0 architecture overview.
+    /// `write_architecture_overview.md.j2` — chapter-0 architecture overview (book style).
     WriteArchitectureOverview,
+    /// `write_architecture_overview_blog.md.j2` — blog-post architecture overview.
+    WriteArchitectureOverviewBlog,
 }
 
 impl PromptId {
@@ -78,10 +82,12 @@ impl PromptId {
             Self::AnalyzeRelationships => "analyze_relationships.md.j2",
             Self::OrderChapters => "order_chapters.md.j2",
             Self::ChapterOutline => "chapter_outline.md.j2",
+            Self::ChapterOutlineBlog => "chapter_outline_blog.md.j2",
             Self::WriteChapter => "write_chapter.md.j2",
             Self::ReviewChapter => "review_chapter.md.j2",
             Self::WriteSetupGuide => "write_setup_guide.md.j2",
             Self::WriteArchitectureOverview => "write_architecture_overview.md.j2",
+            Self::WriteArchitectureOverviewBlog => "write_architecture_overview_blog.md.j2",
         }
     }
 
@@ -99,17 +105,23 @@ impl PromptId {
             }
             Self::OrderChapters => include_str!("../prompts/order_chapters.md.j2"),
             Self::ChapterOutline => include_str!("../prompts/chapter_outline.md.j2"),
+            Self::ChapterOutlineBlog => {
+                include_str!("../prompts/chapter_outline_blog.md.j2")
+            }
             Self::WriteChapter => include_str!("../prompts/write_chapter.md.j2"),
             Self::ReviewChapter => include_str!("../prompts/review_chapter.md.j2"),
             Self::WriteSetupGuide => include_str!("../prompts/write_setup_guide.md.j2"),
             Self::WriteArchitectureOverview => {
                 include_str!("../prompts/write_architecture_overview.md.j2")
             }
+            Self::WriteArchitectureOverviewBlog => {
+                include_str!("../prompts/write_architecture_overview_blog.md.j2")
+            }
         }
     }
 
     /// Returns an iterator over all known prompt ids, in catalog order.
-    const fn all() -> [PromptId; 10] {
+    const fn all() -> [PromptId; 12] {
         [
             Self::IdentifySingleShot,
             Self::IdentifyMap,
@@ -117,10 +129,12 @@ impl PromptId {
             Self::AnalyzeRelationships,
             Self::OrderChapters,
             Self::ChapterOutline,
+            Self::ChapterOutlineBlog,
             Self::WriteChapter,
             Self::ReviewChapter,
             Self::WriteSetupGuide,
             Self::WriteArchitectureOverview,
+            Self::WriteArchitectureOverviewBlog,
         ]
     }
 }
