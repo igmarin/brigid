@@ -388,6 +388,14 @@ enum Commands {
         /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
         #[arg(long = "review-chapters", default_value_t = false)]
         review_chapters: bool,
+        /// Tutorial writing style: `blog-post` (short, conversational — default)
+        /// or `book` (long-form, multi-section chapters with more diagrams).
+        #[arg(
+            long = "tutorial-style",
+            value_name = "STYLE",
+            default_value = "blog-post"
+        )]
+        tutorial_style: String,
         /// Maximum concurrent chapter writes (overrides config default of 4).
         #[arg(long = "concurrency", value_name = "N")]
         concurrency: Option<usize>,
@@ -988,6 +996,7 @@ fn main() -> ExitCode {
             single_shot,
             each_app,
             review_chapters,
+            tutorial_style,
             concurrency,
             max_llm_calls,
             since: _,
@@ -1047,6 +1056,7 @@ fn main() -> ExitCode {
                 single_shot,
                 each_app,
                 review_chapters,
+                &tutorial_style,
                 concurrency,
                 max_llm_calls,
                 verbosity,
@@ -2251,6 +2261,7 @@ fn cmd_generate(
     single_shot: bool,
     each_app: bool,
     review_chapters: bool,
+    tutorial_style_str: &str,
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
@@ -2263,6 +2274,17 @@ fn cmd_generate(
             eprintln!(
                 "error: generate: invalid diagram level '{diagram_level}' \
                  (expected: minimal, standard, or rich)"
+            );
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+
+    let tutorial_style = match brigid_core::config::TutorialStyle::parse(tutorial_style_str) {
+        Some(ts) => ts,
+        None => {
+            eprintln!(
+                "error: generate: invalid tutorial style '{tutorial_style_str}' \
+                 (expected: book or blog-post)"
             );
             return ExitCode::from(EXIT_CONFIG);
         }
@@ -2281,6 +2303,7 @@ fn cmd_generate(
             max_abstractions,
             single_shot,
             review_chapters,
+            tutorial_style,
             concurrency,
             max_llm_calls,
             verbosity,
@@ -2523,6 +2546,7 @@ fn cmd_generate(
             run_config: run_config.clone(),
             chapter_concurrency,
             review_chapters,
+            tutorial_style,
         };
 
         let outcome = brigid_pipeline::run_generate(
@@ -2689,6 +2713,7 @@ fn cmd_generate_each_app(
     max_abstractions: usize,
     single_shot: bool,
     review_chapters: bool,
+    tutorial_style: brigid_core::config::TutorialStyle,
     concurrency: Option<usize>,
     max_llm_calls: Option<u32>,
     verbosity: Verbosity,
@@ -2803,6 +2828,7 @@ fn cmd_generate_each_app(
         run_config: run_config.clone(),
         chapter_concurrency,
         review_chapters,
+        tutorial_style,
     };
 
     let rt = match tokio::runtime::Builder::new_multi_thread()

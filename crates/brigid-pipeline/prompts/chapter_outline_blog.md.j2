@@ -1,0 +1,29 @@
+## CHAPTER STRUCTURE (blog-post style — keep it short and conversational)
+
+Write the chapter in **{{ lang }}** using these markdown headings (translate heading titles to {{ lang }} if not English, but keep the same order):
+
+1. `# Chapter N: <Name>` (title)
+2. `## What & Why` — the problem and motivation in 2–3 paragraphs; one concrete use case
+3. `## How it works` — the core explanation; include a mermaid diagram only if the minimum requires it
+4. `## Try it` — one minimal, realistic example using REAL file paths from the snippets
+5. `## Wrap-up` — 2–3 sentence recap + link to the next chapter if any
+
+## LENGTH AND TONE
+- Target 500–800 words total (excluding code blocks).
+- Write in a conversational, blog-post tone — second person, contractions OK.
+- Avoid academic formality. Be direct and practical.
+- One idea per paragraph. Short paragraphs.
+
+## DIAGRAM REQUIREMENTS
+- Complexity tier for this abstraction: **{{ tier }}**
+- Diagram richness level: **{{ diagram_level }}**
+- You MUST include at least **{{ need }}** fenced ```mermaid``` block(s) in this chapter.
+- If a diagram is required, prefer a simple flowchart (max 4–5 nodes).
+- Keep diagram labels short. No raw double-quotes inside node text.
+
+## GROUNDING RULES (anti-hallucination)
+- Prefer real paths present in "Relevant Code Snippets" / Key files.
+- Do NOT invent modules, apps, or APIs that are not evidenced in the snippets.
+- If you simplify code for teaching, mark it with a comment like: simplified for teaching.
+- Code blocks should stay under ~10 lines each.
+- Previous chapters context is for continuity only — do not contradict established names.

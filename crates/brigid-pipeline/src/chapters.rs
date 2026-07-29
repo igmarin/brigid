@@ -134,6 +134,8 @@ pub struct ChaptersConfig {
     pub budget: usize,
     /// Per-file character cap before truncation.
     pub max_file_chars: usize,
+    /// Tutorial writing style (selects chapter outline template).
+    pub tutorial_style: brigid_core::config::TutorialStyle,
 }
 
 impl Default for ChaptersConfig {
@@ -146,6 +148,7 @@ impl Default for ChaptersConfig {
             max_concurrency: DEFAULT_CHAPTERS_CONCURRENCY,
             budget: DEFAULT_CHAPTERS_BUDGET,
             max_file_chars: DEFAULT_CHAPTER_MAX_FILE_CHARS,
+            tutorial_style: brigid_core::config::TutorialStyle::BlogPost,
         }
     }
 }
@@ -160,8 +163,12 @@ impl Default for ChaptersConfig {
 /// | M    | 0       | 1        | 2    |
 /// | L    | 1       | 2        | 3    |
 #[must_use]
-pub fn diagram_quota_for_tier(tier: Tier, level: DiagramLevel) -> usize {
-    match (tier, level) {
+pub fn diagram_quota_for_tier(
+    tier: Tier,
+    level: DiagramLevel,
+    style: brigid_core::config::TutorialStyle,
+) -> usize {
+    let book_quota = match (tier, level) {
         (Tier::S, DiagramLevel::Minimal) => 0,
         (Tier::S, DiagramLevel::Standard) => 0,
         (Tier::S, DiagramLevel::Rich) => 1,
@@ -171,6 +178,11 @@ pub fn diagram_quota_for_tier(tier: Tier, level: DiagramLevel) -> usize {
         (Tier::L, DiagramLevel::Minimal) => 1,
         (Tier::L, DiagramLevel::Standard) => 2,
         (Tier::L, DiagramLevel::Rich) => 3,
+    };
+    match style {
+        brigid_core::config::TutorialStyle::Book => book_quota,
+        // Blog-post style halves the quota (min 0) for shorter chapters.
+        brigid_core::config::TutorialStyle::BlogPost => book_quota / 2,
     }
 }
 
@@ -313,9 +325,10 @@ pub async fn write_single_chapter(
     language_instruction: &str,
     lang: &str,
     diagram_level: DiagramLevel,
+    tutorial_style: brigid_core::config::TutorialStyle,
 ) -> Result<Chapter, ChaptersError> {
     let tier = abstraction.tier;
-    let need = diagram_quota_for_tier(tier, diagram_level);
+    let need = diagram_quota_for_tier(tier, diagram_level, tutorial_style);
 
     let outline_ctx = json!({
         "lang": sanitize_template_input(lang),
@@ -323,7 +336,11 @@ pub async fn write_single_chapter(
         "diagram_level": diagram_level.as_str(),
         "need": need,
     });
-    let chapter_outline = renderer.render(PromptId::ChapterOutline, &outline_ctx)?;
+    let outline_prompt = match tutorial_style {
+        brigid_core::config::TutorialStyle::Book => PromptId::ChapterOutline,
+        brigid_core::config::TutorialStyle::BlogPost => PromptId::ChapterOutlineBlog,
+    };
+    let chapter_outline = renderer.render(outline_prompt, &outline_ctx)?;
 
     let apps_line = format_apps_line(&abstraction.apps);
     let entry_list = format_entry_list(&abstraction.entry_files);
@@ -643,6 +660,7 @@ async fn generate_chapters_internal(
                     &config.language_instruction,
                     &config.lang,
                     diagram_level,
+                    config.tutorial_style,
                 )
                 .await?;
 
@@ -685,7 +703,8 @@ async fn generate_chapters_internal(
 
     for chapter in &all_chapters {
         let count = count_mermaid_blocks(&chapter.markdown);
-        let required = diagram_quota_for_tier(chapter.tier, config.diagram_level);
+        let required =
+            diagram_quota_for_tier(chapter.tier, config.diagram_level, config.tutorial_style);
         if count < required {
             eprintln!(
                 "Warning: chapter {} ({}) has {} mermaid blocks, minimum is {}",
@@ -974,6 +993,7 @@ mod tests {
             max_concurrency: 4,
             budget: 80_000,
             max_file_chars: 12_000,
+            tutorial_style: brigid_core::config::TutorialStyle::Book,
         }
     }
 
@@ -1063,16 +1083,70 @@ Done.\n"
     // --- diagram_quota_for_tier ---
 
     #[test]
-    fn quota_all_nine_combinations() {
-        assert_eq!(diagram_quota_for_tier(Tier::S, DiagramLevel::Minimal), 0);
-        assert_eq!(diagram_quota_for_tier(Tier::S, DiagramLevel::Standard), 0);
-        assert_eq!(diagram_quota_for_tier(Tier::S, DiagramLevel::Rich), 1);
-        assert_eq!(diagram_quota_for_tier(Tier::M, DiagramLevel::Minimal), 0);
-        assert_eq!(diagram_quota_for_tier(Tier::M, DiagramLevel::Standard), 1);
-        assert_eq!(diagram_quota_for_tier(Tier::M, DiagramLevel::Rich), 2);
-        assert_eq!(diagram_quota_for_tier(Tier::L, DiagramLevel::Minimal), 1);
-        assert_eq!(diagram_quota_for_tier(Tier::L, DiagramLevel::Standard), 2);
-        assert_eq!(diagram_quota_for_tier(Tier::L, DiagramLevel::Rich), 3);
+    fn quota_all_nine_combinations_book() {
+        use brigid_core::config::TutorialStyle;
+        assert_eq!(
+            diagram_quota_for_tier(Tier::S, DiagramLevel::Minimal, TutorialStyle::Book),
+            0
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::S, DiagramLevel::Standard, TutorialStyle::Book),
+            0
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::S, DiagramLevel::Rich, TutorialStyle::Book),
+            1
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::M, DiagramLevel::Minimal, TutorialStyle::Book),
+            0
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::M, DiagramLevel::Standard, TutorialStyle::Book),
+            1
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::M, DiagramLevel::Rich, TutorialStyle::Book),
+            2
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::L, DiagramLevel::Minimal, TutorialStyle::Book),
+            1
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::L, DiagramLevel::Standard, TutorialStyle::Book),
+            2
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::L, DiagramLevel::Rich, TutorialStyle::Book),
+            3
+        );
+    }
+
+    #[test]
+    fn quota_blog_post_halves() {
+        use brigid_core::config::TutorialStyle;
+        // Blog-post style halves the book quota (integer division, min 0).
+        assert_eq!(
+            diagram_quota_for_tier(Tier::S, DiagramLevel::Rich, TutorialStyle::BlogPost),
+            0 // 1 / 2 = 0
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::M, DiagramLevel::Standard, TutorialStyle::BlogPost),
+            0 // 1 / 2 = 0
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::M, DiagramLevel::Rich, TutorialStyle::BlogPost),
+            1 // 2 / 2 = 1
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::L, DiagramLevel::Standard, TutorialStyle::BlogPost),
+            1 // 2 / 2 = 1
+        );
+        assert_eq!(
+            diagram_quota_for_tier(Tier::L, DiagramLevel::Rich, TutorialStyle::BlogPost),
+            1 // 3 / 2 = 1
+        );
     }
 
     // --- count_mermaid_blocks ---
@@ -1263,6 +1337,7 @@ We learned routing.\n";
             "",
             "English",
             DiagramLevel::Standard,
+            brigid_core::config::TutorialStyle::Book,
         )
         .await
         .expect("happy path should succeed");
@@ -1318,6 +1393,7 @@ We learned routing.\n";
             "",
             "English",
             DiagramLevel::Standard,
+            brigid_core::config::TutorialStyle::Book,
         )
         .await
         .expect_err("empty output should error");
@@ -1344,6 +1420,7 @@ We learned routing.\n";
             "",
             "English",
             DiagramLevel::Standard,
+            brigid_core::config::TutorialStyle::Book,
         )
         .await
         .expect_err("llm failure should propagate");
@@ -1373,6 +1450,7 @@ We learned routing.\n";
             "",
             "English",
             DiagramLevel::Standard,
+            brigid_core::config::TutorialStyle::Book,
         )
         .await
         .expect("should succeed");
@@ -1429,6 +1507,7 @@ We learned routing.\n";
             "",
             "English",
             DiagramLevel::Standard,
+            brigid_core::config::TutorialStyle::Book,
         )
         .await
         .expect("should succeed");
@@ -1600,7 +1679,14 @@ We learned routing.\n";
             .expect("should succeed");
         assert_eq!(result.chapters.len(), 1);
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
-        assert_eq!(diagram_quota_for_tier(Tier::S, DiagramLevel::Standard), 0);
+        assert_eq!(
+            diagram_quota_for_tier(
+                Tier::S,
+                DiagramLevel::Standard,
+                brigid_core::config::TutorialStyle::Book
+            ),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1616,7 +1702,11 @@ We learned routing.\n";
             .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
         assert!(
-            diagram_quota_for_tier(Tier::M, DiagramLevel::Standard) > 0,
+            diagram_quota_for_tier(
+                Tier::M,
+                DiagramLevel::Standard,
+                brigid_core::config::TutorialStyle::Book
+            ) > 0,
             "M standard should require > 0"
         );
     }
@@ -1634,7 +1724,14 @@ We learned routing.\n";
             .await
             .expect("should succeed");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 1);
-        assert_eq!(diagram_quota_for_tier(Tier::L, DiagramLevel::Minimal), 1);
+        assert_eq!(
+            diagram_quota_for_tier(
+                Tier::L,
+                DiagramLevel::Minimal,
+                brigid_core::config::TutorialStyle::Book
+            ),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1650,7 +1747,13 @@ We learned routing.\n";
             .await
             .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
-        assert!(diagram_quota_for_tier(Tier::L, DiagramLevel::Minimal) > 0);
+        assert!(
+            diagram_quota_for_tier(
+                Tier::L,
+                DiagramLevel::Minimal,
+                brigid_core::config::TutorialStyle::Book
+            ) > 0
+        );
     }
 
     // --- previous chapter summary ---

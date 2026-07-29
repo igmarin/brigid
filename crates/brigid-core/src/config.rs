@@ -143,6 +143,45 @@ pub struct RunConfig {
     /// [`crate::plugin::PluginRegistry`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_dirs: Option<Vec<PathBuf>>,
+    /// Tutorial writing style: `book` (long-form, multi-section chapters) or
+    /// `blog-post` (shorter, conversational chapters). Default `blog-post`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tutorial_style: Option<TutorialStyle>,
+}
+
+/// Tutorial writing style.
+///
+/// - `Book`: long-form chapters with 10 sections, 2+ mermaid diagrams, formal tone.
+/// - `BlogPost`: shorter chapters with 5 sections, 0-1 diagrams, conversational tone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TutorialStyle {
+    /// Long-form, book-like chapters with full structure.
+    Book,
+    /// Shorter, blog-post-style chapters.
+    #[default]
+    BlogPost,
+}
+
+impl TutorialStyle {
+    /// Returns the string identifier used in CLI flags and config files.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Book => "book",
+            Self::BlogPost => "blog-post",
+        }
+    }
+
+    /// Parses a style string (case-insensitive). Returns `None` if unrecognized.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "book" => Some(Self::Book),
+            "blog-post" | "blogpost" | "blog" => Some(Self::BlogPost),
+            _ => None,
+        }
+    }
 }
 
 impl Default for RunConfig {
@@ -166,6 +205,7 @@ impl Default for RunConfig {
             allowed_hosts: None,
             since: None,
             plugin_dirs: None,
+            tutorial_style: Some(TutorialStyle::BlogPost),
         }
     }
 }
@@ -193,6 +233,7 @@ impl RunConfig {
             allowed_hosts: None,
             since: None,
             plugin_dirs: None,
+            tutorial_style: None,
         }
     }
 
@@ -227,6 +268,7 @@ impl RunConfig {
                 .plugin_dirs
                 .clone()
                 .or_else(|| self.plugin_dirs.clone()),
+            tutorial_style: overlay.tutorial_style.or(self.tutorial_style),
         }
     }
 

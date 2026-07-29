@@ -137,6 +137,7 @@ fn bench_write_single_chapter(c: &mut Criterion) {
                     black_box("Use English."),
                     black_box("English"),
                     black_box(DiagramLevel::Standard),
+                    black_box(brigid_core::config::TutorialStyle::Book),
                 ));
                 let _ = black_box(result);
             });
