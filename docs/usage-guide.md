@@ -47,17 +47,17 @@ cargo binstall brigid-cli
 
 1. Go to the [Releases page](https://github.com/igmarin/brigid/releases).
 2. Download the archive matching your platform, e.g.
-   `brigid-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+   `brigid-1.1.0-x86_64-unknown-linux-gnu.tar.gz`.
 3. Verify the SHA-256 checksum against the `SHA256SUMS` file in the release.
 4. Extract and move the `brigid` binary to your `PATH`:
 
    ```bash
-   tar xzf brigid-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-   sudo mv brigid-0.1.0-x86_64-unknown-linux-gnu/brigid /usr/local/bin/
+   tar xzf brigid-1.1.0-x86_64-unknown-linux-gnu.tar.gz
+   sudo mv brigid-1.1.0-x86_64-unknown-linux-gnu/brigid /usr/local/bin/
    # Optional: install man page and completions
-   sudo mv brigid-0.1.0-x86_64-unknown-linux-gnu/brigid.1 /usr/local/share/man/man1/
+   sudo mv brigid-1.1.0-x86_64-unknown-linux-gnu/brigid.1 /usr/local/share/man/man1/
    mkdir -p ~/.local/share/bash-completion/completions
-   mv brigid-0.1.0-x86_64-unknown-linux-gnu/completions/brigid.bash \
+   mv brigid-1.1.0-x86_64-unknown-linux-gnu/completions/brigid.bash \
       ~/.local/share/bash-completion/completions/brigid
    ```
 
@@ -182,7 +182,9 @@ brigid generate --dir PATH [options]
 | `--max-llm-calls` | from config | Hard cap on total LLM calls (fail-closed) |
 | `--max-abstractions` | from config | Cap on identified modules |
 | `--single-shot` | off | One-shot identify instead of map/reduce |
-| `--since` | — | Git ref: only crawl files changed since this ref |
+| `--since` | — | Git ref: only crawl files changed since this ref and re-generate only chapters whose abstractions touched those files |
+| `--tutorial-style` | `blog` | Tutorial style: `blog` (shorter, conversational) or `book` (long-form reference) |
+| `--strict-app-validation` | off | Fail on unknown app paths in overview output (by default, unknown apps produce warnings) |
 | `--force-setup` | off | Always generate setup guide |
 | `--no-setup` | off | Skip setup guide |
 | `--no-overview` | off | Skip architecture overview |
@@ -248,8 +250,15 @@ brigid generate --dir tests/fixtures/umbrella \
 brigid generate --dir tests/fixtures/umbrella \
   --output-dir /tmp/tutorial --language es --review-chapters
 
-# Incremental: only re-explain modules changed since a release tag
+# Incremental: only re-explain modules changed since a release tag.
+# Chapters for unchanged abstractions are reused from the checkpoint.
 brigid generate --dir . --since v1.2.0 --output-dir /tmp/tutorial
+
+# Blog-post style (default): shorter, conversational chapters
+brigid generate --dir . --output-dir /tmp/tutorial --tutorial-style blog
+
+# Book style: long-form, comprehensive reference
+brigid generate --dir . --output-dir /tmp/tutorial --tutorial-style book
 
 # Run a single stage for debugging
 brigid relationships --dir tests/fixtures/umbrella \
@@ -275,9 +284,11 @@ and cheap:
   - `--concurrency 4` is safer for **cloud providers** (DeepSeek, OpenAI) to
     stay under rate limits. Raise it only if your provider tier allows it.
 - **Incremental runs (`--since <git-ref>`)** — Only crawl files that changed
-  since a tag, commit, or branch (ADR 0013). This skips the full tree walk
-  and limits LLM work to changed modules — huge for CI and editor
-  integrations on large repos. Requires `git` on `PATH`.
+  since a tag, commit, or branch (ADR 0013), and only re-generate chapters
+  whose abstractions touch those changed files. Chapters for unchanged
+  abstractions are reused from the checkpoint, saving LLM calls. This is
+  huge for CI and editor integrations on large repos. Requires `git` on
+  `PATH`.
 - **Scope with `--apps`** — In monorepos, scope to a single app to cut the
   file corpus and LLM call count dramatically.
 
