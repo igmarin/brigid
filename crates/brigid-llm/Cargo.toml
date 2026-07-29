@@ -17,7 +17,7 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-brigid-core = { path = "../brigid-core", version = "1.0.2" }
+brigid-core = { path = "../brigid-core", version = "1.1.0" }
 sha2 = "0.10"
 hex = "0.4"
 thiserror = "2.0"
