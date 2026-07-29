@@ -315,7 +315,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("brigid-llm-cache-{n}"))
+        let path = std::env::temp_dir().join(format!("brigid-llm-cache-{n}"));
+        // Create the directory eagerly so that `put()`'s `create_dir_all`
+        // has a stable parent to work with. On Windows CI runners, the temp
+        // dir can use 8.3 short names (e.g. `RUNNER~1`) which occasionally
+        // cause `NotFound` errors if the directory doesn't pre-exist before
+        // the async `tokio::fs::write` call. Creating it synchronously here
+        // eliminates that race.
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        path
     }
 
     #[test]
