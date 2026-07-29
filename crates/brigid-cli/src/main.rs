@@ -767,6 +767,9 @@ BRIGID_LLM_BASE_URL
   OpenAI-compatible endpoint URL (default: https://api.deepseek.com/v1).
 BRIGID_LLM_MODEL
   Model identifier sent in requests (default: deepseek-chat).
+BRIGID_LLM_MAX_TOKENS
+  Output token cap sent as max_tokens (default: 8192). Raise if responses
+  are truncated; lower to cut cost.
 BRIGID_LLM_ALLOWED_HOSTS
   Comma-separated extra hosts for the Authorization-header allowlist.
 BRIGID_LLM_CACHE_DIR
