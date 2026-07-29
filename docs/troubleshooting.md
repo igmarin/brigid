@@ -52,8 +52,10 @@ To start fresh, delete the checkpoint directory and re-run.
 - **Rate limits / timeouts (exit 4)** — The client retries with backoff, but
   sustained rate limiting will surface as exit 4. Wait and retry, or switch to
   a provider/model with a higher rate limit.
-- **`BRIGID_FORCE_MOCK`** — Setting this to any non-empty value forces the mock
+- **`BRIGID_FORCE_MOCK`** — Setting this to a truthy value forces the mock
   client even when a real key is present, for offline reproducibility.
+  Falsy values (`0`, `false`, `no`, `off`, empty/whitespace; case-insensitive)
+  do **not** enable mock mode. Unset (the default) is also disabled.
 
 ---
 

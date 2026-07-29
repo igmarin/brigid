@@ -463,9 +463,11 @@ hardening and performance optimizations:
   shared libraries (`.so`/`.dylib`/`.dll`) or WASM modules. The trait and
   registry are designed as a stable ABI boundary for this future work;
   `RunConfig.plugin_dirs` is already parsed and stored.
-- **Incremental tutorial regeneration** — `--since` limits the crawl to
-  changed files today; re-using prior chapter content for unchanged modules
-  during `generate` is a future enhancement.
+- **Incremental chapter regeneration** — `--since` now limits both the crawl
+  and chapter regeneration to changed abstractions. Chapters for unchanged
+  abstractions are reused from the checkpoint, saving LLM calls. The overview
+  and setup-guide stages still re-run fully; reusing prior content for those
+  stages is a future enhancement.
 
 **Exit criteria:** met — git-diff incremental, JSON output for all stages,
 and the plugin trait/registry all landed with ADRs and tests.
