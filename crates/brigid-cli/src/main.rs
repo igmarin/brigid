@@ -2077,10 +2077,14 @@ fn cmd_identify(
         )
     };
 
+    let mut identify_config = cfg.clone();
+    // Write --dir into config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision).
+    identify_config.root = Some(dir.to_path_buf());
     let run_cfg = brigid_pipeline::IdentifyRunConfig {
         strategy,
         reduce_input,
-        unredacted_config: cfg.clone(),
+        unredacted_config: identify_config,
         source_revision: dir.display().to_string(),
         files: records,
     };
@@ -2359,6 +2363,10 @@ fn cmd_generate(
         .join("\n");
 
     let mut run_config = cfg.clone();
+    // Write --dir into run_config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision when
+    // the same --checkpoint-dir is reused for a different project).
+    run_config.root = Some(dir.to_path_buf());
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
@@ -2450,7 +2458,50 @@ fn cmd_generate(
     let store = CheckpointStore::new(checkpoint_dir);
 
     let (mut checkpoint, existing_files) = match store.load() {
-        Ok((meta, files)) => (meta, files),
+        Ok((meta, files)) => {
+            // Checkpoint collision detection (issue #266): if the checkpoint
+            // was created for a different --dir, discard it and start fresh.
+            // Normalize both paths via canonicalize to avoid false positives
+            // from symlinks, "./" segments, etc. Fall back to string
+            // comparison if canonicalize fails (e.g., path doesn't exist yet).
+            let current_dir = dir.to_string_lossy();
+            let current_canonical = std::fs::canonicalize(dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| current_dir.to_string());
+            if let Some(ref cp_dir) = meta.source_dir {
+                let cp_canonical = std::fs::canonicalize(cp_dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| cp_dir.clone());
+                if cp_canonical != current_canonical {
+                    eprintln!(
+                        "warning: generate: checkpoint at {} was created for \
+                         '{cp_dir}' but --dir is '{}' — discarding old \
+                         checkpoint and starting fresh.",
+                        checkpoint_dir.display(),
+                        current_dir,
+                    );
+                    let mut fresh = match brigid_core::CheckpointV1::new(
+                        &run_config,
+                        run_config.redacted_for_checkpoint(),
+                        dir.display().to_string(),
+                        "0Z",
+                    ) {
+                        Ok(cp) => cp,
+                        Err(e) => {
+                            eprintln!("error: generate: checkpoint init: {e}");
+                            return ExitCode::from(EXIT_CONFIG);
+                        }
+                    };
+                    fresh.mark_stage_complete(brigid_core::StageId::Fetch, "0Z");
+                    fresh.mark_stage_complete(brigid_core::StageId::DryRun, "0Z");
+                    (fresh, records)
+                } else {
+                    (meta, files)
+                }
+            } else {
+                (meta, files)
+            }
+        }
         Err(_) => {
             let mut meta = brigid_core::CheckpointV1::new(
                 &run_config,
@@ -2709,6 +2760,10 @@ fn cmd_generate_each_app(
     // `--format json` for `--each-app` is not yet supported; text output only.
     let _ = format;
     let mut run_config = cfg.clone();
+    // Write --dir into run_config.root so config_hash differs between
+    // different source directories (prevents checkpoint collision when
+    // the same --checkpoint-dir is reused for a different project).
+    run_config.root = Some(dir.to_path_buf());
     if run_config.language.is_none() {
         run_config.language = Some(language.to_string());
     }
