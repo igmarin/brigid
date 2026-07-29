@@ -99,11 +99,16 @@ together for monorepos and multi-app systems.
 
 - **Full pipeline** — crawl → identify → relationships → order → chapters →
   setup → overview → combine
+- **Tutorial styles** — `--tutorial-style blog|book` (blog is default: shorter,
+  conversational; book: long-form reference)
 - **JSON output** — `--format json` on every stage for CI and editor plugins
-- **Incremental** — `--since <git-ref>` only re-analyzes changed files
+- **Incremental** — `--since <git-ref>` only re-analyzes changed files and
+  re-generates only chapters whose abstractions touched those files
 - **Monorepo support** — `--each-app` generates one tutorial per app
 - **i18n** — `--language en|es` localizes tutorial chrome
 - **Chapter review** — `--review-chapters` adds a second LLM pass per chapter
+- **Lenient app validation** — unknown apps warn by default;
+  `--strict-app-validation` to fail hard
 - **Checkpoint + resume** — interrupt and resume without losing work
 - **Disk cache** — LLM responses cached by default; re-runs are free
 - **Plugins** — custom kind detectors via `KindDetector` trait (ADR 0014)

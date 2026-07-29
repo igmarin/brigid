@@ -10,6 +10,57 @@ descriptions in [`docs/move-to-rust.md`](docs/move-to-rust.md). Each milestone
 corresponds to a minor release; the workspace `version` field in `Cargo.toml`
 tracks the latest.
 
+## [1.1.0] - 2026-07-29
+
+Minor release with three new features (blog-post tutorial style, lenient
+app validation, incremental chapter regeneration), four bug fixes, and a
+Windows CI flake fix.
+
+### Added
+
+- **Blog-post tutorial style (`--tutorial-style`).** Tutorials can now be
+  generated in two styles: `blog` (new default — shorter, simpler, more
+  conversational) and `book` (the previous long-form style). The flag
+  selects the chapter outline and architecture overview templates. The
+  `TutorialStyle` enum is threaded through `RunConfig`, `GenerateConfig`,
+  `ChaptersConfig`, and `OverviewInput` (#267, #270).
+- **`--strict-app-validation` flag.** When set, the overview stage fails on
+  unknown app paths in LLM output. By default (changed from previous
+  behavior), unknown apps now produce a warning instead of an error,
+  letting generation proceed with the valid apps (#265, #269).
+- **Incremental chapter regeneration.** When `--since` is set, only
+  chapters whose abstractions touch changed files are re-generated.
+  Chapters for unchanged abstractions are reused from the checkpoint,
+  saving LLM calls and time on incremental runs. Uses a `HashSet` for
+  O(1) path lookups with cross-platform normalization (#272).
+
+### Changed
+
+- **Default tutorial style is now `blog`.** Users who want the previous
+  long-form output should pass `--tutorial-style book`. The blog style
+  produces shorter chapters with fewer diagrams, optimized for quick
+  onboarding rather than comprehensive reference.
+- **Overview app validation is lenient by default.** Previously, unknown
+  app paths in the architecture overview caused a hard error. Now they
+  produce a warning and generation continues. Pass `--strict-app-validation`
+  to restore the old behavior.
+
+### Fixed
+
+- **Checkpoint collision when `--dir` differs.** The `source_dir` field is
+  now included in the checkpoint's `config_hash` identity check, preventing
+  silent checkpoint reuse when the same output directory is used for
+  different source directories (#266, #268).
+- **Unclosed LLM code fences.** The YAML/JSON extraction layer now
+  tolerates unclosed ```` ``` ```` fences in LLM output and sends
+  `max_tokens` to prevent truncation (#262, #263).
+- **Relationship endpoint range-checking.** Follow-up tests for PR #259:
+  relationship endpoint tests, mock fallback warning, and `FORCE_MOCK`
+  documentation (#260, #261).
+- **Windows CI flake in cache tests.** `temp_root()` now creates the
+  temp directory synchronously, eliminating a race on Windows CI runners
+  where 8.3 short names caused `NotFound` errors (#271).
+
 ## [1.0.2] - 2026-07-27
 
 Patch release that hardens the CLI's LLM-client selection and the

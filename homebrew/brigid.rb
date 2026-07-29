@@ -22,7 +22,7 @@ class Brigid < Formula
   desc "Deconstruct code monoliths into structured, beginner-friendly tutorials"
   homepage "https://github.com/igmarin/brigid"
   license "MIT"
-  version "1.0.2"
+  version "1.1.0"
 
   url "https://github.com/igmarin/brigid/archive/refs/tags/v#{version}.tar.gz"
   sha256 "REPLACE_WITH_ACTUAL_SHA256_OF_SOURCE_TARBALL"

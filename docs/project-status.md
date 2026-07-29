@@ -27,14 +27,26 @@ Release history with per-change details lives in
   order → chapters → setup → overview → combine, with i18n chrome
   (English + Spanish), `--each-app` monorepo fan-out, and
   `--review-chapters` polishing.
+- **Tutorial styles** — `--tutorial-style blog|book` selects between
+  short, conversational blog-post style (default) and long-form book
+  style. Controls chapter outline and architecture overview templates.
+- **Incremental chapter regeneration** — when `--since` is set, only
+  chapters whose abstractions touch changed files are re-generated;
+  unchanged chapters are reused from the checkpoint, saving LLM calls.
+- **Lenient app validation** — unknown app paths in overview output
+  produce warnings by default; `--strict-app-validation` restores
+  hard-fail behavior.
 - **JSON structured output** — `--format json` on every pipeline stage with
   a versioned `StageOutput<T>` envelope (ADR 0012).
 - **Git-diff incremental** — `--since <git-ref>` limits the crawl to changed
-  files (ADR 0013).
+  files (ADR 0013), and now also limits chapter regeneration to changed
+  abstractions.
 - **Plugin foundation** — `KindDetector` trait + in-process `PluginRegistry`
   for custom abstraction kind detectors (ADR 0014).
 - **Checkpoint + resume** — `checkpoint.json` + `files.ndjson.gz`, file-based
-  stage output storage with SHA-256 verification (ADR 0006).
+  stage output storage with SHA-256 verification (ADR 0006), with
+  `source_dir` included in the config hash to prevent collisions across
+  different source directories.
 - **LLM provider client** — OpenAI-compatible HTTP with retry/backoff/timeout,
   host allowlist, disk cache with LRU eviction, bounded concurrency.
 - **Distribution** — Homebrew and `cargo install` source builds on macOS and
@@ -53,9 +65,10 @@ current roadmap):
 - **Dynamic plugin loading** — the `KindDetector` trait and in-process
   `PluginRegistry` are in place (ADR 0014), but loading plugins from shared
   libraries (`.so`/`.dylib`/`.dll`) or WASM modules is future work.
-- **Incremental tutorial regeneration** — `--since` limits the crawl to
-  changed files today; re-using prior chapter content for unchanged modules
-  during `generate` is a future enhancement.
+- **Incremental overview/setup regeneration** — `--since` now limits both
+  the crawl and chapter regeneration to changed abstractions. The overview
+  and setup-guide stages still re-run fully on each `generate`; reusing
+  prior content for unchanged modules in those stages is a future enhancement.
 - **MCP server** — a proposed `brigid serve` command (ADR 0015) would expose
   the checkpoint's knowledge graph as MCP resources/tools/prompts, letting
   AI assistants (Cursor, Claude, Windsurf) query the codebase knowledge
