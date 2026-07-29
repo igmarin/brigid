@@ -146,10 +146,11 @@ export BRIGID_LLM_ALLOWED_HOSTS="my-proxy.internal,10.0.0.5"
 | `DEEPSEEK_API_KEY` | — | API key (fallback) |
 | `BRIGID_LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
 | `BRIGID_LLM_MODEL` | `deepseek-chat` | Model identifier sent in requests |
+| `BRIGID_LLM_MAX_TOKENS` | `8192` | Output token cap sent as `max_tokens`. Raise if responses are truncated; lower to cut cost |
 | `BRIGID_LLM_ALLOWED_HOSTS` | — | Extra hosts for the Authorization-header allowlist (comma-separated) |
 | `BRIGID_LLM_CACHE_DIR` | platform cache `/brigid/llm-cache` | Disk cache root for LLM responses |
 | `BRIGID_NO_CACHE` | — | Set to `1` / `true` to disable the disk cache |
-| `BRIGID_FORCE_MOCK` | — | Set to any non-empty value to force the mock client (offline) |
+| `BRIGID_FORCE_MOCK` | — | Set to force the mock client (offline). Falsy values (`0`, `false`, `no`, `off`, blank; case-insensitive) do **not** enable mock mode |
 | `BRIGID_SINCE` | — | Default git ref for `--since` (CLI flag overrides) |
 | `BRIGID_PLUGIN_DIRS` | — | Comma-separated plugin directories for custom kind detectors |
 

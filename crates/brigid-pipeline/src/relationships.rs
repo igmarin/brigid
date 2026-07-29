@@ -520,6 +520,18 @@ mod tests {
 
     static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    struct CapturingClient {
+        captured: Arc<Mutex<String>>,
+        response: String,
+    }
+    #[async_trait::async_trait]
+    impl LlmClient for CapturingClient {
+        async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+            *self.captured.lock().unwrap() = prompt.to_string();
+            Ok(self.response.clone())
+        }
+    }
+
     fn temp_dir() -> std::path::PathBuf {
         let n = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -781,6 +793,37 @@ relationships:
     }
 
     #[tokio::test]
+    async fn relationship_from_endpoint_out_of_range_returns_error() {
+        let yaml = "\
+```yaml
+summary: |-
+  A project with an invalid relationship source.
+relationships:
+  - from_abstraction: 3
+    to_abstraction: 0
+    label: \"Missing source\"
+    kind: calls
+```
+";
+        let client = MockClient::new(yaml.to_string());
+        let renderer = PromptRenderer::new().unwrap();
+        let identify = IdentifyResult::new(three_abstractions_two_apps());
+        let file_contents = file_contents_for(&identify.abstractions);
+        let config = sample_config();
+        let err =
+            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
+                .await
+                .expect_err("out-of-range from_abstraction endpoint should error");
+        assert!(
+            matches!(
+                err,
+                RelationshipsError::EndpointOutOfRange { index: 3, total: 3 }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn malformed_yaml_returns_typed_parse_error() {
         let yaml = "```yaml\nsummary: : :\nrelationships: - bad\n```\n";
         let client = MockClient::new(yaml.to_string());
@@ -845,17 +888,6 @@ relationships:
     kind: calls
 ";
         let response = format!("Here is the analysis:\n\n```yaml\n{single_abstraction_yaml}```\n");
-        struct CapturingClient {
-            captured: Arc<Mutex<String>>,
-            response: String,
-        }
-        #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(self.response.clone())
-            }
-        }
         let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let client = CapturingClient {
             captured: captured.clone(),
@@ -888,6 +920,54 @@ relationships:
             prompt.contains("DB_KEY=****"),
             "secret not redacted in prompt: {prompt}"
         );
+    }
+
+    #[tokio::test]
+    async fn secrets_redacted_with_multiple_valid_relationships() {
+        // Three abstractions with secrets in each entry file. The canned
+        // response has three relationships referencing indices 0, 1, 2 —
+        // all valid here — so redaction and multi-relationship parsing are
+        // exercised together.
+        let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let client = CapturingClient {
+            captured: captured.clone(),
+            response: canned_three_relationships(),
+        };
+        let renderer = PromptRenderer::new().unwrap();
+        let identify = IdentifyResult::new(three_abstractions_two_apps());
+        let file_contents = vec![
+            (
+                "apps/web/router.rs".to_string(),
+                "ROUTER_KEY=router-secret\nfn route() {}".to_string(),
+            ),
+            (
+                "apps/web/store.rs".to_string(),
+                "STORE_KEY=store-secret\nfn persist() {}".to_string(),
+            ),
+            (
+                "apps/api/worker.rs".to_string(),
+                "WORKER_KEY=worker-secret\nfn work() {}".to_string(),
+            ),
+        ];
+        let config = sample_config();
+        let result =
+            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
+                .await
+                .expect("multiple valid relationships should succeed");
+        assert_eq!(result.relationships.len(), 3, "got: {result:?}");
+        let prompt = captured.lock().unwrap().clone();
+        for secret in ["router-secret", "store-secret", "worker-secret"] {
+            assert!(
+                !prompt.contains(secret),
+                "secret leaked into prompt: {prompt}"
+            );
+        }
+        for redacted in ["ROUTER_KEY=****", "STORE_KEY=****", "WORKER_KEY=****"] {
+            assert!(
+                prompt.contains(redacted),
+                "secret not redacted in prompt: {prompt}"
+            );
+        }
     }
 
     #[tokio::test]

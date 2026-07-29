@@ -60,7 +60,18 @@ pub struct OpenAiClientConfig {
     /// known providers plus loopback for testing. Extend with
     /// [`OpenAiClientConfig::with_allowed_host`].
     pub allowed_hosts: Vec<String>,
+    /// Output token cap sent as `max_tokens` in the request body. Without an
+    /// explicit cap, providers default to small limits (e.g. DeepSeek ~4096)
+    /// and long structured responses are truncated mid-block.
+    pub max_tokens: u32,
 }
+
+/// Default output token cap. DeepSeek's default (4096) truncates long
+/// structured identify/relationships responses; 8192 is the documented
+/// output maximum for `deepseek-chat` and is accepted by OpenAI-compatible
+/// providers (they clamp or error per model). Override with
+/// `BRIGID_LLM_MAX_TOKENS`.
+const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 /// Built-in host allowlist: known LLM providers plus loopback for tests.
 const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
@@ -91,6 +102,7 @@ impl OpenAiClientConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 
@@ -103,7 +115,10 @@ impl OpenAiClientConfig {
     /// convention used in `brigid-core` config resolution.
     ///
     /// Optionally reads `BRIGID_LLM_ALLOWED_HOSTS` (comma-separated) to
-    /// extend the host allowlist beyond the built-in providers.
+    /// extend the host allowlist beyond the built-in providers, and
+    /// `BRIGID_LLM_MAX_TOKENS` (positive integer) to override the output
+    /// token cap (default 8192). An invalid `BRIGID_LLM_MAX_TOKENS` value
+    /// returns an error.
     ///
     /// # Errors
     ///
@@ -143,6 +158,14 @@ impl OpenAiClientConfig {
                 }
             }
         }
+        let max_tokens = match nonblank_env("BRIGID_LLM_MAX_TOKENS") {
+            Some(raw) => raw.parse::<u32>().map_err(|_| {
+                LlmError::network(format!(
+                    "invalid BRIGID_LLM_MAX_TOKENS value {raw:?}: expected a positive integer"
+                ))
+            })?,
+            None => DEFAULT_MAX_TOKENS,
+        };
         Ok(Self {
             base_url,
             api_key,
@@ -152,6 +175,7 @@ impl OpenAiClientConfig {
             initial_backoff: Duration::from_secs(1),
             provider_name,
             allowed_hosts,
+            max_tokens,
         })
     }
 
@@ -166,6 +190,13 @@ impl OpenAiClientConfig {
     #[must_use]
     pub fn with_max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
+        self
+    }
+
+    /// Set the output token cap sent as `max_tokens` in the request body.
+    #[must_use]
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = n;
         self
     }
 
@@ -292,6 +323,7 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
     stream: bool,
+    max_tokens: u32,
 }
 
 /// A single chat message.
@@ -328,12 +360,15 @@ fn classify_status(status: reqwest::StatusCode) -> bool {
 #[async_trait]
 impl LlmClient for OpenAiCompatibleClient {
     async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        // a. Build cache key.
+        // a. Build cache key. max_tokens is part of the key: a response
+        // cached under a smaller output cap (possibly truncated) must not be
+        // served to callers with a larger cap.
+        let cache_extras = format!("mt={}", self.config.max_tokens);
         let cache_input = CacheKeyInput {
             prompt,
             model: &self.config.model,
             provider: &self.config.provider_name,
-            extras: None,
+            extras: Some(&cache_extras),
         };
         // b. Cache hit short-circuits.
         if let Some(cache) = &self.cache {
@@ -353,6 +388,7 @@ impl LlmClient for OpenAiCompatibleClient {
                 content: prompt,
             }],
             stream: false,
+            max_tokens: self.config.max_tokens,
         };
 
         let mut last_error: Option<LlmError> = None;
@@ -563,7 +599,8 @@ mod tests {
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "model": "deepseek-chat",
                 "messages": [{"role":"user","content":"hi there"}],
-                "stream": false
+                "stream": false,
+                "max_tokens": 8192
             })))
             .respond_with(ok_response("ok"))
             .mount(&server)
@@ -750,7 +787,7 @@ mod tests {
             prompt: "cached prompt",
             model: "deepseek-chat",
             provider: "deepseek",
-            extras: None,
+            extras: Some("mt=8192"),
         };
         cache.put_for(&input, "cached response").await.unwrap();
 
@@ -797,12 +834,46 @@ mod tests {
             prompt: "store me",
             model: "deepseek-chat",
             provider: "deepseek",
-            extras: None,
+            extras: Some("mt=8192"),
         };
         assert_eq!(
             cache.get_for(&input).await.unwrap().as_deref(),
             Some("fresh response")
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn max_tokens_change_busts_cache() {
+        // A response cached under one max_tokens cap must not be served to a
+        // client configured with a different cap — a truncated response
+        // cached before a cap increase would otherwise poison retries.
+        let root = temp_root();
+        let cache = DiskCache::new(&root);
+        let poisoned = CacheKeyInput {
+            prompt: "same prompt",
+            model: "deepseek-chat",
+            provider: "deepseek",
+            extras: Some("mt=4096"),
+        };
+        cache.put_for(&poisoned, "truncated").await.unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ok_response("full response"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = OpenAiClientConfig::new(server.uri(), "sk-test-key-1234", "deepseek-chat")
+            .with_provider_name("deepseek")
+            .with_max_tokens(8192);
+        let client = OpenAiCompatibleClient::new(config)
+            .unwrap()
+            .with_cache(cache);
+        let out = client.complete("same prompt").await.unwrap();
+        assert_eq!(out, "full response");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -833,6 +904,7 @@ mod tests {
             env::remove_var("DEEPSEEK_API_KEY");
             env::remove_var("BRIGID_LLM_BASE_URL");
             env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_LLM_MAX_TOKENS");
         }
         let cfg = OpenAiClientConfig::from_env().unwrap();
         assert_eq!(cfg.api_key, "sk-env-test");
@@ -841,8 +913,57 @@ mod tests {
         assert_eq!(cfg.provider_name, "deepseek");
         assert_eq!(cfg.timeout, Duration::from_secs(120));
         assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.max_tokens, 8192);
         unsafe {
             env::remove_var("BRIGID_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_max_tokens_override() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-env-test");
+            env::set_var("BRIGID_LLM_MAX_TOKENS", "16384");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.max_tokens, 16384);
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_MAX_TOKENS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_max_tokens_invalid_errors() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-env-test");
+            env::set_var("BRIGID_LLM_MAX_TOKENS", "not-a-number");
+        }
+        let err = OpenAiClientConfig::from_env().unwrap_err();
+        assert!(
+            matches!(err, LlmError::Network { .. }),
+            "expected Network error for invalid max_tokens, got: {err:?}"
+        );
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_MAX_TOKENS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_max_tokens_blank_uses_default() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-env-test");
+            env::set_var("BRIGID_LLM_MAX_TOKENS", "   ");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.max_tokens, 8192);
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_MAX_TOKENS");
         }
     }
 
