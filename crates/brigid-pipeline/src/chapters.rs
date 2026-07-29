@@ -136,6 +136,12 @@ pub struct ChaptersConfig {
     pub max_file_chars: usize,
     /// Tutorial writing style (selects chapter outline template).
     pub tutorial_style: brigid_core::config::TutorialStyle,
+    /// Files that changed since the `--since` ref (for incremental regen).
+    /// When non-empty, existing chapters whose abstraction's `entry_files`
+    /// are all outside this set are reused without re-generation.
+    /// When empty, all existing chapters are treated as needing regeneration
+    /// (unless already complete in the checkpoint).
+    pub changed_files: Vec<String>,
 }
 
 impl Default for ChaptersConfig {
@@ -149,6 +155,7 @@ impl Default for ChaptersConfig {
             budget: DEFAULT_CHAPTERS_BUDGET,
             max_file_chars: DEFAULT_CHAPTER_MAX_FILE_CHARS,
             tutorial_style: brigid_core::config::TutorialStyle::BlogPost,
+            changed_files: Vec::new(),
         }
     }
 }
@@ -459,7 +466,13 @@ pub async fn chapters_and_checkpoint(
     config: &ChaptersConfig,
     progress: Option<&mut ProgressTracker>,
 ) -> Result<ChapterResult, ChaptersError> {
-    if store.is_stage_complete_with_files(checkpoint, StageId::Chapters)? {
+    // When the stage is already complete and there are no changed files,
+    // return the existing chapters without re-generation.
+    // When changed_files is non-empty (incremental regen via --since), we
+    // proceed to re-generate only chapters whose abstractions touched
+    // changed files, even if the stage was previously complete.
+    let stage_complete = store.is_stage_complete_with_files(checkpoint, StageId::Chapters)?;
+    if stage_complete && config.changed_files.is_empty() {
         return store
             .read_chapters(&store.dir, checkpoint)
             .map_err(ChaptersError::from);
@@ -513,8 +526,10 @@ struct ChapterMeta {
 /// [`chapters_and_checkpoint`].
 ///
 /// When `existing` is `Some`, chapters already present are skipped (only
-/// missing ones are generated). Budget is reserved only for the chapters that
-/// need generation.
+/// missing ones are generated). When `config.changed_files` is non-empty,
+/// existing chapters whose abstraction's `entry_files` are all outside the
+/// changed set are also skipped (incremental regen). Budget is reserved only
+/// for the chapters that need generation.
 #[allow(clippy::too_many_arguments)]
 async fn generate_chapters_internal(
     client: &dyn LlmClient,
@@ -563,9 +578,72 @@ async fn generate_chapters_internal(
         })
         .collect();
 
+    // Pre-normalize changed_files into a HashSet for O(1) lookups.
+    // Normalizes backslashes to forward slashes; on Windows, lowercases
+    // for case-insensitive matching (NTFS is case-insensitive).
+    let changed_set: std::collections::HashSet<String> = config
+        .changed_files
+        .iter()
+        .map(|f| {
+            let nf = f.replace('\\', "/");
+            #[cfg(windows)]
+            {
+                nf.to_ascii_lowercase()
+            }
+            #[cfg(not(windows))]
+            {
+                nf
+            }
+        })
+        .collect();
+
     let positions_to_generate: Vec<usize> = match existing {
         Some(map) => (0..metas.len())
-            .filter(|&pos| !map.contains_key(&(pos + 1)))
+            .filter(|&pos| {
+                let chapter_num = pos + 1;
+                let existing_chapter = map.get(&chapter_num);
+                // Skip if the chapter doesn't exist yet.
+                let Some(_) = existing_chapter else {
+                    return true;
+                };
+                // Chapter exists. If no changed_files set is provided,
+                // reuse it (standard resume behavior).
+                if changed_set.is_empty() {
+                    return false;
+                }
+                // Incremental regen: generate only if the abstraction
+                // touched changed files.
+                let abs = &abstractions[metas[pos].abs_idx];
+                let touched = abs.entry_files.iter().any(|f| {
+                    let nf = f.replace('\\', "/");
+                    #[cfg(windows)]
+                    {
+                        changed_set.contains(&nf.to_ascii_lowercase())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        changed_set.contains(&nf)
+                    }
+                });
+                // Also check file_indices-backed paths from file_contents.
+                let touched_by_idx = abs.file_indices.iter().any(|&idx| {
+                    file_contents
+                        .get(idx)
+                        .map(|(p, _)| {
+                            let np = p.replace('\\', "/");
+                            #[cfg(windows)]
+                            {
+                                changed_set.contains(&np.to_ascii_lowercase())
+                            }
+                            #[cfg(not(windows))]
+                            {
+                                changed_set.contains(&np)
+                            }
+                        })
+                        .unwrap_or(false)
+                });
+                touched || touched_by_idx
+            })
             .collect(),
         None => (0..metas.len()).collect(),
     };
@@ -694,10 +772,16 @@ async fn generate_chapters_internal(
         generated.push(result?);
     }
 
-    // Merge generated chapters with pre-existing ones (from checkpoint resume).
+    // Merge generated chapters with pre-existing ones (from checkpoint
+    // resume or incremental regen). Generated chapters replace existing
+    // ones with the same chapter_num (incremental regen case).
     let mut all_chapters: Vec<Chapter> = existing
         .map(|m| m.values().cloned().collect())
         .unwrap_or_default();
+    // Remove chapters that are being replaced by newly generated ones.
+    let generated_nums: std::collections::HashSet<usize> =
+        generated.iter().map(|c| c.chapter_num).collect();
+    all_chapters.retain(|c| !generated_nums.contains(&c.chapter_num));
     all_chapters.extend(generated);
     all_chapters.sort_by_key(|c| c.chapter_num);
 
@@ -994,6 +1078,7 @@ mod tests {
             budget: 80_000,
             max_file_chars: 12_000,
             tutorial_style: brigid_core::config::TutorialStyle::Book,
+            changed_files: Vec::new(),
         }
     }
 
@@ -2108,6 +2193,93 @@ We learned routing.\n";
         assert_eq!(client.call_count(), 1, "only chapter 3 should be generated");
         assert_eq!(result.chapters[0].title, "Chapter 1: Router");
         assert_eq!(result.chapters[1].title, "Chapter 2: Store");
+        assert_eq!(result.chapters[2].title, "Chapter 3: Worker");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Incremental regen: when `changed_files` is set, only chapters whose
+    /// abstractions touch changed files are re-generated. Chapters for
+    /// unchanged abstractions are reused from the checkpoint.
+    #[tokio::test]
+    async fn incremental_regen_skips_unchanged_abstractions() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let mut cp = seed_store(&store);
+
+        // Seed existing chapters for all three abstractions.
+        let existing_chapters = ChapterResult::new(vec![
+            Chapter {
+                abstraction_index: 0,
+                chapter_num: 1,
+                title: "Chapter 1: Router".into(),
+                markdown: canned_chapter("Router", 1),
+                tier: Tier::M,
+                kind: AbstractionKind::new("module"),
+                apps: vec!["web".into()],
+                entry_files: vec!["src/router.rs".into()],
+                evidence_footer: "tier=M | kind=module".into(),
+            },
+            Chapter {
+                abstraction_index: 1,
+                chapter_num: 2,
+                title: "Chapter 2: Store".into(),
+                markdown: canned_chapter("Store", 2),
+                tier: Tier::S,
+                kind: AbstractionKind::new("module"),
+                apps: vec!["web".into()],
+                entry_files: vec!["src/store.rs".into()],
+                evidence_footer: "tier=S | kind=module".into(),
+            },
+            Chapter {
+                abstraction_index: 2,
+                chapter_num: 3,
+                title: "Chapter 3: Worker".into(),
+                markdown: canned_chapter("Worker", 3),
+                tier: Tier::L,
+                kind: AbstractionKind::new("module"),
+                apps: vec!["api".into()],
+                entry_files: vec!["src/worker.rs".into()],
+                evidence_footer: "tier=L | kind=module".into(),
+            },
+        ]);
+        let entries = store.write_chapters(&dir, &existing_chapters).unwrap();
+        store
+            .record_stage_outputs(&mut cp, StageId::Chapters, entries)
+            .unwrap();
+
+        // Only src/store.rs changed since the ref.
+        let responses = vec![canned_chapter("Store", 2)];
+        let client = MockClient::with_responses(responses).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let identify = IdentifyResult::new(three_abstractions());
+        let order = ChapterOrder::new(vec![0, 1, 2]);
+        let files = file_contents_for();
+        let mut config = sample_config();
+        config.changed_files = vec!["src/store.rs".to_string()];
+        let mut progress = ProgressTracker::new(10);
+        let result = chapters_and_checkpoint(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &identify,
+            &order,
+            &files,
+            &config,
+            Some(&mut progress),
+        )
+        .await
+        .expect("incremental regen should succeed");
+
+        assert_eq!(result.chapters.len(), 3);
+        // Only chapter 2 (Store) should be re-generated.
+        assert_eq!(
+            client.call_count(),
+            1,
+            "only the changed abstraction's chapter should be generated"
+        );
+        // Chapters 1 and 3 should be reused from the checkpoint.
+        assert_eq!(result.chapters[0].title, "Chapter 1: Router");
         assert_eq!(result.chapters[2].title, "Chapter 3: Worker");
         let _ = std::fs::remove_dir_all(&dir);
     }

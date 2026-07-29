@@ -213,6 +213,10 @@ pub async fn run_generate(
     let mut files = files;
     let mut sizes = sizes;
 
+    // Changed files for incremental chapter regen: when --since is set, only
+    // chapters whose abstractions touch changed files need re-generation.
+    let mut changed_files_for_chapters: Vec<String> = Vec::new();
+
     if let Some(existing) = incremental_existing {
         if cancel.is_cancelled() {
             return Ok(GenerateOutcome::Cancelled {
@@ -233,6 +237,7 @@ pub async fn run_generate(
             .into_iter()
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
+        changed_files_for_chapters = changed_strs.clone();
         let deleted_strs: Vec<String> = deleted
             .into_iter()
             .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -358,6 +363,7 @@ pub async fn run_generate(
             diagram_level: config.diagram_level,
             max_concurrency: config.chapter_concurrency,
             tutorial_style: config.tutorial_style,
+            changed_files: std::mem::take(&mut changed_files_for_chapters),
             ..Default::default()
         };
         chapters_and_checkpoint(
