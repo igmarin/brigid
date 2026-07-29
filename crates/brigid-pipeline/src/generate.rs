@@ -128,6 +128,10 @@ pub struct GenerateConfig {
     pub chapter_concurrency: usize,
     /// Run a second LLM pass to polish each chapter (doubles chapter LLM cost).
     pub review_chapters: bool,
+    /// When `true`, the overview stage fails hard if the LLM mentions app
+    /// paths not in the inventory. When `false` (default), invented apps are
+    /// reported as a warning but the overview is still generated.
+    pub strict_app_validation: bool,
 }
 
 /// Run the full generate pipeline with cancellation support.
@@ -464,7 +468,7 @@ pub async fn run_generate(
             abstractions: identify.abstractions.clone(),
             relationships: relationships.relationships.clone(),
             lang_note: language_instruction.clone(),
-            strict_app_validation: true,
+            strict_app_validation: config.strict_app_validation,
         };
         let ov = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
         overview = Some(ov);
@@ -1273,6 +1277,7 @@ mod tests {
             run_config: RunConfig::default(),
             chapter_concurrency: 4,
             review_chapters: false,
+            strict_app_validation: false,
         }
     }
 
@@ -1783,6 +1788,7 @@ mod tests {
             run_config: RunConfig::default(),
             chapter_concurrency: 4,
             review_chapters: false,
+            strict_app_validation: false,
         }
     }
 

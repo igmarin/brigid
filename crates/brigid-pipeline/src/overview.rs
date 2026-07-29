@@ -82,6 +82,11 @@ pub fn should_generate_overview(modules: &[ModuleKey]) -> bool {
 /// Run the overview stage: render the prompt, call the LLM, sanitize Mermaid,
 /// validate app names, and return an [`ArchitectureOverview`].
 ///
+/// Returns `(overview, invented_apps)`. When `strict_app_validation` is `true`
+/// and `invented_apps` is non-empty, returns [`OverviewError::AppValidation`]
+/// instead. When `strict_app_validation` is `false` (the default), the caller
+/// should warn about `invented_apps` but the overview is returned successfully.
+///
 /// # Errors
 ///
 /// Returns [`OverviewError`] for prompt render failures, LLM call failures,
@@ -91,7 +96,7 @@ pub async fn write_architecture_overview(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &OverviewInput,
-) -> Result<ArchitectureOverview, OverviewError> {
+) -> Result<(ArchitectureOverview, Vec<String>), OverviewError> {
     let summary = redact_content(&input.summary);
     let inventory_text = redact_content(&format_inventory(&input.inventory));
     let abstractions_text = redact_content(&format_abstractions(&input.abstractions));
@@ -115,11 +120,11 @@ pub async fn write_architecture_overview(
 
     let sanitized = sanitize_markdown_mermaid_blocks(&response);
 
-    if input.strict_app_validation {
-        let invented = validate_app_names(&sanitized, &input.inventory);
-        if !invented.is_empty() {
-            return Err(OverviewError::AppValidation { invented });
-        }
+    let invented = validate_app_names(&sanitized, &input.inventory);
+    if input.strict_app_validation && !invented.is_empty() {
+        return Err(OverviewError::AppValidation {
+            invented: invented.clone(),
+        });
     }
 
     let app_inventory: Vec<String> = input
@@ -127,7 +132,10 @@ pub async fn write_architecture_overview(
         .iter()
         .map(|k| k.as_str().to_owned())
         .collect();
-    Ok(ArchitectureOverview::new(sanitized, app_inventory))
+    Ok((
+        ArchitectureOverview::new(sanitized, app_inventory),
+        invented,
+    ))
 }
 
 /// Run the overview stage with checkpoint integration.
@@ -159,7 +167,16 @@ pub async fn overview_and_checkpoint(
         }
     }
 
-    let overview = write_architecture_overview(client, renderer, input).await?;
+    let (overview, invented) = write_architecture_overview(client, renderer, input).await?;
+
+    // Warn (but don't fail) when the LLM invented app names not in the
+    // inventory and strict_app_validation is false.
+    if !invented.is_empty() {
+        eprintln!(
+            "Warning: overview: LLM mentioned app paths not in inventory: {:?}",
+            invented
+        );
+    }
 
     let entry = store.write_architecture_overview(&store.dir, &overview)?;
     store.record_stage_outputs(checkpoint, StageId::Overview, vec![entry])?;
@@ -423,13 +440,14 @@ flowchart LR
         let client = MockClient::new(canned_overview_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let result = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
             .await
             .expect("happy path should succeed");
         assert!(!result.markdown.is_empty());
         assert!(result.markdown.contains("# Architecture overview"));
         assert!(result.markdown.contains("apps/api"));
         assert_eq!(result.app_inventory.len(), 3);
+        assert!(invented.is_empty(), "no invented apps in happy path");
         assert_eq!(client.call_count(), 1);
     }
 
@@ -438,7 +456,7 @@ flowchart LR
         let client: Box<dyn LlmClient> = Box::new(MockClient::new(canned_overview_markdown()));
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let result = write_architecture_overview(&*client, &renderer, &input)
+        let (result, _) = write_architecture_overview(&*client, &renderer, &input)
             .await
             .expect("dyn client should work");
         assert!(!result.markdown.is_empty());
@@ -451,10 +469,11 @@ flowchart LR
         let client = MockClient::new(canned_overview_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let result = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
             .await
             .expect("known apps should pass validation");
         assert!(result.markdown.contains("apps/api"));
+        assert!(invented.is_empty(), "no invented apps when all are known");
     }
 
     #[tokio::test]
@@ -479,10 +498,14 @@ flowchart LR
         let renderer = PromptRenderer::new().unwrap();
         let mut input = sample_input(three_app_inventory());
         input.strict_app_validation = false;
-        let result = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
             .await
             .expect("lenient mode should not error on invented apps");
         assert!(result.markdown.contains("apps/fake"));
+        assert!(
+            invented.contains(&"apps/fake".to_string()),
+            "invented apps should be returned in lenient mode: {invented:?}"
+        );
     }
 
     // --- mermaid sanitization ---
@@ -500,7 +523,7 @@ flowchart LR
         let client = MockClient::new(raw.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let result = write_architecture_overview(&client, &renderer, &input)
+        let (result, _) = write_architecture_overview(&client, &renderer, &input)
             .await
             .expect("should succeed");
         let mermaid_block = result
