@@ -2450,9 +2450,18 @@ fn cmd_generate(
         Ok((meta, files)) => {
             // Checkpoint collision detection (issue #266): if the checkpoint
             // was created for a different --dir, discard it and start fresh.
+            // Normalize both paths via canonicalize to avoid false positives
+            // from symlinks, "./" segments, etc. Fall back to string
+            // comparison if canonicalize fails (e.g., path doesn't exist yet).
             let current_dir = dir.to_string_lossy();
+            let current_canonical = std::fs::canonicalize(dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| current_dir.to_string());
             if let Some(ref cp_dir) = meta.source_dir {
-                if cp_dir != current_dir.as_ref() {
+                let cp_canonical = std::fs::canonicalize(cp_dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| cp_dir.clone());
+                if cp_canonical != current_canonical {
                     eprintln!(
                         "warning: generate: checkpoint at {} was created for \
                          '{cp_dir}' but --dir is '{}' — discarding old \
@@ -2460,17 +2469,18 @@ fn cmd_generate(
                         checkpoint_dir.display(),
                         current_dir,
                     );
-                    let mut fresh = brigid_core::CheckpointV1::new(
+                    let mut fresh = match brigid_core::CheckpointV1::new(
                         &run_config,
                         run_config.redacted_for_checkpoint(),
                         dir.display().to_string(),
                         "0Z",
-                    )
-                    .map_err(|e| {
-                        eprintln!("error: generate: checkpoint init: {e}");
-                        ExitCode::from(EXIT_CONFIG)
-                    })
-                    .unwrap();
+                    ) {
+                        Ok(cp) => cp,
+                        Err(e) => {
+                            eprintln!("error: generate: checkpoint init: {e}");
+                            return ExitCode::from(EXIT_CONFIG);
+                        }
+                    };
                     fresh.mark_stage_complete(brigid_core::StageId::Fetch, "0Z");
                     fresh.mark_stage_complete(brigid_core::StageId::DryRun, "0Z");
                     (fresh, records)
