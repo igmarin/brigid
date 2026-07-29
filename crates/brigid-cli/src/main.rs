@@ -214,6 +214,16 @@ fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
 /// responses.  This is a developer-only fault-injection hook and is compiled out
 /// of release builds.
 fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
+    mock_client_with_diag(responses, &mut std::io::stderr())
+}
+
+/// Like [`mock_client`] but writes the fallback warning to `diag` instead of
+/// stderr, so tests can assert the diagnostic without capturing the process
+/// stderr.
+fn mock_client_with_diag(
+    responses: Vec<String>,
+    diag: &mut dyn std::io::Write,
+) -> Box<dyn brigid_llm::LlmClient> {
     let fallback = PLACEHOLDER_IDENTIFY_YAML;
     #[cfg(debug_assertions)]
     {
@@ -227,7 +237,8 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
     }
     Box::new(
         brigid_llm::MockClient::with_responses(responses).unwrap_or_else(|error| {
-            eprintln!(
+            let _ = writeln!(
+                diag,
                 "warning: mock client: falling back to default placeholder response: {error}"
             );
             brigid_llm::MockClient::new(fallback)
@@ -4359,13 +4370,25 @@ mod tests {
         // must fall back to a single placeholder response (with a stderr
         // warning) instead of panicking. The fallback is defensive: all
         // current call sites assemble non-empty sequences, so it cannot be
-        // exercised through the CLI binary itself.
-        let client = mock_client(Vec::new());
+        // exercised through the CLI binary itself. The diagnostic writer is
+        // injected so the warning text can be asserted without capturing the
+        // process stderr.
+        let mut diag = Vec::new();
+        let client = mock_client_with_diag(Vec::new(), &mut diag);
         let response = client
             .complete("anything")
             .await
             .expect("fallback client should respond");
         assert_eq!(response, PLACEHOLDER_IDENTIFY_YAML);
+        let diag = String::from_utf8(diag).expect("diag should be valid utf-8");
+        assert!(
+            diag.contains("warning: mock client: falling back to default placeholder response"),
+            "expected fallback warning in diag, got: {diag:?}"
+        );
+        assert!(
+            diag.contains("MockClient::with_responses requires at least one response"),
+            "expected underlying construction error in diag, got: {diag:?}"
+        );
     }
 
     #[tokio::test]
