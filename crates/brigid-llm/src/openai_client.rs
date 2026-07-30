@@ -107,9 +107,9 @@ impl ProviderPreset {
                     "deepseek" => Self::Deepseek,
                     "openai" => Self::Openai,
                     "openrouter" => Self::Openrouter,
-                    "custom" => Self::Custom {
-                        name: String::new(),
-                    },
+                    // Keep the name "custom" non-empty so from_env_with does
+                    // not treat an explicit provider = "custom" as "unset" and
+                    // overwrite it via the base-URL heuristic.
                     other => Self::Custom {
                         name: other.to_string(),
                     },
@@ -133,7 +133,14 @@ impl ProviderPreset {
     /// Whether this preset requires an explicit model (no safe default).
     #[must_use]
     pub fn requires_explicit_model(&self) -> bool {
-        matches!(self, Self::Openai | Self::Openrouter)
+        match self {
+            Self::Openai | Self::Openrouter => true,
+            // Named custom providers (including the literal "custom") have no
+            // safe default model. The empty-name Custom variant is only used
+            // as a temporary "unset" marker before base-URL inference.
+            Self::Custom { name } => !name.is_empty(),
+            Self::Deepseek => false,
+        }
     }
 
     /// Default base URL for the preset, if any.
@@ -169,6 +176,9 @@ impl ProviderPreset {
 }
 
 /// Infer a provider cache name from a base URL when no explicit provider is set.
+///
+/// Order matters: OpenRouter URLs often contain the substring `openai` in
+/// model paths elsewhere, but the host check for `openrouter` must win first.
 fn infer_provider_name_from_base_url(base_url: &str) -> &'static str {
     let lower = base_url.to_ascii_lowercase();
     if lower.contains("openrouter") {
@@ -181,6 +191,10 @@ fn infer_provider_name_from_base_url(base_url: &str) -> &'static str {
 }
 
 /// Whether an attribution env value means "disable this header".
+///
+/// Recognized disable tokens (case-insensitive): `off`, `none`, `0`,
+/// `false`, `no`. Any other non-blank value is treated as a custom header
+/// value.
 fn is_attribution_disabled(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
@@ -288,14 +302,9 @@ impl OpenAiClientConfig {
 
         let mut preset = ProviderPreset::from_name(provider_hint.as_deref());
 
-        let base_url = nonblank_env("BRIGID_LLM_BASE_URL").or_else(|| {
-            preset
-                .default_base_url()
-                .map(str::to_string)
-                .or_else(|| Some("https://api.deepseek.com/v1".to_string()))
-        });
-        // base_url is always Some from or_else chain above
-        let base_url = base_url.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+        let base_url = nonblank_env("BRIGID_LLM_BASE_URL")
+            .or_else(|| preset.default_base_url().map(str::to_string))
+            .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
 
         // When no explicit provider was given, refine from the base URL so
         // pointing BRIGID_LLM_BASE_URL at OpenRouter does not mis-label the
@@ -323,10 +332,12 @@ impl OpenAiClientConfig {
                 return Err(LlmError::Provider {
                     status: 0,
                     body: format!(
-                        "provider '{provider_name}' requires an explicit model                          (set model in brigid.toml, BRIGID_MODEL, or BRIGID_LLM_MODEL;                          OpenRouter models look like 'openai/gpt-4o')"
+                        "provider '{provider_name}' requires an explicit model (set model in brigid.toml, BRIGID_MODEL, or BRIGID_LLM_MODEL; OpenRouter models look like 'openai/gpt-4o')"
                     ),
                 });
             }
+            // DeepSeek (or unset→inferred DeepSeek) is the only preset with a
+            // safe default model.
             (None, None, false) => "deepseek-chat".to_string(),
         };
 
@@ -1777,6 +1788,77 @@ mod tests {
             env::remove_var("BRIGID_LLM_API_KEY");
             env::remove_var("BRIGID_LLM_REFERER");
             env::remove_var("BRIGID_LLM_APP_TITLE");
+        }
+    }
+    #[test]
+    fn provider_preset_custom_keyword_keeps_name() {
+        assert_eq!(
+            ProviderPreset::from_name(Some("custom")),
+            ProviderPreset::Custom {
+                name: "custom".into()
+            }
+        );
+        assert!(ProviderPreset::from_name(Some("custom")).requires_explicit_model());
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_explicit_custom_requires_model() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-x");
+            env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_PROVIDER");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+        let err = OpenAiClientConfig::from_env_with(Some("custom"), None).unwrap_err();
+        match err {
+            LlmError::Provider { body, .. } => {
+                assert!(body.contains("requires an explicit model"), "got: {body}");
+                assert!(
+                    !body.contains("  "),
+                    "error body should not contain double-space from indentation: {body:?}"
+                );
+            }
+            other => panic!("expected Provider, got {other:?}"),
+        }
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_explicit_custom_not_overwritten_by_base_url() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-x");
+            env::set_var("BRIGID_LLM_BASE_URL", "https://openrouter.ai/api/v1");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let cfg =
+            OpenAiClientConfig::from_env_with(Some("custom"), Some("my-local-model")).unwrap();
+        assert_eq!(cfg.provider_name, "custom");
+        assert_eq!(cfg.model, "my-local-model");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        // Attribution headers only for openrouter provider_name.
+        assert!(cfg.http_referer.is_none());
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_named_custom_proxy_requires_model() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-x");
+            env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+        let err = OpenAiClientConfig::from_env_with(Some("my-proxy"), None).unwrap_err();
+        assert!(matches!(err, LlmError::Provider { .. }), "got: {err:?}");
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
         }
     }
 }
