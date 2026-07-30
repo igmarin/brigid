@@ -281,8 +281,8 @@ impl OpenAiClientConfig {
     /// 3. DeepSeek remains the default when nothing is specified
     ///
     /// API key chain: `BRIGID_LLM_API_KEY` → provider-specific key
-    /// (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) →
-    /// legacy `DEEPSEEK_API_KEY`.
+    /// (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` for
+    /// DeepSeek). A DeepSeek-scoped key is never sent to OpenRouter/OpenAI.
     ///
     /// Blank or whitespace-only env values are treated as unset.
     ///
@@ -341,18 +341,19 @@ impl OpenAiClientConfig {
             (None, None, false) => "deepseek-chat".to_string(),
         };
 
-        // Key resolution: generic → provider-specific → legacy DeepSeek.
+        // Key resolution: BRIGID_LLM_API_KEY → provider-specific key only.
+        // Do not fall back to DEEPSEEK_API_KEY for OpenRouter/OpenAI — that
+        // would send a DeepSeek-scoped credential to another host.
         let api_key = nonblank_env("BRIGID_LLM_API_KEY")
             .or_else(|| preset.api_key_env().and_then(nonblank_env))
-            .or_else(|| nonblank_env("DEEPSEEK_API_KEY"))
             .ok_or_else(|| {
-                let specific = preset
-                    .api_key_env()
-                    .map(|k| format!(" / {k}"))
-                    .unwrap_or_default();
+                let hint = match preset.api_key_env() {
+                    Some(k) => format!("BRIGID_LLM_API_KEY or {k}"),
+                    None => "BRIGID_LLM_API_KEY".to_string(),
+                };
                 LlmError::Provider {
                     status: 0,
-                    body: format!("BRIGID_LLM_API_KEY{specific} (or DEEPSEEK_API_KEY) not set"),
+                    body: format!("API key not set for provider '{provider_name}': set {hint}"),
                 }
             })?;
 
@@ -1859,6 +1860,72 @@ mod tests {
         assert!(matches!(err, LlmError::Provider { .. }), "got: {err:?}");
         unsafe {
             env::remove_var("BRIGID_LLM_API_KEY");
+        }
+    }
+    #[test]
+    #[serial]
+    fn openrouter_does_not_use_deepseek_api_key() {
+        // Security: a DeepSeek-scoped key must never be sent to OpenRouter.
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("OPENROUTER_API_KEY");
+            env::set_var("DEEPSEEK_API_KEY", "sk-deepseek-only");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let err = OpenAiClientConfig::from_env_with(Some("openrouter"), Some("openai/gpt-4o"))
+            .unwrap_err();
+        match err {
+            LlmError::Provider { body, .. } => {
+                assert!(body.contains("OPENROUTER_API_KEY"), "got: {body}");
+                assert!(
+                    body.contains("openrouter"),
+                    "error should name the provider: {body}"
+                );
+            }
+            other => panic!("expected Provider, got {other:?}"),
+        }
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn openai_does_not_use_deepseek_api_key() {
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("OPENAI_API_KEY");
+            env::set_var("DEEPSEEK_API_KEY", "sk-deepseek-only");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+        let err = OpenAiClientConfig::from_env_with(Some("openai"), Some("gpt-4o")).unwrap_err();
+        match err {
+            LlmError::Provider { body, .. } => {
+                assert!(body.contains("OPENAI_API_KEY"), "got: {body}");
+            }
+            other => panic!("expected Provider, got {other:?}"),
+        }
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn deepseek_still_accepts_deepseek_api_key() {
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::set_var("DEEPSEEK_API_KEY", "sk-deepseek-ok");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let cfg = OpenAiClientConfig::from_env_with(Some("deepseek"), None).unwrap();
+        assert_eq!(cfg.api_key, "sk-deepseek-ok");
+        assert_eq!(cfg.provider_name, "deepseek");
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
         }
     }
 }
