@@ -12,6 +12,12 @@ tracks the latest.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-30
+
+Minor release adding OpenRouter as a first-class LLM provider (ADR 0017) and
+wiring `RunConfig.provider` / `RunConfig.model` into live client construction
+for all presets.
+
 ### Added
 
 - **OpenRouter as a first-class LLM provider (ADR 0017).** Set
@@ -21,6 +27,19 @@ tracks the latest.
   `OPENROUTER_API_KEY`, and sends OpenRouter attribution headers. `RunConfig.provider`
   and `RunConfig.model` now drive live client construction for all presets
   (DeepSeek, OpenAI, OpenRouter, custom).
+
+### Changed
+
+- **`RunConfig.provider` and `RunConfig.model` are now operational.** These
+  fields were previously parsed from `brigid.toml` / CLI / env but ignored
+  during client construction. They now select provider presets (base URL,
+  API-key env var, host allowlist, attribution headers) for DeepSeek, OpenAI,
+  OpenRouter, and custom providers. This is a behavior change that enables new
+  capability rather than a regression; existing env-only configurations
+  (`BRIGID_LLM_BASE_URL`, `BRIGID_LLM_API_KEY`) continue to work unchanged.
+- **OpenAI and OpenRouter now require an explicit model.** DeepSeek retains
+  `deepseek-chat` as a safe default; OpenAI and OpenRouter have no safe
+  universal default and will error with a clear message if no model is set.
 
 ## [1.1.0] - 2026-07-29
 

@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "assert_cmd",
  "brigid-core",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "assert-json-diff",
  "criterion",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-crawl"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "serde_json",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-llm"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "brigid-core",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-pipeline"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "assert_cmd",
  "async-trait",

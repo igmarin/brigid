@@ -47,17 +47,17 @@ cargo binstall brigid-cli
 
 1. Go to the [Releases page](https://github.com/igmarin/brigid/releases).
 2. Download the archive matching your platform, e.g.
-   `brigid-1.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+   `brigid-1.2.0-x86_64-unknown-linux-gnu.tar.gz`.
 3. Verify the SHA-256 checksum against the `SHA256SUMS` file in the release.
 4. Extract and move the `brigid` binary to your `PATH`:
 
    ```bash
-   tar xzf brigid-1.1.0-x86_64-unknown-linux-gnu.tar.gz
-   sudo mv brigid-1.1.0-x86_64-unknown-linux-gnu/brigid /usr/local/bin/
+   tar xzf brigid-1.2.0-x86_64-unknown-linux-gnu.tar.gz
+   sudo mv brigid-1.2.0-x86_64-unknown-linux-gnu/brigid /usr/local/bin/
    # Optional: install man page and completions
-   sudo mv brigid-1.1.0-x86_64-unknown-linux-gnu/brigid.1 /usr/local/share/man/man1/
+   sudo mv brigid-1.2.0-x86_64-unknown-linux-gnu/brigid.1 /usr/local/share/man/man1/
    mkdir -p ~/.local/share/bash-completion/completions
-   mv brigid-1.1.0-x86_64-unknown-linux-gnu/completions/brigid.bash \
+   mv brigid-1.2.0-x86_64-unknown-linux-gnu/completions/brigid.bash \
       ~/.local/share/bash-completion/completions/brigid
    ```
 
