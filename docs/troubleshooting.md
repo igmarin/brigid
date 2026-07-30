@@ -109,3 +109,15 @@ files changed since a tag, commit, or branch. If `git` is not installed or
 not on `PATH`, the crawl fails with a clear error. The full crawl (without
 `--since`) works without `git`. Ensure you are running inside a git
 repository — `--since` on a non-repo directory is not supported.
+
+## OpenRouter / provider configuration
+
+- **`provider 'openrouter' requires an explicit model`** — set `model` in
+  `brigid.toml`, or `BRIGID_MODEL` / `BRIGID_LLM_MODEL` (e.g. `openai/gpt-4o`).
+  The same applies to `provider = "openai"`.
+- **`host 'openrouter.ai' is not in the allowed hosts list`** — upgrade to a
+  build that includes ADR 0017, or add the host via `BRIGID_LLM_ALLOWED_HOSTS`.
+- **Wrong cache hits after switching providers** — cache keys include the
+  resolved `provider_name`. OpenRouter entries no longer share keys with
+  DeepSeek. Old mislabeled entries age out via LRU.
+

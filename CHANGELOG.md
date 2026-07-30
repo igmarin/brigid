@@ -10,6 +10,18 @@ descriptions in [`docs/move-to-rust.md`](docs/move-to-rust.md). Each milestone
 corresponds to a minor release; the workspace `version` field in `Cargo.toml`
 tracks the latest.
 
+## [Unreleased]
+
+### Added
+
+- **OpenRouter as a first-class LLM provider (ADR 0017).** Set
+  `provider = "openrouter"` and an explicit model (e.g. `openai/gpt-4o`) in
+  `brigid.toml`, or `BRIGID_PROVIDER` / `BRIGID_MODEL`. Defaults to
+  `https://openrouter.ai/api/v1`, allowlists `openrouter.ai`, accepts
+  `OPENROUTER_API_KEY`, and sends OpenRouter attribution headers. `RunConfig.provider`
+  and `RunConfig.model` now drive live client construction for all presets
+  (DeepSeek, OpenAI, OpenRouter, custom).
+
 ## [1.1.0] - 2026-07-29
 
 Minor release with three new features (blog-post tutorial style, lenient
