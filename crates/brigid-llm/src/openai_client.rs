@@ -46,7 +46,7 @@ pub struct OpenAiClientConfig {
     pub base_url: String,
     /// API key (from env only — never CLI args or config files).
     pub api_key: String,
-    /// Model identifier (e.g. `gpt-4o`, `deepseek-chat`).
+    /// Model identifier (e.g. `gpt-4o`, `deepseek-chat`, `openai/gpt-4o`).
     pub model: String,
     /// Request timeout.
     pub timeout: Duration,
@@ -54,7 +54,7 @@ pub struct OpenAiClientConfig {
     pub max_retries: u32,
     /// Initial backoff duration (doubles each retry).
     pub initial_backoff: Duration,
-    /// Provider name for cache keys (e.g. `openai`, `deepseek`).
+    /// Provider name for cache keys (e.g. `openai`, `deepseek`, `openrouter`).
     pub provider_name: String,
     /// Hosts allowed to receive the `Authorization` header. Defaults to
     /// known providers plus loopback for testing. Extend with
@@ -64,6 +64,128 @@ pub struct OpenAiClientConfig {
     /// explicit cap, providers default to small limits (e.g. DeepSeek ~4096)
     /// and long structured responses are truncated mid-block.
     pub max_tokens: u32,
+    /// Optional `HTTP-Referer` header (OpenRouter attribution / rankings).
+    pub http_referer: Option<String>,
+    /// Optional `X-Title` header (OpenRouter app name for rankings).
+    pub app_title: Option<String>,
+}
+
+/// Known first-class provider presets (ADR 0017).
+///
+/// Config files keep `provider` as a free string; this enum is the internal
+/// lookup used to pick defaults, cache `provider_name`, and request headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderPreset {
+    /// DeepSeek API (`api.deepseek.com`).
+    Deepseek,
+    /// OpenAI API (`api.openai.com`).
+    Openai,
+    /// OpenRouter gateway (`openrouter.ai`).
+    Openrouter,
+    /// Any other provider id or unset — base URL / model come from env.
+    Custom {
+        /// Cache-key / diagnostics name (may be empty before inference).
+        name: String,
+    },
+}
+
+impl ProviderPreset {
+    /// Normalize a free-form provider string into a preset.
+    ///
+    /// Matching is case-insensitive. Unknown values become
+    /// [`ProviderPreset::Custom`] with the lowercased name preserved so
+    /// cache keys stay provider-isolated.
+    #[must_use]
+    pub fn from_name(name: Option<&str>) -> Self {
+        match name.map(str::trim).filter(|s| !s.is_empty()) {
+            None => Self::Custom {
+                name: String::new(),
+            },
+            Some(raw) => {
+                let lower = raw.to_ascii_lowercase();
+                match lower.as_str() {
+                    "deepseek" => Self::Deepseek,
+                    "openai" => Self::Openai,
+                    "openrouter" => Self::Openrouter,
+                    "custom" => Self::Custom {
+                        name: String::new(),
+                    },
+                    other => Self::Custom {
+                        name: other.to_string(),
+                    },
+                }
+            }
+        }
+    }
+
+    /// Stable provider name for cache keys and diagnostics.
+    #[must_use]
+    pub fn provider_name(&self) -> &str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::Openai => "openai",
+            Self::Openrouter => "openrouter",
+            Self::Custom { name } if !name.is_empty() => name.as_str(),
+            Self::Custom { .. } => "custom",
+        }
+    }
+
+    /// Whether this preset requires an explicit model (no safe default).
+    #[must_use]
+    pub fn requires_explicit_model(&self) -> bool {
+        matches!(self, Self::Openai | Self::Openrouter)
+    }
+
+    /// Default base URL for the preset, if any.
+    #[must_use]
+    pub fn default_base_url(&self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => Some("https://api.deepseek.com/v1"),
+            Self::Openai => Some("https://api.openai.com/v1"),
+            Self::Openrouter => Some("https://openrouter.ai/api/v1"),
+            Self::Custom { .. } => None,
+        }
+    }
+
+    /// Default model for the preset, if a safe default exists.
+    #[must_use]
+    pub fn default_model(&self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => Some("deepseek-chat"),
+            Self::Openai | Self::Openrouter | Self::Custom { .. } => None,
+        }
+    }
+
+    /// Provider-specific API key env var (checked after `BRIGID_LLM_API_KEY`).
+    #[must_use]
+    pub fn api_key_env(&self) -> Option<&'static str> {
+        match self {
+            Self::Deepseek => Some("DEEPSEEK_API_KEY"),
+            Self::Openai => Some("OPENAI_API_KEY"),
+            Self::Openrouter => Some("OPENROUTER_API_KEY"),
+            Self::Custom { .. } => None,
+        }
+    }
+}
+
+/// Infer a provider cache name from a base URL when no explicit provider is set.
+fn infer_provider_name_from_base_url(base_url: &str) -> &'static str {
+    let lower = base_url.to_ascii_lowercase();
+    if lower.contains("openrouter") {
+        "openrouter"
+    } else if lower.contains("openai") {
+        "openai"
+    } else {
+        "deepseek"
+    }
+}
+
+/// Whether an attribution env value means "disable this header".
+fn is_attribution_disabled(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "off" | "none" | "0" | "false" | "no"
+    )
 }
 
 /// Default output token cap. DeepSeek's default (4096) truncates long
@@ -77,9 +199,15 @@ const DEFAULT_MAX_TOKENS: u32 = 8192;
 const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
     "api.openai.com",
     "api.deepseek.com",
+    "openrouter.ai",
     "localhost",
     "127.0.0.1",
 ];
+
+/// Default OpenRouter `HTTP-Referer` when attribution is enabled.
+const DEFAULT_OPENROUTER_REFERER: &str = "https://github.com/igmarin/brigid";
+/// Default OpenRouter `X-Title` when attribution is enabled.
+const DEFAULT_OPENROUTER_TITLE: &str = "brigid";
 
 impl OpenAiClientConfig {
     /// Create a new config with sensible defaults for timeout (120s),
@@ -103,43 +231,120 @@ impl OpenAiClientConfig {
                 .map(|s| s.to_string())
                 .collect(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            http_referer: None,
+            app_title: None,
         }
     }
 
-    /// Build a config from environment variables.
+    /// Build a config from environment variables only.
     ///
-    /// Reads `BRIGID_LLM_API_KEY` (falling back to `DEEPSEEK_API_KEY`),
-    /// `BRIGID_LLM_BASE_URL` (default `https://api.deepseek.com/v1`), and
-    /// `BRIGID_LLM_MODEL` (default `deepseek-chat`). Blank or
-    /// whitespace-only values are treated as unset, matching the `nonblank`
-    /// convention used in `brigid-core` config resolution.
-    ///
-    /// Optionally reads `BRIGID_LLM_ALLOWED_HOSTS` (comma-separated) to
-    /// extend the host allowlist beyond the built-in providers, and
-    /// `BRIGID_LLM_MAX_TOKENS` (positive integer) to override the output
-    /// token cap (default 8192). An invalid `BRIGID_LLM_MAX_TOKENS` value
-    /// returns an error.
+    /// Equivalent to [`Self::from_env_with`] with no provider/model overrides.
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::Provider`] if no API key is present in the
-    /// environment.
+    /// Returns [`LlmError::Provider`] if no API key is present, or if a
+    /// provider that requires an explicit model (OpenAI, OpenRouter) has none.
     pub fn from_env() -> Result<Self, LlmError> {
-        let api_key = nonblank_env("BRIGID_LLM_API_KEY")
-            .or_else(|| nonblank_env("DEEPSEEK_API_KEY"))
-            .ok_or_else(|| LlmError::Provider {
-                status: 0,
-                body: "BRIGID_LLM_API_KEY (or DEEPSEEK_API_KEY) not set".to_string(),
-            })?;
-        let base_url = nonblank_env("BRIGID_LLM_BASE_URL")
-            .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
-        let model = nonblank_env("BRIGID_LLM_MODEL").unwrap_or_else(|| "deepseek-chat".to_string());
-        let provider_name = if base_url.contains("openai") {
-            "openai"
-        } else {
-            "deepseek"
+        Self::from_env_with(None, None)
+    }
+
+    /// Build a config from environment variables plus optional overrides.
+    ///
+    /// `provider_override` / `model_override` come from `RunConfig` (CLI /
+    /// `brigid.toml` / `BRIGID_PROVIDER` / `BRIGID_MODEL` after merge). They
+    /// take precedence over the raw env vars of the same name when set.
+    ///
+    /// Other LLM knobs (`BRIGID_LLM_BASE_URL`, `BRIGID_LLM_MAX_TOKENS`,
+    /// attribution headers, API keys) are **env-only** today — `RunConfig`
+    /// has no fields for them. Pass resolved provider/model from the CLI
+    /// when available; when calling this from library code without a
+    /// `RunConfig`, omit the overrides and `BRIGID_PROVIDER` is still
+    /// honoured so a standalone `from_env()` path works.
+    ///
+    /// Provider resolution (ADR 0017):
+    /// 1. Explicit provider override (or `BRIGID_PROVIDER`) → preset defaults
+    /// 2. Else infer `provider_name` from `BRIGID_LLM_BASE_URL`
+    /// 3. DeepSeek remains the default when nothing is specified
+    ///
+    /// API key chain: `BRIGID_LLM_API_KEY` → provider-specific key
+    /// (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) →
+    /// legacy `DEEPSEEK_API_KEY`.
+    ///
+    /// Blank or whitespace-only env values are treated as unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Provider`] if no API key is present, or if
+    /// OpenAI/OpenRouter is selected without a model.
+    pub fn from_env_with(
+        provider_override: Option<&str>,
+        model_override: Option<&str>,
+    ) -> Result<Self, LlmError> {
+        let provider_hint = provider_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| nonblank_env("BRIGID_PROVIDER"));
+
+        let mut preset = ProviderPreset::from_name(provider_hint.as_deref());
+
+        let base_url = nonblank_env("BRIGID_LLM_BASE_URL").or_else(|| {
+            preset
+                .default_base_url()
+                .map(str::to_string)
+                .or_else(|| Some("https://api.deepseek.com/v1".to_string()))
+        });
+        // base_url is always Some from or_else chain above
+        let base_url = base_url.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string());
+
+        // When no explicit provider was given, refine from the base URL so
+        // pointing BRIGID_LLM_BASE_URL at OpenRouter does not mis-label the
+        // cache key as "deepseek".
+        if matches!(&preset, ProviderPreset::Custom { name } if name.is_empty()) {
+            let inferred = infer_provider_name_from_base_url(&base_url);
+            preset = ProviderPreset::from_name(Some(inferred));
         }
-        .to_string();
+
+        let provider_name = preset.provider_name().to_string();
+
+        let model_from_override = model_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let model_from_env = nonblank_env("BRIGID_LLM_MODEL");
+        let model = match (
+            model_from_override.or(model_from_env),
+            preset.default_model(),
+            preset.requires_explicit_model(),
+        ) {
+            (Some(m), _, _) => m,
+            (None, Some(default), _) => default.to_string(),
+            (None, None, true) => {
+                return Err(LlmError::Provider {
+                    status: 0,
+                    body: format!(
+                        "provider '{provider_name}' requires an explicit model                          (set model in brigid.toml, BRIGID_MODEL, or BRIGID_LLM_MODEL;                          OpenRouter models look like 'openai/gpt-4o')"
+                    ),
+                });
+            }
+            (None, None, false) => "deepseek-chat".to_string(),
+        };
+
+        // Key resolution: generic → provider-specific → legacy DeepSeek.
+        let api_key = nonblank_env("BRIGID_LLM_API_KEY")
+            .or_else(|| preset.api_key_env().and_then(nonblank_env))
+            .or_else(|| nonblank_env("DEEPSEEK_API_KEY"))
+            .ok_or_else(|| {
+                let specific = preset
+                    .api_key_env()
+                    .map(|k| format!(" / {k}"))
+                    .unwrap_or_default();
+                LlmError::Provider {
+                    status: 0,
+                    body: format!("BRIGID_LLM_API_KEY{specific} (or DEEPSEEK_API_KEY) not set"),
+                }
+            })?;
+
         let mut allowed_hosts: Vec<String> = DEFAULT_ALLOWED_HOSTS
             .iter()
             .map(|s| s.to_string())
@@ -166,6 +371,28 @@ impl OpenAiClientConfig {
             })?,
             None => DEFAULT_MAX_TOKENS,
         };
+
+        // Attribution: unset → defaults for OpenRouter only; explicit
+        // off/none/0/false/no → disabled; any other nonblank → custom value.
+        let http_referer = match nonblank_env("BRIGID_LLM_REFERER") {
+            Some(v) if is_attribution_disabled(&v) => None,
+            Some(v) => Some(v),
+            None if provider_name == "openrouter" => Some(DEFAULT_OPENROUTER_REFERER.to_string()),
+            None => None,
+        };
+        let app_title = match nonblank_env("BRIGID_LLM_APP_TITLE") {
+            Some(v) if is_attribution_disabled(&v) => None,
+            Some(v) => Some(v),
+            None if provider_name == "openrouter" => Some(DEFAULT_OPENROUTER_TITLE.to_string()),
+            None => None,
+        };
+
+        if provider_name == "openrouter" && !model.contains('/') {
+            eprintln!(
+                "brigid: warning: OpenRouter model '{model}' has no '/' namespace                  (expected e.g. 'openai/gpt-4o'); continuing anyway"
+            );
+        }
+
         Ok(Self {
             base_url,
             api_key,
@@ -176,6 +403,8 @@ impl OpenAiClientConfig {
             provider_name,
             allowed_hosts,
             max_tokens,
+            http_referer,
+            app_title,
         })
     }
 
@@ -204,6 +433,20 @@ impl OpenAiClientConfig {
     #[must_use]
     pub fn with_provider_name(mut self, name: &str) -> Self {
         self.provider_name = name.to_string();
+        self
+    }
+
+    /// Set the optional `HTTP-Referer` attribution header.
+    #[must_use]
+    pub fn with_http_referer(mut self, referer: impl Into<String>) -> Self {
+        self.http_referer = Some(referer.into());
+        self
+    }
+
+    /// Set the optional `X-Title` attribution header.
+    #[must_use]
+    pub fn with_app_title(mut self, title: impl Into<String>) -> Self {
+        self.app_title = Some(title.into());
         self
     }
 
@@ -394,11 +637,18 @@ impl LlmClient for OpenAiCompatibleClient {
         let mut last_error: Option<LlmError> = None;
         // Initial attempt + max_retries retries.
         for attempt in 0..=self.config.max_retries {
-            let req = self
+            let mut req = self
                 .http
                 .post(&url)
                 .bearer_auth(&self.config.api_key)
                 .json(&body);
+            // OpenRouter (and optional other gateways) use attribution headers.
+            if let Some(referer) = &self.config.http_referer {
+                req = req.header("HTTP-Referer", referer.as_str());
+            }
+            if let Some(title) = &self.config.app_title {
+                req = req.header("X-Title", title.as_str());
+            }
 
             // e. Apply timeout via tokio::time::timeout.
             let send = tokio::time::timeout(self.config.timeout, req.send());
@@ -988,12 +1238,16 @@ mod tests {
         unsafe {
             env::set_var("BRIGID_LLM_API_KEY", "sk-x");
             env::set_var("BRIGID_LLM_BASE_URL", "https://api.openai.com/v1");
+            env::set_var("BRIGID_LLM_MODEL", "gpt-4o");
+            env::remove_var("BRIGID_PROVIDER");
         }
         let cfg = OpenAiClientConfig::from_env().unwrap();
         assert_eq!(cfg.provider_name, "openai");
+        assert_eq!(cfg.model, "gpt-4o");
         unsafe {
             env::remove_var("BRIGID_LLM_API_KEY");
             env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_LLM_MODEL");
         }
     }
 
@@ -1127,6 +1381,7 @@ mod tests {
                 .allowed_hosts
                 .contains(&"api.deepseek.com".to_string())
         );
+        assert!(config.allowed_hosts.contains(&"openrouter.ai".to_string()));
         assert!(config.allowed_hosts.contains(&"localhost".to_string()));
         assert!(config.allowed_hosts.contains(&"127.0.0.1".to_string()));
     }
@@ -1290,5 +1545,238 @@ mod tests {
         assert!(!classify_status(reqwest::StatusCode::FORBIDDEN));
         assert!(!classify_status(reqwest::StatusCode::NOT_FOUND));
         assert!(!classify_status(reqwest::StatusCode::OK));
+    }
+    // ------------------------------------------------------------------
+    // ADR 0017: OpenRouter / provider presets
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn provider_preset_from_name_normalizes_case() {
+        assert_eq!(
+            ProviderPreset::from_name(Some("OpenRouter")),
+            ProviderPreset::Openrouter
+        );
+        assert_eq!(
+            ProviderPreset::from_name(Some("OPENAI")),
+            ProviderPreset::Openai
+        );
+        assert_eq!(
+            ProviderPreset::from_name(Some("DeepSeek")),
+            ProviderPreset::Deepseek
+        );
+        assert_eq!(
+            ProviderPreset::from_name(Some("my-proxy")),
+            ProviderPreset::Custom {
+                name: "my-proxy".into()
+            }
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_openrouter_requires_model() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-or");
+            env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_MODEL");
+            env::remove_var("BRIGID_PROVIDER");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("OPENROUTER_API_KEY");
+        }
+        let err = OpenAiClientConfig::from_env_with(Some("openrouter"), None).unwrap_err();
+        match err {
+            LlmError::Provider { body, .. } => {
+                assert!(body.contains("requires an explicit model"), "got: {body}");
+            }
+            other => panic!("expected Provider, got {other:?}"),
+        }
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_openrouter_defaults() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-or");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_LLM_MODEL");
+            env::remove_var("BRIGID_PROVIDER");
+            env::remove_var("BRIGID_LLM_REFERER");
+            env::remove_var("BRIGID_LLM_APP_TITLE");
+            env::remove_var("OPENROUTER_API_KEY");
+        }
+        let cfg =
+            OpenAiClientConfig::from_env_with(Some("openrouter"), Some("openai/gpt-4o")).unwrap();
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.model, "openai/gpt-4o");
+        assert_eq!(cfg.provider_name, "openrouter");
+        assert!(cfg.allowed_hosts.contains(&"openrouter.ai".to_string()));
+        assert_eq!(
+            cfg.http_referer.as_deref(),
+            Some(DEFAULT_OPENROUTER_REFERER)
+        );
+        assert_eq!(cfg.app_title.as_deref(), Some(DEFAULT_OPENROUTER_TITLE));
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_openrouter_api_key_fallback() {
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("DEEPSEEK_API_KEY");
+            env::set_var("OPENROUTER_API_KEY", "sk-openrouter-only");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let cfg = OpenAiClientConfig::from_env_with(
+            Some("openrouter"),
+            Some("anthropic/claude-3.5-sonnet"),
+        )
+        .unwrap();
+        assert_eq!(cfg.api_key, "sk-openrouter-only");
+        assert_eq!(cfg.provider_name, "openrouter");
+        unsafe {
+            env::remove_var("OPENROUTER_API_KEY");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_infers_openrouter_from_base_url() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-x");
+            env::set_var("BRIGID_LLM_BASE_URL", "https://openrouter.ai/api/v1");
+            env::set_var("BRIGID_LLM_MODEL", "openai/gpt-4o");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let cfg = OpenAiClientConfig::from_env().unwrap();
+        assert_eq!(cfg.provider_name, "openrouter");
+        assert!(cfg.http_referer.is_some());
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+            env::remove_var("BRIGID_LLM_MODEL");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_with_provider_override_beats_base_url_heuristic() {
+        // Explicit deepseek + openrouter URL still labels cache as deepseek
+        // (user chose provider; they may be tunneling).
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-x");
+            env::set_var("BRIGID_LLM_BASE_URL", "https://openrouter.ai/api/v1");
+            env::remove_var("BRIGID_PROVIDER");
+        }
+        let cfg =
+            OpenAiClientConfig::from_env_with(Some("deepseek"), Some("deepseek-chat")).unwrap();
+        assert_eq!(cfg.provider_name, "deepseek");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+    }
+
+    #[test]
+    fn openrouter_host_is_allowed_by_default() {
+        let config =
+            OpenAiClientConfig::new("https://openrouter.ai/api/v1", "sk-x", "openai/gpt-4o")
+                .with_provider_name("openrouter");
+        assert!(config.validate_host().is_ok());
+    }
+
+    #[tokio::test]
+    async fn openrouter_sends_attribution_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer sk-or-test"))
+            .and(header("HTTP-Referer", DEFAULT_OPENROUTER_REFERER))
+            .and(header("X-Title", DEFAULT_OPENROUTER_TITLE))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "model": "openai/gpt-4o",
+                "stream": false
+            })))
+            .respond_with(ok_response("via openrouter"))
+            .mount(&server)
+            .await;
+
+        let config = OpenAiClientConfig::new(server.uri(), "sk-or-test", "openai/gpt-4o")
+            .with_provider_name("openrouter")
+            .with_http_referer(DEFAULT_OPENROUTER_REFERER)
+            .with_app_title(DEFAULT_OPENROUTER_TITLE);
+        let mut config = config;
+        config.initial_backoff = Duration::from_millis(1);
+        let client = OpenAiCompatibleClient::new(config).unwrap();
+        let out = client.complete("hi").await.unwrap();
+        assert_eq!(out, "via openrouter");
+    }
+
+    #[tokio::test]
+    async fn openrouter_cache_key_uses_openrouter_provider() {
+        let root = temp_root();
+        let cache = DiskCache::new(&root);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ok_response("or-cached"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = OpenAiClientConfig::new(server.uri(), "sk-or", "openai/gpt-4o")
+            .with_provider_name("openrouter");
+        let client = OpenAiCompatibleClient::new(config)
+            .unwrap()
+            .with_cache(cache.clone());
+        let out = client.complete("openrouter prompt").await.unwrap();
+        assert_eq!(out, "or-cached");
+
+        let input = CacheKeyInput {
+            prompt: "openrouter prompt",
+            model: "openai/gpt-4o",
+            provider: "openrouter",
+            extras: Some("mt=8192"),
+        };
+        assert_eq!(
+            cache.get_for(&input).await.unwrap().as_deref(),
+            Some("or-cached")
+        );
+        // Must not land under deepseek.
+        let wrong = CacheKeyInput {
+            prompt: "openrouter prompt",
+            model: "openai/gpt-4o",
+            provider: "deepseek",
+            extras: Some("mt=8192"),
+        };
+        assert!(cache.get_for(&wrong).await.unwrap().is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn from_env_attribution_off_disables_headers() {
+        unsafe {
+            env::set_var("BRIGID_LLM_API_KEY", "sk-or");
+            env::set_var("BRIGID_LLM_REFERER", "off");
+            env::set_var("BRIGID_LLM_APP_TITLE", "none");
+            env::remove_var("BRIGID_LLM_BASE_URL");
+        }
+        let cfg =
+            OpenAiClientConfig::from_env_with(Some("openrouter"), Some("openai/gpt-4o")).unwrap();
+        assert!(cfg.http_referer.is_none());
+        assert!(cfg.app_title.is_none());
+        unsafe {
+            env::remove_var("BRIGID_LLM_API_KEY");
+            env::remove_var("BRIGID_LLM_REFERER");
+            env::remove_var("BRIGID_LLM_APP_TITLE");
+        }
     }
 }

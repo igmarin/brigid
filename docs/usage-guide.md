@@ -110,6 +110,42 @@ export BRIGID_LLM_MODEL="gpt-4o"
 `api.openai.com` is in the built-in host allowlist, so no extra host
 configuration is needed.
 
+### OpenRouter
+
+[OpenRouter](https://openrouter.ai) is a first-class provider (ADR 0017).
+It routes OpenAI-compatible chat completions to many underlying models
+behind a single API key.
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."   # or BRIGID_LLM_API_KEY
+# In brigid.toml:
+#   provider = "openrouter"
+#   model = "openai/gpt-4o"
+# Or via environment:
+export BRIGID_PROVIDER="openrouter"
+export BRIGID_MODEL="openai/gpt-4o"
+# Optional overrides:
+# export BRIGID_LLM_BASE_URL="https://openrouter.ai/api/v1"
+# export BRIGID_LLM_MODEL="anthropic/claude-3.5-sonnet"
+```
+
+Notes:
+
+- **Model is required.** There is no safe default model for OpenRouter;
+  set `model` / `BRIGID_MODEL` / `BRIGID_LLM_MODEL` explicitly.
+- Model IDs are usually namespaced (`provider/model`, e.g.
+  `openai/gpt-4o`). Unnamespaced aliases may work; brigid warns but does
+  not reject them.
+- `openrouter.ai` is on the built-in host allowlist.
+- brigid sends OpenRouter attribution headers by default:
+  `HTTP-Referer: https://github.com/igmarin/brigid` and `X-Title: brigid`.
+  Override with `BRIGID_LLM_REFERER` / `BRIGID_LLM_APP_TITLE`, or set either
+  to `off` / `none` / `0` / `false` / `no` to disable that header.
+- **Privacy:** the allowlist only validates the first hop (`openrouter.ai`).
+  OpenRouter may forward prompts to a third-party model provider chosen by
+  the model string. Only send code you are willing to share with that
+  chain.
+
 ### Local providers (Ollama, LM Studio)
 
 Any OpenAI-compatible local server works. Set the base URL to the local
@@ -142,10 +178,16 @@ export BRIGID_LLM_ALLOWED_HOSTS="my-proxy.internal,10.0.0.5"
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BRIGID_LLM_API_KEY` | — | API key (checked first; falls back to `DEEPSEEK_API_KEY`) |
-| `DEEPSEEK_API_KEY` | — | API key (fallback) |
-| `BRIGID_LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
-| `BRIGID_LLM_MODEL` | `deepseek-chat` | Model identifier sent in requests |
+| `BRIGID_LLM_API_KEY` | — | API key (checked first) |
+| `OPENROUTER_API_KEY` | — | API key when `provider=openrouter` (after `BRIGID_LLM_API_KEY`) |
+| `OPENAI_API_KEY` | — | API key when `provider=openai` (after `BRIGID_LLM_API_KEY`) |
+| `DEEPSEEK_API_KEY` | — | API key fallback / DeepSeek provider key |
+| `BRIGID_PROVIDER` | — | Provider preset: `deepseek`, `openai`, `openrouter`, or custom id |
+| `BRIGID_MODEL` | — | Model id (merged into `RunConfig.model`; required for openai/openrouter) |
+| `BRIGID_LLM_BASE_URL` | provider default | OpenAI-compatible endpoint |
+| `BRIGID_LLM_MODEL` | provider default | Model identifier sent in requests (`deepseek-chat` for DeepSeek) |
+| `BRIGID_LLM_REFERER` | OpenRouter default | `HTTP-Referer` header; `off` disables |
+| `BRIGID_LLM_APP_TITLE` | OpenRouter default | `X-Title` header; `off` disables |
 | `BRIGID_LLM_MAX_TOKENS` | `8192` | Output token cap sent as `max_tokens`. Raise if responses are truncated; lower to cut cost |
 | `BRIGID_LLM_ALLOWED_HOSTS` | — | Extra hosts for the Authorization-header allowlist (comma-separated) |
 | `BRIGID_LLM_CACHE_DIR` | platform cache `/brigid/llm-cache` | Disk cache root for LLM responses |

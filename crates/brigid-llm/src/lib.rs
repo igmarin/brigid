@@ -25,7 +25,7 @@ pub use client::LlmClient;
 pub use concurrency::{bounded_complete, bounded_complete_with_budget};
 pub use error::LlmError;
 pub use mock::MockClient;
-pub use openai_client::{OpenAiClientConfig, OpenAiCompatibleClient};
+pub use openai_client::{OpenAiClientConfig, OpenAiCompatibleClient, ProviderPreset};
 
 /// The version of this crate, as declared in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

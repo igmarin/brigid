@@ -132,8 +132,12 @@ fn force_mock_client() -> bool {
     is_force_mock_enabled(env::var("BRIGID_FORCE_MOCK").ok().as_deref())
 }
 
-/// Build a live [`brigid_llm::LlmClient`] from the environment, optionally
-/// with a disk cache.
+/// Build a live [`brigid_llm::LlmClient`] from the environment and optional
+/// `RunConfig` provider/model overrides, optionally with a disk cache.
+///
+/// `provider` and `model` come from the resolved [`brigid_core::RunConfig`]
+/// (CLI / `brigid.toml` / `BRIGID_PROVIDER` / `BRIGID_MODEL`). When set they
+/// drive provider presets (ADR 0017), including OpenRouter defaults.
 ///
 /// Callers must only select a mock client when [`force_mock_client`] returns
 /// `true`. Missing credentials or invalid client configuration are surfaced as
@@ -141,11 +145,13 @@ fn force_mock_client() -> bool {
 fn build_real_llm_client(
     cache: Option<brigid_llm::DiskCache>,
     custom_hosts: &[String],
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<Box<dyn brigid_llm::LlmClient>, brigid_llm::LlmError> {
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    let config = brigid_llm::OpenAiClientConfig::from_env()?;
+    let config = brigid_llm::OpenAiClientConfig::from_env_with(provider, model)?;
     let config = custom_hosts
         .iter()
         .fold(config, |acc, h| acc.with_allowed_host(h));
@@ -2118,6 +2124,8 @@ fn cmd_identify(
         match build_real_llm_client(
             build_llm_cache(cfg),
             cfg.allowed_hosts.as_deref().unwrap_or(&[]),
+            cfg.provider.as_deref(),
+            cfg.model.as_deref(),
         ) {
             Ok(client) => {
                 eprintln!("identify: using live LLM provider");
@@ -2470,6 +2478,8 @@ fn cmd_generate(
         match build_real_llm_client(
             cache.clone(),
             run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+            run_config.provider.as_deref(),
+            run_config.model.as_deref(),
         ) {
             Ok(client) => {
                 print_progress(verbosity, "generate: using live LLM provider");
@@ -2873,6 +2883,8 @@ fn cmd_generate_each_app(
         match build_real_llm_client(
             cache.clone(),
             run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+            run_config.provider.as_deref(),
+            run_config.model.as_deref(),
         ) {
             Ok(client) => {
                 print_progress(verbosity, "generate: using live LLM provider");

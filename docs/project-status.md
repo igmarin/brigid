@@ -48,7 +48,8 @@ Release history with per-change details lives in
   `source_dir` included in the config hash to prevent collisions across
   different source directories.
 - **LLM provider client** — OpenAI-compatible HTTP with retry/backoff/timeout,
-  host allowlist, disk cache with LRU eviction, bounded concurrency.
+  host allowlist (including `openrouter.ai`), provider presets (DeepSeek,
+  OpenAI, OpenRouter), disk cache with LRU eviction, bounded concurrency.
 - **Distribution** — Homebrew and `cargo install` source builds on macOS and
   Windows; GitHub Releases and `cargo-binstall` pre-built Linux x86_64 archive;
   shell completions and man page.
