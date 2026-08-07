@@ -140,7 +140,8 @@ fn order_chapters_ctx() -> serde_json::Value {
         "project_name": "brigid",
         "list_lang_note": "",
         "abstraction_listing": "- 0 # Query Processing\n- 1 # Optimization",
-        "context": "Project summary and relationships"
+        "context": "Project summary and relationships",
+        "hub_context": ""
     })
 }
 

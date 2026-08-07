@@ -95,6 +95,43 @@ pub fn multimodal_context_from_provider(provider: &dyn GraphProvider) -> String 
     format_multimodal_concepts(&concepts)
 }
 
+/// Format hub concepts as a human-readable string for the order prompt.
+///
+/// Hub concepts are the most-connected concepts in the graph — candidates
+/// for early chapter placement:
+///
+/// ```text
+/// High-connectivity hub concepts (consider explaining early):
+///
+/// 1. auth
+/// 2. config
+/// 3. router
+/// ```
+///
+/// Returns an empty string when `hubs` is empty (NoneProvider case).
+#[must_use]
+pub fn format_hub_concepts(hubs: &[String]) -> String {
+    if hubs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("High-connectivity hub concepts (consider explaining early):\n\n");
+    for (i, hub) in hubs.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n", i + 1, hub));
+    }
+    out
+}
+
+/// Extract and format hub concept context from a graph provider for the order
+/// prompt.
+///
+/// Returns an empty string when the provider has no hub concept data
+/// (NoneProvider).
+#[must_use]
+pub fn hub_context_from_provider(provider: &dyn GraphProvider) -> String {
+    let hubs = provider.hub_concepts();
+    format_hub_concepts(&hubs)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -278,5 +315,75 @@ mod tests {
         let context = multimodal_context_from_provider(&provider);
         assert!(context.contains("[architecture]"));
         assert!(context.contains("docs/arch.png"));
+    }
+
+    // -----------------------------------------------------------------------
+    // format_hub_concepts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_hub_concepts_empty_returns_empty_string() {
+        assert!(format_hub_concepts(&[]).is_empty());
+    }
+
+    #[test]
+    fn format_hub_concepts_with_data() {
+        let hubs = vec![
+            "auth".to_string(),
+            "config".to_string(),
+            "router".to_string(),
+        ];
+        let result = format_hub_concepts(&hubs);
+        assert!(result.contains("High-connectivity hub concepts"));
+        assert!(result.contains("1. auth"));
+        assert!(result.contains("2. config"));
+        assert!(result.contains("3. router"));
+    }
+
+    #[test]
+    fn format_hub_concepts_single() {
+        let hubs = vec!["auth".to_string()];
+        let result = format_hub_concepts(&hubs);
+        assert!(result.contains("1. auth"));
+    }
+
+    // -----------------------------------------------------------------------
+    // hub_context_from_provider
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hub_context_from_none_provider_is_empty() {
+        let provider = NoneProvider::new();
+        assert!(hub_context_from_provider(&provider).is_empty());
+    }
+
+    #[test]
+    fn hub_context_from_custom_provider() {
+        struct StubProvider;
+        impl GraphProvider for StubProvider {
+            fn call_graph_for_file(&self, _file_path: &str) -> Vec<CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                vec!["auth".to_string(), "config".to_string()]
+            }
+            fn relationship_exists(&self, _from: &str, _to: &str) -> Option<bool> {
+                None
+            }
+            fn multimodal_concepts(&self) -> Vec<MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "stub"
+            }
+        }
+
+        let provider = StubProvider;
+        let context = hub_context_from_provider(&provider);
+        assert!(context.contains("1. auth"));
+        assert!(context.contains("2. config"));
     }
 }
