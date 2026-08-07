@@ -32,6 +32,9 @@ pub struct IdentifyMapInput {
     pub max_concurrency: usize,
     /// Budget config for batching (char budget per batch).
     pub budget_config: BudgetConfig,
+    /// Optional community context from a graph provider (ADR 0016).
+    /// Empty string when no provider is configured (NoneProvider).
+    pub community_context: String,
 }
 
 /// Run the map stage of identify: split files into batches, render
@@ -293,6 +296,9 @@ pub(crate) fn render_map_prompt(
         "name_lang_hint": sanitize_template_input(&input.lang_note),
         "desc_lang_hint": sanitize_template_input(&input.lang_note),
         "file_listing": file_listing,
+        // Community context from a graph provider (ADR 0016). Empty string
+        // when no provider is configured — the template conditional skips it.
+        "community_context": sanitize_template_input(&input.community_context),
     });
 
     renderer.render(PromptId::IdentifyMap, &context)
@@ -415,6 +421,7 @@ mod map_tests {
             max_abstraction_num: 5,
             max_concurrency: 2,
             budget_config: budget,
+            community_context: String::new(),
         }
     }
 
@@ -687,6 +694,7 @@ mod map_tests {
             max_abstraction_num: 5,
             max_concurrency: 2,
             budget_config: BudgetConfig::default(),
+            community_context: String::new(),
         };
 
         let result = identify_map(&client, &renderer, &input, None)

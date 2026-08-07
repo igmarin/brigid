@@ -105,7 +105,8 @@ fn identify_map_ctx() -> serde_json::Value {
         "per_batch": 5,
         "name_lang_hint": "",
         "desc_lang_hint": "",
-        "file_listing": "- 0 # lib.rs"
+        "file_listing": "- 0 # lib.rs",
+        "community_context": ""
     })
 }
 
@@ -117,7 +118,8 @@ fn identify_reduce_ctx() -> serde_json::Value {
         "max_abstraction_num": 10,
         "name_lang_hint": "",
         "desc_lang_hint": "",
-        "candidates_blob": "- candidate 0:\n    name: Query Processing\n    description: Handles queries\n    file_indices: [0, 1]"
+        "candidates_blob": "- candidate 0:\n    name: Query Processing\n    description: Handles queries\n    file_indices: [0, 1]",
+        "multimodal_context": ""
     })
 }
 

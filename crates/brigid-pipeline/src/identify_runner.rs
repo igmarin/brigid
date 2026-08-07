@@ -420,6 +420,7 @@ mod tests {
             max_abstraction_num: 5,
             max_concurrency: 1,
             budget_config: three_batch_config(),
+            community_context: String::new(),
         }
     }
 
@@ -432,6 +433,7 @@ mod tests {
             lang_note: String::new(),
             max_abstraction_num: 5,
             module_summary: "core, api".to_string(),
+            multimodal_context: String::new(),
         }
     }
 

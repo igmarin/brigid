@@ -141,6 +141,7 @@ pub async fn incremental_identify(
             max_abstraction_num: max_abstractions_from_config(config),
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             budget_config: budget_config_from_run(config),
+            community_context: String::new(),
         };
         let batches = identify_map(client, renderer, &map_input, progress.as_deref_mut()).await?;
         for b in batches {
@@ -191,6 +192,7 @@ pub async fn incremental_identify(
         lang_note: String::new(),
         max_abstraction_num: max_abstractions_from_config(config),
         module_summary: module_summary_from_files(files),
+        multimodal_context: String::new(),
     };
     identify_reduce(client, renderer, &reduce_input, progress).await
 }

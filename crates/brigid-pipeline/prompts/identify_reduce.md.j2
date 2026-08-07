@@ -14,7 +14,9 @@ Rules:
 
 {{ language_instruction }}Candidates:
 {{ candidates_blob }}
-
+{% if multimodal_context %}
+{{ multimodal_context }}
+{% endif %}
 Return ONLY a YAML list (max {{ max_abstraction_num }} items):
 
 ```yaml

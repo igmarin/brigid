@@ -23,6 +23,9 @@ pub struct IdentifyReduceInput {
     pub max_abstraction_num: usize,
     /// Module summary (optional text describing the module structure).
     pub module_summary: String,
+    /// Optional multimodal concept context from a graph provider (ADR 0016).
+    /// Empty string when no provider is configured (NoneProvider).
+    pub multimodal_context: String,
 }
 
 /// Run the reduce stage of identify: merge and rank per-batch candidates
@@ -78,6 +81,10 @@ pub async fn identify_reduce(
         "name_lang_hint": sanitize_template_input(&input.lang_note),
         "desc_lang_hint": sanitize_template_input(&input.lang_note),
         "candidates_blob": candidates_blob,
+        // Multimodal concept context from a graph provider (ADR 0016). Empty
+        // string when no provider is configured — the template conditional
+        // skips it.
+        "multimodal_context": sanitize_template_input(&input.multimodal_context),
     });
 
     // b. Render the prompt.
@@ -231,6 +238,7 @@ mod reduce_tests {
             lang_note: String::new(),
             max_abstraction_num: 5,
             module_summary: "core, utils, api".to_string(),
+            multimodal_context: String::new(),
         }
     }
 
@@ -479,6 +487,7 @@ mod reduce_tests {
             lang_note: "Use 简体中文".to_string(),
             max_abstraction_num: 7,
             module_summary: "core, utils".to_string(),
+            multimodal_context: String::new(),
         };
         let _ = identify_reduce(&client, &renderer, &input, None)
             .await
