@@ -26,6 +26,7 @@
 #![deny(missing_docs)]
 
 pub mod checkpoint_loader;
+pub mod resources;
 
 pub use checkpoint_loader::{CheckpointData, CheckpointLoader, CheckpointLoaderError, FileEntry};
 

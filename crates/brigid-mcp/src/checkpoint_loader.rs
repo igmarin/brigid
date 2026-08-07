@@ -27,7 +27,7 @@ use thiserror::Error;
 /// Carries the relative POSIX path and the raw (decoded) byte size. The
 /// base64-encoded body from [`FileBundleRecord`] is decoded once at load time
 /// so the MCP server never re-decodes on every request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct FileEntry {
     /// Relative repository path (POSIX `/` separators).
     pub path: String,
