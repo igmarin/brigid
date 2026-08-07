@@ -212,6 +212,13 @@ pub struct Relationship {
     pub label: String,
     /// Coarse edge kind (`"calls"`, `"owns"`, `"publishes"`, ...).
     pub kind: String,
+    /// Structural verification status from a graph provider (ADR 0016).
+    ///
+    /// `Some(true)` — the call graph confirms this relationship.
+    /// `Some(false)` — the call graph contradicts this relationship.
+    /// `None` — no structural data available (NoneProvider or unmatched).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structurally_verified: Option<bool>,
 }
 
 impl Relationship {
@@ -223,6 +230,7 @@ impl Relationship {
             to,
             label: label.into(),
             kind: kind.into(),
+            structurally_verified: None,
         }
     }
 }
@@ -366,6 +374,7 @@ mod tests {
             to: 1,
             label: "routes to".into(),
             kind: "calls".into(),
+            structurally_verified: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         let back: Relationship = serde_json::from_str(&json).unwrap();
