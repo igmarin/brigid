@@ -12,6 +12,56 @@ tracks the latest.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-07
+
+Minor release adding two major features: an MCP (Model Context Protocol) server
+for AI assistant integration (ADR 0015) and a Graph Provider abstraction for
+structural code analysis integration (ADR 0016).
+
+### Added
+
+- **MCP server (ADR 0015).** New `brigid-mcp` crate exposes brigid's checkpoint
+  knowledge graph to AI assistants (Claude Desktop, Cursor, Windsurf) via the
+  Model Context Protocol. The server is read-only and loads a previously
+  generated checkpoint directory into memory, serving:
+  - **Resources** — `checkpoint://` URIs for metadata, abstractions,
+    relationships, chapter ordering, file inventory, individual chapters, setup
+    guide, architecture overview, and a combined tutorial index.
+  - **Tools** — 7 graph query/lookup tools: `find_abstraction_for_file`,
+    `abstraction_dependencies`, `files_for_abstraction`,
+    `relevance_ranked_chapters`, `chapter_for_file`, `list_abstractions`,
+    `is_checkpoint_stale`.
+  - **Prompts** — 3 onboarding workflows: `onboard_to_codebase`,
+    `explain_file`, `deep_dive_abstraction`.
+  - **Transport** — stdio transport via the `rmcp` crate (v3.1.1), the official
+    Rust MCP SDK. The server advertises all three capabilities (resources,
+    tools, prompts) and supports cache hints for MCP 2026-07-28 clients.
+
+- **Graph Provider abstraction (ADR 0016).** New `GraphProvider` trait in
+  `brigid-core` allows external structural analysis tools (call graphs, code
+  knowledge graphs) to enhance brigid's pipeline with structural data. The
+  `NoneProvider` is the default — all methods return empty/`None`, so brigid
+  works exactly as before (LLM-only) with zero configuration. The graph provider
+  is an opt-in enhancement integrated into three pipeline stages:
+  - **Identify stage** — community context in the map prompt, multimodal concept
+    context in the reduce prompt.
+  - **Relationships stage** — `structurally_verified: Option<bool>` field on
+    `Relationship` records whether the graph provider's call graph confirms or
+    contradicts each LLM-extracted edge.
+  - **Order stage** — hub concepts from the graph provider inform early chapter
+    placement for key abstractions.
+
+- **`GraphProviderConfig`** in `RunConfig` — configurable via `[graph_provider]`
+  in `brigid.toml`, `BRIGID_GRAPH_PROVIDER` environment variable, and CLI.
+  Supports `type = "none"` (default) and `type = "codegraph"` with a `data_path`
+  pointing to a CodeGraph SQLite database.
+
+### Changed
+
+- **New `brigid-mcp` crate** added to the workspace. Does not affect existing
+  crates — the MCP server is a separate binary that reads checkpoints produced
+  by `brigid generate`.
+
 ## [1.2.0] - 2026-07-30
 
 Minor release adding OpenRouter as a first-class LLM provider (ADR 0017) and
