@@ -311,6 +311,35 @@ pub async fn analyze_relationships(
     Ok(RelationshipsResult::new(raw.summary, relationships))
 }
 
+/// Verify LLM-produced relationships against structural call-graph data from
+/// a graph provider (ADR 0016 T4).
+///
+/// For each relationship, checks if the graph provider's call graph confirms
+/// or contradicts the `from`→`to` edge. Sets
+/// [`brigid_core::Relationship::structurally_verified`] to:
+/// - `Some(true)` — call graph confirms the edge
+/// - `Some(false)` — call graph contradicts the edge
+/// - `None` — no structural data for these abstractions
+///
+/// When the provider is [`brigid_core::NoneProvider`], all relationships stay
+/// `None` — the function is a no-op.
+///
+/// Abstraction names are used as the lookup keys for
+/// [`brigid_core::GraphProvider::relationship_exists`].
+pub fn verify_relationships_with_graph(
+    result: &mut RelationshipsResult,
+    identify: &brigid_core::IdentifyResult,
+    provider: &dyn brigid_core::GraphProvider,
+) {
+    for rel in &mut result.relationships {
+        let from_name = identify.abstractions.get(rel.from).map(|a| a.name.as_str());
+        let to_name = identify.abstractions.get(rel.to).map(|a| a.name.as_str());
+        if let (Some(from), Some(to)) = (from_name, to_name) {
+            rel.structurally_verified = provider.relationship_exists(from, to);
+        }
+    }
+}
+
 /// Save the relationships result to the checkpoint and mark the Relationships
 /// stage complete.
 ///
@@ -1164,5 +1193,245 @@ relationships:
         let ts = now_iso8601_utc();
         assert_eq!(ts.len(), 20);
         assert!(ts.ends_with('Z'));
+    }
+
+    // -----------------------------------------------------------------------
+    // verify_relationships_with_graph (ADR 0016 T4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn verify_relationships_with_none_provider_leaves_all_none() {
+        let identify = IdentifyResult::new(vec![
+            Abstraction::new("Auth", "desc", Tier::S, "module"),
+            Abstraction::new("DB", "desc", Tier::S, "module"),
+        ]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![brigid_core::Relationship::new(0, 1, "uses", "calls")],
+        );
+        let provider = brigid_core::NoneProvider::new();
+        verify_relationships_with_graph(&mut result, &identify, &provider);
+        assert_eq!(result.relationships[0].structurally_verified, None);
+    }
+
+    #[test]
+    fn verify_relationships_with_confirming_provider_sets_true() {
+        struct ConfirmingProvider;
+        impl brigid_core::GraphProvider for ConfirmingProvider {
+            fn call_graph_for_file(&self, _: &str) -> Vec<brigid_core::CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<brigid_core::Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn relationship_exists(&self, from: &str, to: &str) -> Option<bool> {
+                if from == "Auth" && to == "DB" {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            fn multimodal_concepts(&self) -> Vec<brigid_core::MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "confirming"
+            }
+        }
+
+        let identify = IdentifyResult::new(vec![
+            Abstraction::new("Auth", "desc", Tier::S, "module"),
+            Abstraction::new("DB", "desc", Tier::S, "module"),
+        ]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![brigid_core::Relationship::new(0, 1, "uses", "calls")],
+        );
+        verify_relationships_with_graph(&mut result, &identify, &ConfirmingProvider);
+        assert_eq!(result.relationships[0].structurally_verified, Some(true));
+    }
+
+    #[test]
+    fn verify_relationships_with_contradicting_provider_sets_false() {
+        struct ContradictingProvider;
+        impl brigid_core::GraphProvider for ContradictingProvider {
+            fn call_graph_for_file(&self, _: &str) -> Vec<brigid_core::CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<brigid_core::Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn relationship_exists(&self, from: &str, to: &str) -> Option<bool> {
+                if from == "Auth" && to == "DB" {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            fn multimodal_concepts(&self) -> Vec<brigid_core::MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "contradicting"
+            }
+        }
+
+        let identify = IdentifyResult::new(vec![
+            Abstraction::new("Auth", "desc", Tier::S, "module"),
+            Abstraction::new("DB", "desc", Tier::S, "module"),
+        ]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![brigid_core::Relationship::new(0, 1, "uses", "calls")],
+        );
+        verify_relationships_with_graph(&mut result, &identify, &ContradictingProvider);
+        assert_eq!(result.relationships[0].structurally_verified, Some(false));
+    }
+
+    #[test]
+    fn verify_relationships_with_no_match_leaves_none() {
+        struct EmptyProvider;
+        impl brigid_core::GraphProvider for EmptyProvider {
+            fn call_graph_for_file(&self, _: &str) -> Vec<brigid_core::CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<brigid_core::Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn relationship_exists(&self, _: &str, _: &str) -> Option<bool> {
+                None
+            }
+            fn multimodal_concepts(&self) -> Vec<brigid_core::MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "empty"
+            }
+        }
+
+        let identify = IdentifyResult::new(vec![
+            Abstraction::new("Auth", "desc", Tier::S, "module"),
+            Abstraction::new("DB", "desc", Tier::S, "module"),
+        ]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![brigid_core::Relationship::new(0, 1, "uses", "calls")],
+        );
+        verify_relationships_with_graph(&mut result, &identify, &EmptyProvider);
+        assert_eq!(result.relationships[0].structurally_verified, None);
+    }
+
+    #[test]
+    fn verify_relationships_with_out_of_range_indices_leaves_none() {
+        struct ConfirmingProvider;
+        impl brigid_core::GraphProvider for ConfirmingProvider {
+            fn call_graph_for_file(&self, _: &str) -> Vec<brigid_core::CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<brigid_core::Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn relationship_exists(&self, _: &str, _: &str) -> Option<bool> {
+                Some(true)
+            }
+            fn multimodal_concepts(&self) -> Vec<brigid_core::MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "confirming"
+            }
+        }
+
+        let identify =
+            IdentifyResult::new(vec![Abstraction::new("Auth", "desc", Tier::S, "module")]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![brigid_core::Relationship::new(0, 5, "uses", "calls")],
+        );
+        verify_relationships_with_graph(&mut result, &identify, &ConfirmingProvider);
+        // to=5 is out of range, so no verification happens
+        assert_eq!(result.relationships[0].structurally_verified, None);
+    }
+
+    #[test]
+    fn verify_relationships_with_multiple_relationships() {
+        struct MultiProvider;
+        impl brigid_core::GraphProvider for MultiProvider {
+            fn call_graph_for_file(&self, _: &str) -> Vec<brigid_core::CallEdge> {
+                Vec::new()
+            }
+            fn communities(&self) -> Vec<brigid_core::Community> {
+                Vec::new()
+            }
+            fn hub_concepts(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn relationship_exists(&self, from: &str, to: &str) -> Option<bool> {
+                match (from, to) {
+                    ("Auth", "DB") => Some(true),
+                    ("DB", "Cache") => Some(false),
+                    _ => None,
+                }
+            }
+            fn multimodal_concepts(&self) -> Vec<brigid_core::MultimodalConcept> {
+                Vec::new()
+            }
+            fn name(&self) -> &str {
+                "multi"
+            }
+        }
+
+        let identify = IdentifyResult::new(vec![
+            Abstraction::new("Auth", "desc", Tier::S, "module"),
+            Abstraction::new("DB", "desc", Tier::S, "module"),
+            Abstraction::new("Cache", "desc", Tier::S, "module"),
+        ]);
+        let mut result = RelationshipsResult::new(
+            "summary".to_string(),
+            vec![
+                brigid_core::Relationship::new(0, 1, "uses", "calls"),
+                brigid_core::Relationship::new(1, 2, "writes", "calls"),
+                brigid_core::Relationship::new(0, 2, "invalidates", "related"),
+            ],
+        );
+        verify_relationships_with_graph(&mut result, &identify, &MultiProvider);
+        assert_eq!(result.relationships[0].structurally_verified, Some(true));
+        assert_eq!(result.relationships[1].structurally_verified, Some(false));
+        assert_eq!(result.relationships[2].structurally_verified, None);
+    }
+
+    #[test]
+    fn relationship_structurally_verified_default_is_none() {
+        let rel = brigid_core::Relationship::new(0, 1, "uses", "calls");
+        assert_eq!(rel.structurally_verified, None);
+    }
+
+    #[test]
+    fn relationship_with_structurally_verified_round_trips() {
+        let mut rel = brigid_core::Relationship::new(0, 1, "uses", "calls");
+        rel.structurally_verified = Some(true);
+        let json = serde_json::to_string(&rel).unwrap();
+        assert!(json.contains("\"structurally_verified\":true"));
+        let back: brigid_core::Relationship = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.structurally_verified, Some(true));
+    }
+
+    #[test]
+    fn relationship_without_structurally_verified_omits_field() {
+        let rel = brigid_core::Relationship::new(0, 1, "uses", "calls");
+        let json = serde_json::to_string(&rel).unwrap();
+        assert!(!json.contains("structurally_verified"));
     }
 }
