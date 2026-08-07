@@ -225,6 +225,7 @@ pub async fn identify_and_checkpoint(
             max_abstraction_num: max_abstractions_from_config(config),
             max_concurrency: DEFAULT_MAX_CONCURRENCY,
             budget_config: budget_config_from_run(config),
+            community_context: String::new(),
         };
         let candidate_batches = identify_map(client, renderer, &map_input, Some(progress)).await?;
 
@@ -242,6 +243,7 @@ pub async fn identify_and_checkpoint(
             lang_note: String::new(),
             max_abstraction_num: max_abstractions_from_config(config),
             module_summary,
+            multimodal_context: String::new(),
         };
         identify_reduce(client, renderer, &reduce_input, Some(progress)).await?
     };

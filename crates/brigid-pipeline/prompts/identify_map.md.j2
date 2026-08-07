@@ -7,7 +7,9 @@ This codebase may be structured like loosely-coupled engines / umbrella apps
 
 Codebase Context (this batch only):
 {{ context }}
-
+{% if community_context %}
+{{ community_context }}
+{% endif %}
 {{ language_instruction }}Identify up to {{ per_batch }} important abstractions from THIS batch that would help a newcomer.
 Prefer:
 - Domain / business capabilities

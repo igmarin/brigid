@@ -2089,6 +2089,7 @@ fn cmd_identify(
                 max_abstraction_num: max_abstractions,
                 max_concurrency: 4,
                 budget_config: brigid_core::BudgetConfig::default(),
+                community_context: String::new(),
             }),
             Some(brigid_pipeline::IdentifyReduceInput {
                 candidates: Vec::new(),
@@ -2098,6 +2099,7 @@ fn cmd_identify(
                 lang_note: String::new(),
                 max_abstraction_num: max_abstractions,
                 module_summary: String::new(),
+                multimodal_context: String::new(),
             }),
         )
     };

@@ -22,6 +22,8 @@ mod reduce;
 mod single_shot;
 mod types;
 
+pub mod graph_context;
+
 pub use incremental::incremental_identify;
 pub use map::{IdentifyMapInput, identify_map};
 pub use reduce::{IdentifyReduceInput, identify_reduce};
