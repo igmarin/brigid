@@ -142,19 +142,19 @@ impl BrigidPrompts {
 
         // Index.
         messages.push(user_msg(format!(
-            "Here is the combined tutorial index:\n\n```markdown\n{}\n```",
+            "Here is the combined tutorial index:\n\n````markdown\n{}\n````",
             index_markdown(&self.data)
         )));
 
         // Setup guide.
         messages.push(user_msg(format!(
-            "Here is the setup guide:\n\n```markdown\n{}\n```",
+            "Here is the setup guide:\n\n````markdown\n{}\n````",
             setup_markdown(&self.data)
         )));
 
         // Architecture overview.
         messages.push(user_msg(format!(
-            "Here is the architecture overview:\n\n```markdown\n{}\n```",
+            "Here is the architecture overview:\n\n````markdown\n{}\n````",
             overview_markdown(&self.data)
         )));
 
@@ -168,7 +168,7 @@ impl BrigidPrompts {
             let top: Vec<&brigid_core::Chapter> = sorted.into_iter().take(3).collect();
             for ch in top {
                 messages.push(user_msg(format!(
-                    "Chapter {}: {}\n\n```markdown\n{}\n```",
+                    "Chapter {}: {}\n\n````markdown\n{}\n````",
                     ch.chapter_num, ch.title, ch.markdown
                 )));
             }
@@ -218,7 +218,7 @@ impl BrigidPrompts {
                     // Load the owning chapter.
                     if let Some(ch) = chapter_for_abstraction(&self.data, abs_idx) {
                         messages.push(user_msg(format!(
-                            "Here is the chapter explaining **{}**:\n\n```markdown\n{}\n```",
+                            "Here is the chapter explaining **{}**:\n\n````markdown\n{}\n````",
                             ch.title, ch.markdown
                         )));
                     }
@@ -298,7 +298,7 @@ impl BrigidPrompts {
                 // Chapter.
                 if let Some(ch) = chapter_for_abstraction(&self.data, idx) {
                     messages.push(user_msg(format!(
-                        "Chapter {}: {}\n\n```markdown\n{}\n```",
+                        "Chapter {}: {}\n\n````markdown\n{}\n````",
                         ch.chapter_num, ch.title, ch.markdown
                     )));
                 }

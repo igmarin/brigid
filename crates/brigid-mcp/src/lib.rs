@@ -1,6 +1,6 @@
 //! MCP server exposing `brigid`'s checkpoint knowledge graph for AI assistants.
 //!
-//! Implements [ADR 0015](../../docs/adr/0015-mcp-server.md): a read-only
+//! Implements ADR 0015 (`docs/adr/0015-mcp-server.md`): a read-only
 //! [Model Context Protocol](https://modelcontextprotocol.io/) server that
 //! loads a `brigid generate` checkpoint directory into memory and serves its
 //! structured data (abstractions, relationships, chapter ordering, chapters,

@@ -40,6 +40,9 @@ const MIME_MARKDOWN: &str = "text/markdown";
 const URI_SCHEME: &str = "checkpoint://";
 
 /// The `checkpoint://chapter/{index}` URI template string.
+///
+/// `{index}` is the abstraction index (0-based position in the identify
+/// result's `abstractions` vector), not the chapter number.
 const CHAPTER_TEMPLATE_URI: &str = "checkpoint://chapter/{index}";
 
 /// Build the list of static resources (non-templated) available for `data`.

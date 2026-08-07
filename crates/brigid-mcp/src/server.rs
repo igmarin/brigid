@@ -127,7 +127,7 @@ impl rmcp::ServerHandler for BrigidServer {
             tools: BrigidTools::tool_router().list_all(),
             meta: None,
             next_cursor: None,
-            ttl_ms: supports_cache_hints.then_some(0),
+            ttl_ms: None,
             cache_scope: supports_cache_hints.then_some(CacheScope::Public),
         }))
     }
@@ -160,7 +160,7 @@ impl rmcp::ServerHandler for BrigidServer {
             prompts: BrigidPrompts::prompt_router().list_all(),
             meta: None,
             next_cursor: None,
-            ttl_ms: supports_cache_hints.then_some(0),
+            ttl_ms: None,
             cache_scope: supports_cache_hints.then_some(CacheScope::Public),
         }))
     }
