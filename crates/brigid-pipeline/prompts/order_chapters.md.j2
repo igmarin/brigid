@@ -5,7 +5,9 @@ Abstractions (Index # Name){{ list_lang_note }}:
 
 Context about relationships and project summary:
 {{ context }}
-
+{% if hub_context %}
+{{ hub_context }}
+{% endif %}
 If you are going to make a tutorial for `{{ project_name }}`, what is the best order to explain these abstractions, from first to last?
 Ideally, first explain those that are the most important or foundational, perhaps user-facing concepts or entry points. Then move to more detailed, lower-level implementation details or supporting concepts.
 

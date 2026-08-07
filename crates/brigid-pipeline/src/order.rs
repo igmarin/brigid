@@ -65,6 +65,9 @@ pub struct OrderConfig {
     /// Short language hint suffix appended to the abstraction listing header
     /// (e.g. `" (in Spanish)"` or `""`).
     pub list_lang_note: String,
+    /// Hub concept context from a graph provider (ADR 0016 T5).
+    /// Empty string when no provider is configured (NoneProvider).
+    pub hub_context: String,
 }
 
 /// Run the OrderChapters stage: render the prompt, call the LLM, parse the
@@ -100,6 +103,10 @@ pub async fn order_chapters(
         "abstraction_listing": sanitize_template_input(&abstraction_listing),
         "context": sanitize_template_input(&context),
         "language_instruction": sanitize_template_input(&config.language_instruction),
+        // Hub concept context from a graph provider (ADR 0016 T5). Empty
+        // string when no provider is configured — the template conditional
+        // skips it.
+        "hub_context": sanitize_template_input(&config.hub_context),
     });
 
     let prompt = renderer.render(PromptId::OrderChapters, &render_ctx)?;
@@ -395,6 +402,7 @@ mod tests {
             project_name: "my-project".to_string(),
             language_instruction: String::new(),
             list_lang_note: String::new(),
+            hub_context: String::new(),
         }
     }
 
