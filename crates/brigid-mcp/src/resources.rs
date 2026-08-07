@@ -8,10 +8,10 @@
 //!
 //! | URI | MIME type | Content |
 //! |-----|-----------|---------|
-//! | `checkpoint://metadata` | `application/json` | [`CheckpointV1`] metadata |
-//! | `checkpoint://abstractions` | `application/json` | [`IdentifyResult`] |
-//! | `checkpoint://relationships` | `application/json` | [`RelationshipsResult`] |
-//! | `checkpoint://chapter-order` | `application/json` | [`ChapterOrder`] |
+//! | `checkpoint://metadata` | `application/json` | [`brigid_core::CheckpointV1`] metadata |
+//! | `checkpoint://abstractions` | `application/json` | [`brigid_core::IdentifyResult`] |
+//! | `checkpoint://relationships` | `application/json` | [`brigid_core::RelationshipsResult`] |
+//! | `checkpoint://chapter-order` | `application/json` | [`brigid_core::ChapterOrder`] |
 //! | `checkpoint://files` | `application/json` | File inventory |
 //! | `checkpoint://chapter/{index}` | `text/markdown` | Chapter content |
 //! | `checkpoint://setup-guide` | `text/markdown` | Setup guide |

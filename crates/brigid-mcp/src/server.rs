@@ -1,12 +1,12 @@
 //! MCP server — `ServerHandler` implementation and stdio transport.
 //!
 //! Implements ADR 0015 §5 (Transport + CLI). The [`BrigidServer`] struct
-//! implements the rmcp [`ServerHandler`] trait by delegating to the three
+//! implements the rmcp `ServerHandler` trait by delegating to the three
 //! capability modules:
 //!
 //! - **Resources** — [`crate::resources`] (manual `list_resources` / `read_resource`)
-//! - **Tools** — [`crate::tools`] via [`ToolRouter`] (manual `call_tool` / `list_tools`)
-//! - **Prompts** — [`crate::prompts`] via [`PromptRouter`] (manual `get_prompt` / `list_prompts`)
+//! - **Tools** — [`crate::tools`] via `ToolRouter` (manual `call_tool` / `list_tools`)
+//! - **Prompts** — [`crate::prompts`] via `PromptRouter` (manual `get_prompt` / `list_prompts`)
 //!
 //! The server is served over stdio using [`serve`], which loads a checkpoint
 //! and runs the MCP protocol until the client disconnects.
@@ -102,7 +102,7 @@ impl rmcp::ServerHandler for BrigidServer {
         })
     }
 
-    /// Call a tool by name, delegating to the [`ToolRouter`] on [`BrigidTools`].
+    /// Call a tool by name, delegating to the `ToolRouter` on [`BrigidTools`].
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -132,7 +132,7 @@ impl rmcp::ServerHandler for BrigidServer {
         }))
     }
 
-    /// Get a prompt by name, delegating to the [`PromptRouter`] on [`BrigidPrompts`].
+    /// Get a prompt by name, delegating to the `PromptRouter` on [`BrigidPrompts`].
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
