@@ -19,8 +19,10 @@ use rmcp::{prompt, prompt_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{file_to_abstraction_index, find_abstraction_by_name, relationships_for_abstraction};
 use crate::CheckpointData;
+use crate::tools::{
+    file_to_abstraction_index, find_abstraction_by_name, relationships_for_abstraction,
+};
 
 /// Parameters for [`BrigidPrompts::explain_file`].
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -62,7 +64,9 @@ fn index_markdown(data: &CheckpointData) -> String {
     data.combined
         .as_ref()
         .map(|c| c.index_markdown.clone())
-        .unwrap_or_else(|| "(No combined index available — the combine stage has not run.)".to_string())
+        .unwrap_or_else(|| {
+            "(No combined index available — the combine stage has not run.)".to_string()
+        })
 }
 
 /// Get the setup guide markdown, if available.
@@ -109,7 +113,7 @@ fn files_for_abstraction(data: &CheckpointData, abs: &brigid_core::Abstraction) 
 /// lack doc comments (unlike `#[tool]`), so we suppress `missing_docs` for
 /// the router impl block only.
 #[allow(missing_docs)]
-#[prompt_router]
+#[prompt_router(vis = "pub")]
 impl BrigidPrompts {
     /// Create a new prompt handler backed by the given checkpoint data.
     #[must_use]
@@ -188,7 +192,9 @@ impl BrigidPrompts {
     pub fn explain_file(&self, params: Parameters<ExplainFileParams>) -> Vec<PromptMessage> {
         let file_path = &params.0.file_path;
         let mut messages = vec![
-            user_msg(format!("Explain the file `{file_path}` in the context of this codebase.")),
+            user_msg(format!(
+                "Explain the file `{file_path}` in the context of this codebase."
+            )),
             assistant_msg(format!(
                 "I'll look up which abstraction owns `{file_path}` and load the relevant chapter and dependency information."
             )),
@@ -261,7 +267,9 @@ impl BrigidPrompts {
     ) -> Vec<PromptMessage> {
         let name = &params.0.name;
         let mut messages = vec![
-            user_msg(format!("Give me a deep dive into the `{name}` abstraction in this codebase.")),
+            user_msg(format!(
+                "Give me a deep dive into the `{name}` abstraction in this codebase."
+            )),
             assistant_msg(format!(
                 "I'll load the chapter, relationship graph, and file list for the `{name}` abstraction."
             )),
@@ -275,8 +283,16 @@ impl BrigidPrompts {
                     abs.description,
                     abs.tier,
                     abs.kind.as_str(),
-                    if abs.apps.is_empty() { "(none)".to_string() } else { abs.apps.join(", ") },
-                    if abs.entry_files.is_empty() { "(none)".to_string() } else { abs.entry_files.join(", ") },
+                    if abs.apps.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        abs.apps.join(", ")
+                    },
+                    if abs.entry_files.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        abs.entry_files.join(", ")
+                    },
                 )));
 
                 // Chapter.
@@ -395,8 +411,24 @@ mod tests {
         cp.order = Some(order.to_checkpoint_value().unwrap());
 
         let chapters = ChapterResult::new(vec![
-            Chapter::new(0, 1, "Core", "# Core\n\nThe core system.", Tier::L, "module", "footer 0"),
-            Chapter::new(1, 2, "Routing", "# Routing\n\nRoutes requests.", Tier::S, "class", "footer 1"),
+            Chapter::new(
+                0,
+                1,
+                "Core",
+                "# Core\n\nThe core system.",
+                Tier::L,
+                "module",
+                "footer 0",
+            ),
+            Chapter::new(
+                1,
+                2,
+                "Routing",
+                "# Routing\n\nRoutes requests.",
+                Tier::S,
+                "class",
+                "footer 1",
+            ),
         ]);
         let chapter_entries = store.write_chapters(&dir, &chapters).unwrap();
         store

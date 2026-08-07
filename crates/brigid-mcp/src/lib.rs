@@ -28,6 +28,7 @@
 pub mod checkpoint_loader;
 pub mod prompts;
 pub mod resources;
+pub mod server;
 pub mod tools;
 
 pub use checkpoint_loader::{CheckpointData, CheckpointLoader, CheckpointLoaderError, FileEntry};

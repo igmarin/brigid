@@ -25,8 +25,8 @@ use std::borrow::Cow;
 
 use brigid_core::StageId;
 use rmcp::model::{
-    Annotations, ListResourcesResult, ListResourceTemplatesResult, ReadResourceResult,
-    Resource, ResourceContents, ResourceTemplate,
+    Annotations, ListResourceTemplatesResult, ListResourcesResult, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate,
 };
 
 use crate::CheckpointData;
@@ -49,44 +49,36 @@ const CHAPTER_TEMPLATE_URI: &str = "checkpoint://chapter/{index}";
 #[must_use]
 pub fn list_resources(data: &CheckpointData) -> Vec<Resource> {
     let mut resources = vec![
-        Resource::new(
-            format!("{URI_SCHEME}metadata"),
-            "Checkpoint Metadata",
-        )
-        .with_description("Checkpoint metadata: config, completed stages, git commit.")
-        .with_mime_type(MIME_JSON),
+        Resource::new(format!("{URI_SCHEME}metadata"), "Checkpoint Metadata")
+            .with_description("Checkpoint metadata: config, completed stages, git commit.")
+            .with_mime_type(MIME_JSON),
     ];
 
     if data.abstractions.is_some() {
         resources.push(
-            Resource::new(
-                format!("{URI_SCHEME}abstractions"),
-                "Abstractions",
-            )
-            .with_description("Full IdentifyResult — all abstractions with file indices, kinds, tiers.")
-            .with_mime_type(MIME_JSON),
+            Resource::new(format!("{URI_SCHEME}abstractions"), "Abstractions")
+                .with_description(
+                    "Full IdentifyResult — all abstractions with file indices, kinds, tiers.",
+                )
+                .with_mime_type(MIME_JSON),
         );
     }
 
     if data.relationships.is_some() {
         resources.push(
-            Resource::new(
-                format!("{URI_SCHEME}relationships"),
-                "Relationships",
-            )
-            .with_description("Full RelationshipsResult — relationship edges with labels and kinds.")
-            .with_mime_type(MIME_JSON),
+            Resource::new(format!("{URI_SCHEME}relationships"), "Relationships")
+                .with_description(
+                    "Full RelationshipsResult — relationship edges with labels and kinds.",
+                )
+                .with_mime_type(MIME_JSON),
         );
     }
 
     if data.chapter_order.is_some() {
         resources.push(
-            Resource::new(
-                format!("{URI_SCHEME}chapter-order"),
-                "Chapter Order",
-            )
-            .with_description("ChapterOrder — the ordered list of abstraction indices.")
-            .with_mime_type(MIME_JSON),
+            Resource::new(format!("{URI_SCHEME}chapter-order"), "Chapter Order")
+                .with_description("ChapterOrder — the ordered list of abstraction indices.")
+                .with_mime_type(MIME_JSON),
         );
     }
 
@@ -103,7 +95,10 @@ pub fn list_resources(data: &CheckpointData) -> Vec<Resource> {
             let name = format!("Chapter {}: {}", ch.chapter_num, ch.title);
             resources.push(
                 Resource::new(uri, name)
-                    .with_description(format!("Chapter for abstraction #{}.", ch.abstraction_index))
+                    .with_description(format!(
+                        "Chapter for abstraction #{}.",
+                        ch.abstraction_index
+                    ))
                     .with_mime_type(MIME_MARKDOWN),
             );
         }
@@ -144,9 +139,11 @@ pub fn list_resources(data: &CheckpointData) -> Vec<Resource> {
 /// Currently only the `checkpoint://chapter/{index}` template is exposed.
 #[must_use]
 pub fn list_resource_templates() -> Vec<ResourceTemplate> {
-    vec![ResourceTemplate::new(CHAPTER_TEMPLATE_URI, "Chapter by Index")
-        .with_description("The chapter content for the abstraction at position {index}.")
-        .with_mime_type(MIME_MARKDOWN)]
+    vec![
+        ResourceTemplate::new(CHAPTER_TEMPLATE_URI, "Chapter by Index")
+            .with_description("The chapter content for the abstraction at position {index}.")
+            .with_mime_type(MIME_MARKDOWN),
+    ]
 }
 
 /// Build the `checkpoint://chapter/{index}` URI for a given abstraction index.
@@ -241,7 +238,11 @@ fn json_content<T: serde::Serialize>(uri: &str, value: &T) -> ReadOutcome {
 
 /// Wrap a Markdown string as a Markdown resource content entry.
 fn markdown_content(uri: &str, markdown: &str) -> ReadOutcome {
-    ReadOutcome::Found(text_resource_with_mime(uri, markdown.to_string(), MIME_MARKDOWN))
+    ReadOutcome::Found(text_resource_with_mime(
+        uri,
+        markdown.to_string(),
+        MIME_MARKDOWN,
+    ))
 }
 
 /// Create a [`ReadResourceResult`] with `application/json` text content.
@@ -356,8 +357,24 @@ mod tests {
         cp.order = Some(order.to_checkpoint_value().unwrap());
 
         let chapters = ChapterResult::new(vec![
-            Chapter::new(0, 1, "Core", "# Core\n\nThe core.", Tier::M, "module", "footer 0"),
-            Chapter::new(1, 2, "Routing", "# Routing\n\nRoutes.", Tier::S, "class", "footer 1"),
+            Chapter::new(
+                0,
+                1,
+                "Core",
+                "# Core\n\nThe core.",
+                Tier::M,
+                "module",
+                "footer 0",
+            ),
+            Chapter::new(
+                1,
+                2,
+                "Routing",
+                "# Routing\n\nRoutes.",
+                Tier::S,
+                "class",
+                "footer 1",
+            ),
         ]);
         let chapter_entries = store.write_chapters(&dir, &chapters).unwrap();
         store
@@ -475,7 +492,9 @@ mod tests {
             ReadOutcome::Found(result) => {
                 assert_eq!(result.contents.len(), 1);
                 match &result.contents[0] {
-                    ResourceContents::TextResourceContents { text, mime_type, .. } => {
+                    ResourceContents::TextResourceContents {
+                        text, mime_type, ..
+                    } => {
                         assert!(mime_type.as_deref() == Some(MIME_JSON));
                         assert!(!text.is_empty());
                         assert!(text.contains("\"version\""));
@@ -563,15 +582,15 @@ mod tests {
         let (dir, data) = full_checkpoint_data();
         let outcome = read_resource("checkpoint://chapter/0", &data);
         match outcome {
-            ReadOutcome::Found(result) => {
-                match &result.contents[0] {
-                    ResourceContents::TextResourceContents { text, mime_type, .. } => {
-                        assert_eq!(mime_type.as_deref(), Some(MIME_MARKDOWN));
-                        assert!(text.contains("# Core"));
-                    }
-                    _ => panic!("expected text"),
+            ReadOutcome::Found(result) => match &result.contents[0] {
+                ResourceContents::TextResourceContents {
+                    text, mime_type, ..
+                } => {
+                    assert_eq!(mime_type.as_deref(), Some(MIME_MARKDOWN));
+                    assert!(text.contains("# Core"));
                 }
-            }
+                _ => panic!("expected text"),
+            },
             ReadOutcome::NotFound(msg) => panic!("expected found, got: {msg}"),
         }
         cleanup(&dir);
@@ -598,15 +617,15 @@ mod tests {
         let (dir, data) = full_checkpoint_data();
         let outcome = read_resource("checkpoint://setup-guide", &data);
         match outcome {
-            ReadOutcome::Found(result) => {
-                match &result.contents[0] {
-                    ResourceContents::TextResourceContents { text, mime_type, .. } => {
-                        assert_eq!(mime_type.as_deref(), Some(MIME_MARKDOWN));
-                        assert!(text.contains("# Setup"));
-                    }
-                    _ => panic!("expected text"),
+            ReadOutcome::Found(result) => match &result.contents[0] {
+                ResourceContents::TextResourceContents {
+                    text, mime_type, ..
+                } => {
+                    assert_eq!(mime_type.as_deref(), Some(MIME_MARKDOWN));
+                    assert!(text.contains("# Setup"));
                 }
-            }
+                _ => panic!("expected text"),
+            },
             ReadOutcome::NotFound(msg) => panic!("expected found, got: {msg}"),
         }
         cleanup(&dir);
