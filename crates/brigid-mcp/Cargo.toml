@@ -1,0 +1,31 @@
+[package]
+name = "brigid-mcp"
+description = "MCP server exposing brigid's checkpoint knowledge graph for AI assistants."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+brigid-core = { path = "../brigid-core", version = "1.2.0" }
+brigid-pipeline = { path = "../brigid-pipeline", version = "1.2.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+rmcp = { version = "3.1.1", features = ["server", "transport-io", "macros"] }
+thiserror = "2.0"
+tracing = "0.1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3.20"
