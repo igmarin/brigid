@@ -26,6 +26,7 @@
 #![deny(missing_docs)]
 
 pub mod checkpoint_loader;
+pub mod prompts;
 pub mod resources;
 pub mod tools;
 

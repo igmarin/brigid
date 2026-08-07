@@ -174,7 +174,8 @@ pub struct BrigidTools {
 /// Build a file→abstraction-index lookup map from the checkpoint data.
 ///
 /// Returns a map from file path (String) to abstraction index (usize).
-fn file_to_abstraction_index(data: &CheckpointData) -> HashMap<String, usize> {
+#[must_use]
+pub fn file_to_abstraction_index(data: &CheckpointData) -> HashMap<String, usize> {
     let mut map = HashMap::new();
     if let Some(abs) = &data.abstractions {
         for (idx, abstraction) in abs.abstractions.iter().enumerate() {
@@ -192,7 +193,11 @@ fn file_to_abstraction_index(data: &CheckpointData) -> HashMap<String, usize> {
 }
 
 /// Find an abstraction by name (case-insensitive).
-fn find_abstraction_by_name<'a>(
+///
+/// Returns the index and a reference to the abstraction, or `None` if no
+/// abstraction with that name exists.
+#[must_use]
+pub fn find_abstraction_by_name<'a>(
     data: &'a CheckpointData,
     name: &str,
 ) -> Option<(usize, &'a Abstraction)> {
@@ -229,7 +234,8 @@ fn chapter_to_ref(ch: &Chapter, score: Option<f64>) -> ChapterRef {
 
 /// Collect all relationships involving the abstraction at `index`, with
 /// resolved names and direction labels.
-fn relationships_for_abstraction(
+#[must_use]
+pub fn relationships_for_abstraction(
     data: &CheckpointData,
     index: usize,
 ) -> Vec<RelationshipWithNames> {
