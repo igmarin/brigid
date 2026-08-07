@@ -21,6 +21,7 @@ pub mod diagrams;
 pub mod eval;
 pub mod extract;
 pub mod generate;
+pub mod graph_provider;
 pub mod i18n;
 pub mod mermaid;
 pub mod module;
@@ -65,6 +66,9 @@ pub use eval::{
 };
 pub use extract::{ExtractError, extract_json_block, extract_yaml_block};
 pub use generate::{ArchitectureOverview, CombinedTutorial, SetupGuide};
+pub use graph_provider::{
+    CallEdge, Community, GraphProvider, MultimodalConcept, NoneProvider, none,
+};
 pub use i18n::{ChromeStrings, Locale};
 pub use mermaid::{
     MAX_LABEL_CHARS, MAX_SEQUENCE_PARTICIPANTS, ValidateResult, participant_line, sanitize_label,
