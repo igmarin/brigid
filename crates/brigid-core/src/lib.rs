@@ -50,10 +50,10 @@ pub use checkpoint::{
     StageOutputEntry, StageOutputs, config_hash, current_git_head, sha256_hex_prefixed,
 };
 pub use config::{
-    ConfigError, ConfigIssue, DEFAULT_CONFIG_CHARS_PER_TOKEN, DEFAULT_MAX_LLM_CALLS, RunConfig,
-    canonical_config_json, config_from_env_map, custom_host_warning, merge_allowed_hosts,
-    parse_toml_config, parse_yaml_config, resolve_config, validate_config_for_check,
-    validate_hostname,
+    ConfigError, ConfigIssue, DEFAULT_CONFIG_CHARS_PER_TOKEN, DEFAULT_MAX_LLM_CALLS,
+    GraphProviderConfig, RunConfig, canonical_config_json, config_from_env_map,
+    custom_host_warning, merge_allowed_hosts, parse_toml_config, parse_yaml_config, resolve_config,
+    validate_config_for_check, validate_hostname,
 };
 pub use diagrams::{
     DiagramEdge, learning_path_flowchart, module_inventory_flowchart, module_inventory_from_counts,

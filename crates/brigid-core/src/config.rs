@@ -147,6 +147,68 @@ pub struct RunConfig {
     /// `blog-post` (shorter, conversational chapters). Default `blog-post`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tutorial_style: Option<TutorialStyle>,
+    /// Optional graph provider configuration for structural ground truth
+    /// (ADR 0016). When absent, [`crate::NoneProvider`] is used — `brigid`
+    /// works LLM-only with zero configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_provider: Option<GraphProviderConfig>,
+}
+
+/// Configuration for an external graph provider (ADR 0016).
+///
+/// Parsed from the `[graph_provider]` section in `brigid.toml` /
+/// `.brigid.yaml`, or the `BRIGID_GRAPH_PROVIDER` environment variable
+/// (which sets only the type). When absent, [`crate::NoneProvider`] is
+/// used — `brigid` works exactly as today (LLM-only).
+///
+/// # Examples
+///
+/// ## codegraph (SQLite index)
+///
+/// ```toml
+/// [graph_provider]
+/// type = "codegraph"
+/// index_path = ".codegraph/graph.db"
+/// ```
+///
+/// ## Graphify (graph.json output file)
+///
+/// ```toml
+/// [graph_provider]
+/// type = "graphify"
+/// graph_path = "graphify-out/graph.json"
+/// ```
+///
+/// ## Composed (codegraph + Graphify)
+///
+/// ```toml
+/// [graph_provider]
+/// type = "composed"
+/// providers = ["codegraph:.codegraph/graph.db", "graphify:graphify-out/graph.json"]
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphProviderConfig {
+    /// Provider type: `"codegraph"`, `"graphify"`, `"composed"`, or `"none"`.
+    ///
+    /// Mapped from the `type` key in the config file. The
+    /// `BRIGID_GRAPH_PROVIDER` env var sets only this field.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "type")]
+    pub provider_type: Option<String>,
+    /// Path to the codegraph SQLite index file (`.codegraph/graph.db`).
+    ///
+    /// Used when `provider_type` is `"codegraph"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_path: Option<PathBuf>,
+    /// Path to the Graphify `graph.json` output file.
+    ///
+    /// Used when `provider_type` is `"graphify"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_path: Option<PathBuf>,
+    /// List of provider specs for composed mode (`"type:path"` strings).
+    ///
+    /// Used when `provider_type` is `"composed"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<Vec<String>>,
 }
 
 /// Tutorial writing style.
@@ -206,6 +268,7 @@ impl Default for RunConfig {
             since: None,
             plugin_dirs: None,
             tutorial_style: Some(TutorialStyle::BlogPost),
+            graph_provider: None,
         }
     }
 }
@@ -234,6 +297,7 @@ impl RunConfig {
             since: None,
             plugin_dirs: None,
             tutorial_style: None,
+            graph_provider: None,
         }
     }
 
@@ -269,6 +333,10 @@ impl RunConfig {
                 .clone()
                 .or_else(|| self.plugin_dirs.clone()),
             tutorial_style: overlay.tutorial_style.or(self.tutorial_style),
+            graph_provider: overlay
+                .graph_provider
+                .clone()
+                .or_else(|| self.graph_provider.clone()),
         }
     }
 
@@ -348,6 +416,7 @@ pub fn parse_yaml_config(text: &str) -> Result<RunConfig, ConfigError> {
 /// - `BRIGID_CACHE_SIZE_LIMIT_MB`, `BRIGID_CONCURRENCY`,
 /// - `BRIGID_MAX_ABSTRACTIONS`, `BRIGID_DIAGRAM_LEVEL`,
 /// - `BRIGID_SINCE` (git ref for incremental crawl),
+/// - `BRIGID_GRAPH_PROVIDER` (graph provider type: codegraph, graphify, composed),
 ///
 /// **Blank values are ignored** (treated as unset). Non-blank values that fail
 /// numeric parse return [`ConfigError::InvalidEnvValue`].
@@ -440,6 +509,14 @@ pub fn config_from_env_map(vars: &BTreeMap<String, String>) -> Result<RunConfig,
         } else {
             cfg.plugin_dirs = Some(dirs);
         }
+    }
+    if let Some(v) = nonblank(vars.get("BRIGID_GRAPH_PROVIDER")) {
+        cfg.graph_provider = Some(GraphProviderConfig {
+            provider_type: Some(v.to_owned()),
+            index_path: None,
+            graph_path: None,
+            providers: None,
+        });
     }
     Ok(cfg)
 }
@@ -2039,5 +2116,191 @@ dirs = ["./plugins", "./custom"]
     fn plugins_table_without_dirs_is_ok() {
         let cfg = parse_toml_config("[plugins]\n").expect("toml");
         assert_eq!(cfg.plugin_dirs, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // graph_provider (ADR 0016)
+    // -----------------------------------------------------------------------
+
+    /// `RunConfig::empty()` has `graph_provider = None`.
+    #[test]
+    fn graph_provider_empty_is_none() {
+        let e = RunConfig::empty();
+        assert_eq!(e.graph_provider, None);
+    }
+
+    /// `RunConfig::default()` has `graph_provider = None`.
+    #[test]
+    fn graph_provider_default_is_none() {
+        let d = RunConfig::default();
+        assert_eq!(d.graph_provider, None);
+    }
+
+    /// `brigid.toml` supports `[graph_provider] type = "codegraph"`.
+    #[test]
+    fn graph_provider_codegraph_from_toml() {
+        let cfg = parse_toml_config(
+            r#"
+[graph_provider]
+type = "codegraph"
+index_path = ".codegraph/graph.db"
+"#,
+        )
+        .expect("toml");
+        let gp = cfg.graph_provider.expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("codegraph"));
+        assert_eq!(
+            gp.index_path.as_deref(),
+            Some(std::path::Path::new(".codegraph/graph.db"))
+        );
+        assert_eq!(gp.graph_path, None);
+        assert_eq!(gp.providers, None);
+    }
+
+    /// `brigid.toml` supports `[graph_provider] type = "graphify"`.
+    #[test]
+    fn graph_provider_graphify_from_toml() {
+        let cfg = parse_toml_config(
+            r#"
+[graph_provider]
+type = "graphify"
+graph_path = "graphify-out/graph.json"
+"#,
+        )
+        .expect("toml");
+        let gp = cfg.graph_provider.expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("graphify"));
+        assert_eq!(gp.index_path, None);
+        assert_eq!(
+            gp.graph_path.as_deref(),
+            Some(std::path::Path::new("graphify-out/graph.json"))
+        );
+    }
+
+    /// `brigid.toml` supports `[graph_provider] type = "composed"`.
+    #[test]
+    fn graph_provider_composed_from_toml() {
+        let cfg = parse_toml_config(
+            r#"
+[graph_provider]
+type = "composed"
+providers = ["codegraph:.codegraph/graph.db", "graphify:graphify-out/graph.json"]
+"#,
+        )
+        .expect("toml");
+        let gp = cfg.graph_provider.expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("composed"));
+        assert_eq!(
+            gp.providers.as_deref(),
+            Some(
+                [
+                    "codegraph:.codegraph/graph.db".to_string(),
+                    "graphify:graphify-out/graph.json".to_string()
+                ]
+                .as_slice()
+            )
+        );
+    }
+
+    /// `.brigid.yaml` supports `graph_provider: { type: ... }`.
+    #[test]
+    fn graph_provider_from_yaml() {
+        let cfg = parse_yaml_config(
+            "graph_provider:\n  type: codegraph\n  index_path: .codegraph/graph.db\n",
+        )
+        .expect("yaml");
+        let gp = cfg.graph_provider.expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("codegraph"));
+        assert_eq!(
+            gp.index_path.as_deref(),
+            Some(std::path::Path::new(".codegraph/graph.db"))
+        );
+    }
+
+    /// `BRIGID_GRAPH_PROVIDER` env var sets the provider type.
+    #[test]
+    fn graph_provider_from_env() {
+        let mut vars = BTreeMap::new();
+        vars.insert("BRIGID_GRAPH_PROVIDER".into(), "codegraph".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        let gp = env.graph_provider.expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("codegraph"));
+        assert_eq!(gp.index_path, None);
+    }
+
+    /// Blank `BRIGID_GRAPH_PROVIDER` is ignored.
+    #[test]
+    fn graph_provider_blank_env_ignored() {
+        let mut vars = BTreeMap::new();
+        vars.insert("BRIGID_GRAPH_PROVIDER".into(), "   ".into());
+        let env = config_from_env_map(&vars).expect("env map");
+        assert_eq!(env.graph_provider, None);
+    }
+
+    /// `merge_layer`: CLI `graph_provider` overrides file `graph_provider`.
+    #[test]
+    fn graph_provider_cli_overrides_file() {
+        let env = RunConfig::empty();
+        let file = RunConfig {
+            graph_provider: Some(GraphProviderConfig {
+                provider_type: Some("graphify".into()),
+                index_path: None,
+                graph_path: Some(std::path::PathBuf::from("file.json")),
+                providers: None,
+            }),
+            ..RunConfig::empty()
+        };
+        let cli = RunConfig {
+            graph_provider: Some(GraphProviderConfig {
+                provider_type: Some("codegraph".into()),
+                index_path: Some(std::path::PathBuf::from("cli.db")),
+                graph_path: None,
+                providers: None,
+            }),
+            ..RunConfig::empty()
+        };
+        let resolved = resolve_config(&env, &file, &cli);
+        let gp = resolved
+            .graph_provider
+            .expect("graph_provider should be set");
+        assert_eq!(gp.provider_type.as_deref(), Some("codegraph"));
+        assert_eq!(
+            gp.index_path.as_deref(),
+            Some(std::path::Path::new("cli.db"))
+        );
+    }
+
+    /// `graph_provider` is included in canonical JSON (checkpoint hashing).
+    #[test]
+    fn graph_provider_included_in_canonical_json() {
+        let a = RunConfig {
+            graph_provider: Some(GraphProviderConfig {
+                provider_type: Some("codegraph".into()),
+                index_path: Some(std::path::PathBuf::from("a.db")),
+                graph_path: None,
+                providers: None,
+            }),
+            ..RunConfig::default()
+        };
+        let b = RunConfig {
+            graph_provider: Some(GraphProviderConfig {
+                provider_type: Some("graphify".into()),
+                index_path: None,
+                graph_path: Some(std::path::PathBuf::from("b.json")),
+                providers: None,
+            }),
+            ..RunConfig::default()
+        };
+        assert_ne!(
+            canonical_config_json(&a).unwrap(),
+            canonical_config_json(&b).unwrap()
+        );
+    }
+
+    /// Config without `[graph_provider]` section has `graph_provider = None`.
+    #[test]
+    fn graph_provider_absent_in_toml_is_none() {
+        let cfg = parse_toml_config("language = \"en\"\n").expect("toml");
+        assert_eq!(cfg.graph_provider, None);
     }
 }
