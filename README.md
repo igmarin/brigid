@@ -1,17 +1,20 @@
-# Brigid
+# Brigid — Rust CLI for LLM-Generated Codebase Tutorials
 ![Brigid Logo](https://github.com/user-attachments/assets/3e06809f-b89c-4b0a-ab80-43f7729ae056)
 
 [![CI](https://github.com/igmarin/brigid/actions/workflows/ci.yml/badge.svg)](https://github.com/igmarin/brigid/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/igmarin/brigid/branch/main/graph/badge.svg)](https://codecov.io/gh/igmarin/brigid)
 [![crates.io](https://img.shields.io/crates/v/brigid-cli.svg)](https://crates.io/crates/brigid-cli)
+[![crates.io downloads](https://img.shields.io/crates/d/brigid-core.svg)](https://crates.io/crates/brigid-core)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Turn any codebase into a beginner-friendly tutorial — powered by LLMs, built in Rust.
+> **A memory-safe Rust CLI that turns any codebase into a beginner-friendly, LLM-generated tutorial.**
 
 `brigid` crawls a codebase, identifies its core abstractions, and produces a
 multi-chapter Markdown + Mermaid tutorial that explains how the system works:
-setup, architecture, and inter-concept relationships. Built for monorepos and
+setup, architecture, and inter-concept relationships. Built in Rust and available through the `brigid-core` crate (**169 downloads** on crates.io) and the `brigid-cli` binary. Built for monorepos and
 large codebases where "read the source" is not a realistic onboarding path.
+
+**Who this is for:** teams, educators, and open-source maintainers who need onboarding tutorials generated from real code.
 
 ---
 
