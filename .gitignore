@@ -29,3 +29,9 @@ tests/**/output/
 review-result.txt
 rs-guard-metrics.json
 .rs-guard/cache/
+
+# AI code intelligence artifacts
+.codegraph/
+graphify-out/
+repomix-output.xml
+repomix-output.md
