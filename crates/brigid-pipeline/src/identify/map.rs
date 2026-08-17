@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use brigid_core::{
     BudgetConfig, ProgressTracker, capped_file_chars, extract_yaml_block, module_key,
 };
-use crate::llm::{LlmClient, bounded_complete, bounded_complete_with_budget, complete_text};
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -74,7 +74,7 @@ pub async fn identify_map(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &IdentifyMapInput,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<Vec<CandidateBatch>, IdentifyError> {
     // a. Batch files by size budget.
     let batches = batch_files_by_size(&input.files, &input.sizes, &input.budget_config);
@@ -92,19 +92,11 @@ pub async fn identify_map(
         prompts.push(prompt);
     }
 
-    // c. Fire bounded-concurrent LLM calls. When a progress tracker is
-    //    supplied, use bounded_complete_with_budget (which reserves all calls
-    //    up front and fails closed on budget exhaustion). Otherwise use
-    //    bounded_complete directly.
-    let results = match progress {
-        Some(tracker) => {
-            tracker.set_stage("identify_map");
-            bounded_complete_with_budget(client, prompts, input.max_concurrency, tracker)
-                .await
-                .map_err(IdentifyError::from)?
-        }
-        None => bounded_complete(client, prompts, input.max_concurrency).await,
-    };
+    // c. Fire bounded-concurrent LLM calls with budget enforcement.
+    //    Always use bounded_complete_with_budget since progress is always supplied.
+    progress.set_stage("identify_map");
+    let results = bounded_complete_with_budget(client, prompts, input.max_concurrency, progress)
+        .await?;
 
     // d. Process each result in order. Fail closed on any error.
     let mut candidate_batches: Vec<CandidateBatch> = Vec::with_capacity(batch_total);
@@ -177,16 +169,15 @@ pub(crate) async fn run_single_map_batch(
     batch_indices: &[usize],
     batch_idx: usize,
     batch_total: usize,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<CandidateBatch, IdentifyError> {
     let prompt = render_map_prompt(renderer, input, batch_indices, batch_idx, batch_total)?;
 
-    if let Some(tracker) = progress {
-        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
-        tracker.set_stage("identify_map");
-    }
-
-    let response = complete_text(client, &prompt).await?;
+    progress.set_stage("identify_map");
+    let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = results
+        .pop()
+        .ok_or(IdentifyError::EmptyOutput)??;
     let yaml_text = extract_yaml_block(&response)?;
     let candidates = parse_candidates(&yaml_text, batch_idx)?;
 
@@ -363,7 +354,7 @@ pub(crate) fn parse_candidates(
 mod map_tests {
     use super::*;
     use brigid_core::{BudgetConfig, ProgressTracker, Tier};
-    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
+    use crate::llm::{LlmError, MockClient};
 
     /// Four-file inventory used across map-stage tests.
     fn sample_files() -> Vec<String> {
@@ -433,7 +424,7 @@ mod map_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_map_input(files, sizes, two_batch_config());
 
-        let result = identify_map(&client, &renderer, &input, None)
+        let result = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("two batches should succeed");
 
@@ -460,7 +451,7 @@ mod map_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_map_input(files, sizes, BudgetConfig::default());
 
-        let result = identify_map(&client, &renderer, &input, None)
+        let result = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("single batch should succeed");
 
@@ -489,7 +480,7 @@ mod map_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_map_input(files, sizes, BudgetConfig::default());
 
-        let err = identify_map(&client, &renderer, &input, None)
+        let err = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("oob index should error");
 
@@ -530,7 +521,7 @@ mod map_tests {
         let mut input = sample_map_input(files, sizes, two_batch_config());
         input.max_concurrency = 1;
 
-        let err = identify_map(&client, &renderer, &input, None)
+        let err = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("batch failure should error");
 
@@ -554,7 +545,7 @@ mod map_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_map_input(files, sizes, BudgetConfig::default());
 
-        let err = identify_map(&client, &renderer, &input, None)
+        let err = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("empty result should error");
 
@@ -570,7 +561,7 @@ mod map_tests {
         let input = sample_map_input(files, sizes, BudgetConfig::default());
 
         let mut progress = ProgressTracker::new(0); // no calls allowed
-        let err = identify_map(&client, &renderer, &input, Some(&mut progress))
+        let err = identify_map(&client, &renderer, &input, &mut progress)
             .await
             .expect_err("budget exceeded should error");
 
@@ -587,7 +578,7 @@ mod map_tests {
         let input = sample_map_input(files, sizes, two_batch_config());
 
         let mut progress = ProgressTracker::new(10);
-        let result = identify_map(&client, &renderer, &input, Some(&mut progress))
+        let result = identify_map(&client, &renderer, &input, &mut progress)
             .await
             .expect("should succeed with progress");
 
@@ -673,7 +664,7 @@ mod map_tests {
         let mut input = sample_map_input(files, sizes, two_batch_config());
         input.max_concurrency = 1;
 
-        let result = identify_map(&client, &renderer, &input, None)
+        let result = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed with concurrency=1");
 
@@ -697,7 +688,7 @@ mod map_tests {
             community_context: String::new(),
         };
 
-        let result = identify_map(&client, &renderer, &input, None)
+        let result = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("empty files should succeed with empty result");
 
@@ -713,7 +704,7 @@ mod map_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_map_input(files, sizes, BudgetConfig::default());
 
-        let result = identify_map(&*client, &renderer, &input, None)
+        let result = identify_map(&*client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("dyn client should work");
 
@@ -763,7 +754,7 @@ mod map_tests {
         input.project_name = "AcmeCorp/{{ evil }}".to_string();
         input.max_concurrency = 1; // deterministic order
 
-        let _ = identify_map(&client, &renderer, &input, None)
+        let _ = identify_map(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
 

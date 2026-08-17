@@ -425,7 +425,7 @@ pub async fn write_chapters(
     order: &ChapterOrder,
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     generate_chapters_internal(
         client,
@@ -464,7 +464,7 @@ pub async fn chapters_and_checkpoint(
     order: &ChapterOrder,
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     // When the stage is already complete and there are no changed files,
     // return the existing chapters without re-generation.
@@ -539,7 +539,7 @@ async fn generate_chapters_internal(
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
     existing: Option<&HashMap<usize, Chapter>>,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     let abstractions = &identify.abstractions;
     let ordered_indices = &order.ordered_indices;
@@ -649,14 +649,12 @@ async fn generate_chapters_internal(
     };
 
     let gen_count = positions_to_generate.len();
-    if let Some(tracker) = progress {
-        if gen_count > 0 {
-            tracker
-                .reserve_llm_calls(gen_count as u32)
-                .map_err(ChaptersError::from)?;
-        }
-        tracker.set_stage("chapters");
+    if gen_count > 0 {
+        progress
+            .reserve_llm_calls(gen_count as u32)
+            .map_err(ChaptersError::from)?;
     }
+    progress.set_stage("chapters");
 
     if gen_count == 0 {
         let mut chapters: Vec<Chapter> = existing
@@ -975,7 +973,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{AbstractionKind, RunConfig};
-    use crate::llm::{LlmClient, MockClient, complete_text};
+    use crate::llm::MockClient;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -1638,7 +1636,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("happy path should succeed");
         assert_eq!(result.chapters.len(), 3);
@@ -1671,7 +1669,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![1, 0, 2]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(result.chapters[0].abstraction_index, 1);
@@ -1698,7 +1696,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect_err("budget exceeded should error");
@@ -1727,7 +1725,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -1742,7 +1740,7 @@ We learned routing.\n";
         let identify = IdentifyResult::new(vec![]);
         let order = ChapterOrder::new(vec![]);
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("empty order should succeed");
         assert!(result.chapters.is_empty());
@@ -1757,7 +1755,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let err = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let err = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect_err("malformed output should error");
         assert!(matches!(err, ChaptersError::EmptyOutput), "got: {err:?}");
@@ -1775,7 +1773,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(result.chapters.len(), 1);
@@ -1798,7 +1796,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
@@ -1821,7 +1819,7 @@ We learned routing.\n";
         let files = file_contents_for();
         let mut config = sample_config();
         config.diagram_level = DiagramLevel::Minimal;
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 1);
@@ -1844,7 +1842,7 @@ We learned routing.\n";
         let files = file_contents_for();
         let mut config = sample_config();
         config.diagram_level = DiagramLevel::Minimal;
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
@@ -1900,7 +1898,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1]);
         let mut config = sample_config();
         config.max_concurrency = 1;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(result.chapters.len(), 2);
@@ -1984,7 +1982,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2, 3, 4]);
         let mut config = sample_config();
         config.max_concurrency = 2;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(result.chapters.len(), 5);
@@ -2009,7 +2007,7 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..20).collect());
         let mut config = sample_config();
         config.max_concurrency = 8;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(100))
             .await
             .expect("20-chapter concurrent generation should succeed without deadlock");
         assert_eq!(result.chapters.len(), 20);
@@ -2035,7 +2033,7 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..8).collect());
         let mut config = sample_config();
         config.max_concurrency = 8;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("8-chapter high-concurrency generation should succeed");
         assert_eq!(
@@ -2102,7 +2100,7 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2]);
         let mut config = sample_config();
         config.max_concurrency = 1;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(result.chapters.len(), 3);
@@ -2137,7 +2135,7 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..6).collect());
         let mut config = sample_config();
         config.max_concurrency = 3;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
+        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert_eq!(
@@ -2183,7 +2181,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -2249,7 +2247,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("resume should succeed");
@@ -2330,7 +2328,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("incremental regen should succeed");
@@ -2391,7 +2389,7 @@ We learned routing.\n";
             &order,
             &[],
             &config,
-            None,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("should succeed");

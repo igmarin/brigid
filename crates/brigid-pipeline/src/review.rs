@@ -97,6 +97,7 @@ pub async fn review_chapter(
         "chapter_md": sanitize_template_input(chapter_md),
     });
     let prompt = renderer.render(PromptId::ReviewChapter, &ctx)?;
+
     let response = complete_text(client, &prompt).await?;
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -172,7 +173,7 @@ pub async fn review_chapters(
     result: &mut ChapterResult,
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
-    mut progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
     cancel: &crate::cancellation::CancelToken,
     language: &str,
     diagram_need: impl Fn(&Chapter) -> usize + Send + Sync + 'static,
@@ -184,10 +185,10 @@ pub async fn review_chapters(
         return Ok(ReviewSummary::default());
     }
 
-    if let Some(tracker) = &mut progress {
-        tracker.reserve_llm_calls(count as u32)?;
-        tracker.set_stage("review");
+    if count > 0 {
+        progress.reserve_llm_calls(count as u32)?;
     }
+    progress.set_stage("review");
 
     let max_concurrency = max_concurrency.max(1);
     let semaphore = Arc::new(Semaphore::new(max_concurrency));
@@ -316,9 +317,7 @@ pub async fn review_chapters(
         Err(arc) => arc.lock().await.clone(),
     };
 
-    if let Some(tracker) = progress {
-        tracker.complete_stage();
-    }
+    progress.complete_stage();
 
     Ok(summary)
 }
@@ -684,7 +683,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -708,7 +707,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -734,7 +733,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -759,7 +758,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -787,7 +786,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            Some(&mut progress),
+            &mut progress,
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -815,7 +814,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -840,7 +839,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -865,7 +864,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -890,7 +889,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &cancel,
             "English",
             diagram_need_m,
@@ -924,7 +923,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -960,7 +959,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -1002,7 +1001,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            Some(&mut progress),
+            &mut progress,
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -1035,7 +1034,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,

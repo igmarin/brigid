@@ -160,7 +160,7 @@ async fn smoke_identify_single_shot() {
         max_abstraction_num: 5,
     };
 
-    let result = match identify_single_shot(&client, &renderer, &input, Some(&mut progress)).await {
+    let result = match identify_single_shot(&client, &renderer, &input, &mut progress).await {
         Ok(r) => r,
         Err(e) => {
             // Network/API issues are tolerated for a smoke test — document and

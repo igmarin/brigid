@@ -14,10 +14,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use brigid_core::{
-    Abstraction, ArchitectureOverview, CheckpointV1, ModuleKey, Relationship, StageId,
-    redact_content, sanitize_markdown_mermaid_blocks,
+    Abstraction, ArchitectureOverview, CheckpointV1, ModuleKey, ProgressTracker, Relationship,
+    StageId, redact_content, sanitize_markdown_mermaid_blocks,
 };
-use crate::llm::{complete_text, LlmClient};
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde_json::json;
 use thiserror::Error;
 
@@ -37,6 +37,9 @@ pub enum OverviewError {
     /// The LLM returned empty output.
     #[error("LLM returned empty output")]
     EmptyOutput,
+    /// The configured LLM call budget was exceeded.
+    #[error("budget exceeded: {0}")]
+    Budget(#[from] brigid_core::BudgetExceeded),
     /// The LLM invented app names not present in the crawled inventory.
     #[error("app validation failed: LLM invented apps not in inventory: {invented:?}")]
     AppValidation {
@@ -98,6 +101,7 @@ pub async fn write_architecture_overview(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &OverviewInput,
+    progress: &mut ProgressTracker,
 ) -> Result<(ArchitectureOverview, Vec<String>), OverviewError> {
     let summary = redact_content(&input.summary);
     let inventory_text = redact_content(&format_inventory(&input.inventory));
@@ -118,7 +122,13 @@ pub async fn write_architecture_overview(
         brigid_core::config::TutorialStyle::BlogPost => PromptId::WriteArchitectureOverviewBlog,
     };
     let prompt = renderer.render(overview_prompt, &context)?;
-    let response = complete_text(client, &prompt).await?;
+
+    progress.set_stage("overview");
+    let result = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = result
+        .into_iter()
+        .next()
+        .ok_or(OverviewError::EmptyOutput)??;
 
     if response.trim().is_empty() {
         return Err(OverviewError::EmptyOutput);
@@ -163,6 +173,7 @@ pub async fn overview_and_checkpoint(
     store: &CheckpointStore,
     checkpoint: &mut CheckpointV1,
     input: &OverviewInput,
+    progress: &mut ProgressTracker,
 ) -> Result<ArchitectureOverview, OverviewError> {
     if !resume::should_run(StageId::Overview, checkpoint) {
         if let Some(existing) = store
@@ -173,7 +184,8 @@ pub async fn overview_and_checkpoint(
         }
     }
 
-    let (overview, invented) = write_architecture_overview(client, renderer, input).await?;
+    let (overview, invented) =
+        write_architecture_overview(client, renderer, input, progress).await?;
 
     // Warn (but don't fail) when the LLM invented app names not in the
     // inventory and strict_app_validation is false.
@@ -302,7 +314,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{StageId, Tier};
-    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
+    use crate::llm::{LlmClient, LlmError, MockClient};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -447,7 +459,7 @@ flowchart LR
         let client = MockClient::new(canned_overview_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("happy path should succeed");
         assert!(!result.markdown.is_empty());
@@ -463,7 +475,7 @@ flowchart LR
         let client: Box<dyn LlmClient> = Box::new(MockClient::new(canned_overview_markdown()));
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let (result, _) = write_architecture_overview(&*client, &renderer, &input)
+        let (result, _) = write_architecture_overview(&*client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("dyn client should work");
         assert!(!result.markdown.is_empty());
@@ -476,7 +488,7 @@ flowchart LR
         let client = MockClient::new(canned_overview_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("known apps should pass validation");
         assert!(result.markdown.contains("apps/api"));
@@ -488,7 +500,7 @@ flowchart LR
         let client = MockClient::new(canned_overview_with_fake_app());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let err = write_architecture_overview(&client, &renderer, &input)
+        let err = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("invented app should error in strict mode");
         match err {
@@ -505,7 +517,7 @@ flowchart LR
         let renderer = PromptRenderer::new().unwrap();
         let mut input = sample_input(three_app_inventory());
         input.strict_app_validation = false;
-        let (result, invented) = write_architecture_overview(&client, &renderer, &input)
+        let (result, invented) = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("lenient mode should not error on invented apps");
         assert!(result.markdown.contains("apps/fake"));
@@ -530,7 +542,7 @@ flowchart LR
         let client = MockClient::new(raw.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let (result, _) = write_architecture_overview(&client, &renderer, &input)
+        let (result, _) = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let mermaid_block = result
@@ -587,7 +599,7 @@ flowchart LR
         let renderer = PromptRenderer::new().unwrap();
         let mut input = sample_input(three_app_inventory());
         input.summary = "API_KEY=super-secret-value\nA multi-app monorepo.".to_string();
-        let _ = write_architecture_overview(&client, &renderer, &input)
+        let _ = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
@@ -608,7 +620,7 @@ flowchart LR
         let client = MockClient::new("");
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let err = write_architecture_overview(&client, &renderer, &input)
+        let err = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("empty output should error");
         assert!(matches!(err, OverviewError::EmptyOutput), "got: {err:?}");
@@ -619,7 +631,7 @@ flowchart LR
         let client = MockClient::new("   \n\n  \n");
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let err = write_architecture_overview(&client, &renderer, &input)
+        let err = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("whitespace-only output should error");
         assert!(matches!(err, OverviewError::EmptyOutput), "got: {err:?}");
@@ -630,7 +642,7 @@ flowchart LR
         let client = MockClient::new("ignored").fail_on(0, LlmError::Timeout);
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
-        let err = write_architecture_overview(&client, &renderer, &input)
+        let err = write_architecture_overview(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("llm failure should propagate");
         assert!(
@@ -651,7 +663,7 @@ flowchart LR
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
 
-        let result = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input)
+        let result = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
             .await
             .expect("checkpoint run should succeed");
 
@@ -679,12 +691,12 @@ flowchart LR
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input(three_app_inventory());
 
-        let first = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input)
+        let first = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
             .await
             .expect("first run should succeed");
         assert_eq!(client.call_count(), 1);
 
-        let second = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input)
+        let second = overview_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
             .await
             .expect("resume should succeed");
         assert_eq!(second.markdown, first.markdown);

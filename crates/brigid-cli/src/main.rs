@@ -22,7 +22,7 @@ use brigid_core::{
 use brigid_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
 use brigid_pipeline::{
     CheckpointStore, DryRunError, LlmClient, LlmError, MockClient, check_identity,
-    complete_text, dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
+    dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use async_trait::async_trait;
@@ -3854,6 +3854,7 @@ fn walk_md(dir: &Path, root: &Path, out: &mut Vec<TutorialFile>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brigid_pipeline::complete_text;
 
     /// Unique temp dir helper for unit tests in main.rs.
     fn temp_dir(label: &str) -> PathBuf {

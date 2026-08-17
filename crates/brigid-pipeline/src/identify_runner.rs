@@ -210,7 +210,7 @@ pub async fn identify_with_cancellation(
                     candidates_collected: 0,
                 });
             }
-            let mut result = identify_single_shot(client, renderer, input, Some(progress)).await?;
+            let mut result = identify_single_shot(client, renderer, input, progress).await?;
             // Enrich empty kinds via the plugin registry (issue #228).
             if let Some(reg) = registry {
                 let empty_contents: Vec<String> = vec![String::new(); strategy_files.len()];
@@ -255,7 +255,7 @@ pub async fn identify_with_cancellation(
                     &indices,
                     batch_idx,
                     batch_total,
-                    Some(progress),
+                    progress,
                 )
                 .await?;
                 all_batches.push(batch);
@@ -276,7 +276,7 @@ pub async fn identify_with_cancellation(
                 let candidates = flatten_candidates(&all_batches);
                 reduce_input.candidates = candidates;
                 let mut result =
-                    identify_reduce(client, renderer, &reduce_input, Some(progress)).await?;
+                    identify_reduce(client, renderer, &reduce_input, progress).await?;
                 // Enrich empty kinds via the plugin registry (issue #228).
                 if let Some(reg) = registry {
                     let empty_contents: Vec<String> = vec![String::new(); strategy_files.len()];
@@ -329,7 +329,7 @@ mod tests {
     use crate::identify::{IdentifyMapInput, IdentifyReduceInput, IdentifySingleShotInput};
     use crate::prompts::PromptRenderer;
     use brigid_core::{BudgetConfig, RunConfig, Tier};
-    use crate::llm::{LlmClient, MockClient, complete_text};
+    use crate::llm::MockClient;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

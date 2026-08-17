@@ -6,8 +6,8 @@
 //! chapter templates), secret redaction, MockClient LLM call, mermaid
 //! sanitization, and evidence-footer attachment. No network or real LLM calls.
 
-use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, Tier};
-use crate::llm::MockClient;
+use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, ProgressTracker, Tier};
+use brigid_pipeline::llm::MockClient;
 use brigid_pipeline::chapters::{DiagramLevel, write_single_chapter};
 use brigid_pipeline::prompts::PromptRenderer;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -189,7 +189,7 @@ fn bench_write_single_chapter(c: &mut Criterion) {
                     black_box(&order),
                     black_box(&file_contents),
                     black_box(&config),
-                    black_box(None),
+                    black_box(&mut ProgressTracker::new(u32::MAX)),
                 ));
                 let _ = black_box(result);
             });

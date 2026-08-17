@@ -36,7 +36,7 @@ use crate::setup_guide::{
     WriteSetupGuideInput, should_generate_setup, write_setup_guide_and_checkpoint,
 };
 
-use crate::llm::{complete_text, LlmClient};
+use crate::llm::LlmClient;
 
 /// Errors returned by the generate pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -251,7 +251,7 @@ pub async fn run_generate(
             &files,
             &sizes,
             &config.run_config,
-            Some(progress),
+            progress,
         )
         .await?;
         save_identify_result(store, checkpoint, &result)?;
@@ -311,7 +311,7 @@ pub async fn run_generate(
             &identify,
             file_contents,
             &rel_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -340,7 +340,7 @@ pub async fn run_generate(
             &identify,
             &relationships,
             &order_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -375,7 +375,7 @@ pub async fn run_generate(
             &order,
             file_contents,
             &chapters_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -399,7 +399,7 @@ pub async fn run_generate(
             &mut chapters,
             client,
             renderer,
-            Some(progress),
+            progress,
             cancel,
             &lang_str,
             move |ch: &brigid_core::Chapter| {
@@ -483,7 +483,8 @@ pub async fn run_generate(
             strict_app_validation: config.strict_app_validation,
             tutorial_style: config.tutorial_style,
         };
-        let ov = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+        let ov =
+            overview_and_checkpoint(client, renderer, store, checkpoint, &input, progress).await?;
         overview = Some(ov);
         progress.complete_stage();
     } else if checkpoint.is_stage_complete(StageId::Overview) {
@@ -867,6 +868,7 @@ pub async fn run_relationships_stage(
     project_name: &str,
     language_instruction: &str,
 ) -> Result<RelationshipsResult, GenerateError> {
+    let mut progress = ProgressTracker::new(u32::MAX);
     if !checkpoint.is_stage_complete(StageId::Identify) {
         return Err(prerequisite_error("relationships", "identify"));
     }
@@ -884,7 +886,7 @@ pub async fn run_relationships_stage(
         &identify,
         file_contents,
         &rel_config,
-        None,
+        &mut progress,
     )
     .await?;
     Ok(result)
@@ -909,6 +911,7 @@ pub async fn run_order_stage(
     project_name: &str,
     language_instruction: &str,
 ) -> Result<ChapterOrder, GenerateError> {
+    let mut progress = ProgressTracker::new(u32::MAX);
     if !checkpoint.is_stage_complete(StageId::Relationships) {
         return Err(prerequisite_error("order", "relationships"));
     }
@@ -927,7 +930,7 @@ pub async fn run_order_stage(
         &identify,
         &relationships,
         &order_config,
-        None,
+        &mut progress,
     )
     .await?;
     Ok(result)
@@ -960,6 +963,7 @@ pub async fn run_chapters_stage(
     diagram_level: DiagramLevel,
     chapter_concurrency: usize,
 ) -> Result<ChapterResult, GenerateError> {
+    let mut progress = ProgressTracker::new(u32::MAX);
     if !checkpoint.is_stage_complete(StageId::Order) {
         return Err(prerequisite_error("chapters", "order"));
     }
@@ -984,7 +988,7 @@ pub async fn run_chapters_stage(
         &order,
         file_contents,
         &chapters_config,
-        None,
+        &mut progress,
     )
     .await?;
     Ok(result)
@@ -1066,6 +1070,7 @@ pub async fn run_overview_stage(
     lang_note: &str,
     modules: &[ModuleKey],
 ) -> Result<brigid_core::ArchitectureOverview, GenerateError> {
+    let mut progress = ProgressTracker::new(u32::MAX);
     if !checkpoint.is_stage_complete(StageId::Relationships) {
         return Err(prerequisite_error("overview", "relationships"));
     }
@@ -1081,7 +1086,8 @@ pub async fn run_overview_stage(
         strict_app_validation: true,
         tutorial_style: brigid_core::config::TutorialStyle::Book,
     };
-    let overview = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+    let overview =
+        overview_and_checkpoint(client, renderer, store, checkpoint, &input, &mut progress).await?;
     Ok(overview)
 }
 

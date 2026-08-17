@@ -1,5 +1,5 @@
 use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, extract_yaml_block};
-use crate::llm::{complete_text, LlmClient};
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde_json::json;
 
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -59,7 +59,7 @@ pub async fn identify_reduce(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &IdentifyReduceInput,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<IdentifyResult, IdentifyError> {
     // a. Build the render context for identify_reduce.md.j2. The template
     //    expects: project_name, module_summary, language_instruction,
@@ -90,20 +90,15 @@ pub async fn identify_reduce(
     // b. Render the prompt.
     let prompt = renderer.render(PromptId::IdentifyReduce, &context)?;
 
-    // c. Reserve budget up front (fail closed before spending a network call)
-    //    and tag the current stage for observability. `reserve_llm_calls(1)`
-    //    is the authoritative counter: it advances `llm_calls_used` by one,
-    //    matching the single call we make. We intentionally do NOT also call
-    //    `record_llm_call` (that would double-count).
-    if let Some(tracker) = progress {
-        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
-        tracker.set_stage("identify_reduce");
-    }
+    // c. Call the LLM with budget enforcement. `bounded_complete_with_budget`
+    //    reserves the call and sets the stage for observability.
+    progress.set_stage("identify_reduce");
+    let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = results
+        .pop()
+        .ok_or(IdentifyError::EmptyOutput)??;
 
-    // d. Call the LLM.
-    let response = complete_text(client, &prompt).await?;
-
-    // e. Extract the YAML block from the (possibly prose-wrapped) response.
+    // d. Extract the YAML block from the (possibly prose-wrapped) response.
     let yaml_text = extract_yaml_block(&response)?;
 
     // f. Parse the extracted YAML into a list of abstractions.
@@ -164,7 +159,7 @@ fn candidates_to_yaml(candidates: &[CandidateAbstraction]) -> Result<String, Ide
 mod reduce_tests {
     use super::*;
     use brigid_core::{AbstractionKind, ProgressTracker, Tier};
-    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
+    use crate::llm::{LlmClient, LlmError, MockClient};
 
     /// Five-file inventory used across reduce-stage tests.
     fn sample_files() -> Vec<String> {
@@ -247,7 +242,7 @@ mod reduce_tests {
         let client = MockClient::new(canned_two_final_abstractions());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let result = identify_reduce(&client, &renderer, &input, None)
+        let result = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("happy path should succeed");
         assert_eq!(result.abstractions.len(), 2);
@@ -306,7 +301,7 @@ mod reduce_tests {
         let renderer = PromptRenderer::new().unwrap();
         let mut input = sample_reduce_input(sample_candidates());
         input.max_abstraction_num = 3;
-        let result = identify_reduce(&client, &renderer, &input, None)
+        let result = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("cap should succeed with truncation");
         assert_eq!(result.abstractions.len(), 3);
@@ -321,7 +316,7 @@ mod reduce_tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let err = identify_reduce(&client, &renderer, &input, None)
+        let err = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("empty list should error");
         assert!(matches!(err, IdentifyError::NoAbstractions), "got: {err:?}");
@@ -344,7 +339,7 @@ mod reduce_tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let err = identify_reduce(&client, &renderer, &input, None)
+        let err = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("oob index should error");
         match err {
@@ -362,7 +357,7 @@ mod reduce_tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let err = identify_reduce(&client, &renderer, &input, None)
+        let err = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("malformed yaml should error");
         assert!(matches!(err, IdentifyError::Parse(_)), "got: {err:?}");
@@ -380,7 +375,7 @@ mod reduce_tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let result = identify_reduce(&client, &renderer, &input, None)
+        let result = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("partial yaml should succeed with defaults");
         assert_eq!(result.abstractions.len(), 1);
@@ -396,7 +391,7 @@ mod reduce_tests {
         let client = MockClient::new("just prose, no structured output here".to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let err = identify_reduce(&client, &renderer, &input, None)
+        let err = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("no block should error");
         assert!(matches!(err, IdentifyError::Extract(_)), "got: {err:?}");
@@ -407,7 +402,7 @@ mod reduce_tests {
         let client = MockClient::new("ignored").fail_on(0, LlmError::Timeout);
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let err = identify_reduce(&client, &renderer, &input, None)
+        let err = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("llm failure should propagate");
         assert!(
@@ -423,7 +418,7 @@ mod reduce_tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
         let mut progress = ProgressTracker::new(10);
-        let result = identify_reduce(&client, &renderer, &input, Some(&mut progress))
+        let result = identify_reduce(&client, &renderer, &input, &mut progress)
             .await
             .expect("should succeed with progress");
         assert_eq!(result.abstractions.len(), 2);
@@ -439,7 +434,7 @@ mod reduce_tests {
         let input = sample_reduce_input(sample_candidates());
         // max=0 means no calls allowed.
         let mut progress = ProgressTracker::new(0);
-        let err = identify_reduce(&client, &renderer, &input, Some(&mut progress))
+        let err = identify_reduce(&client, &renderer, &input, &mut progress)
             .await
             .expect_err("budget exceeded should error");
         assert!(matches!(err, IdentifyError::Budget(_)), "got: {err:?}");
@@ -453,7 +448,7 @@ mod reduce_tests {
         let client: Box<dyn LlmClient> = Box::new(MockClient::new(canned_two_final_abstractions()));
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_reduce_input(sample_candidates());
-        let result = identify_reduce(&*client, &renderer, &input, None)
+        let result = identify_reduce(&*client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("dyn client should work");
         assert_eq!(result.abstractions.len(), 2);
@@ -505,7 +500,7 @@ mod reduce_tests {
             module_summary: "core, utils".to_string(),
             multimodal_context: String::new(),
         };
-        let _ = identify_reduce(&client, &renderer, &input, None)
+        let _ = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
@@ -617,7 +612,7 @@ mod reduce_tests {
             0,
         )];
         let input = sample_reduce_input(candidates);
-        let _ = identify_reduce(&client, &renderer, &input, None)
+        let _ = identify_reduce(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();

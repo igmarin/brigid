@@ -42,6 +42,9 @@ pub enum IdentifyError {
     /// The LLM returned no abstractions.
     #[error("no abstractions found in LLM output")]
     NoAbstractions,
+    /// The LLM returned empty output.
+    #[error("LLM returned empty output")]
+    EmptyOutput,
     /// The configured LLM call budget was exceeded.
     #[error("budget exceeded: {0}")]
     Budget(#[from] BudgetExceeded),
