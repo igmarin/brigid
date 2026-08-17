@@ -7,8 +7,8 @@
 //! sanitization, and evidence-footer attachment. No network or real LLM calls.
 
 use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, ProgressTracker, Tier};
-use brigid_pipeline::llm::MockClient;
 use brigid_pipeline::chapters::{DiagramLevel, write_single_chapter};
+use brigid_pipeline::llm::MockClient;
 use brigid_pipeline::prompts::PromptRenderer;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;

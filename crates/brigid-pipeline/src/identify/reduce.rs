@@ -1,5 +1,5 @@
-use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, extract_yaml_block};
 use crate::llm::{LlmClient, bounded_complete_with_budget};
+use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, extract_yaml_block};
 use serde_json::json;
 
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -94,9 +94,7 @@ pub async fn identify_reduce(
     //    reserves the call and sets the stage for observability.
     progress.set_stage("identify_reduce");
     let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
-    let response = results
-        .pop()
-        .ok_or(IdentifyError::EmptyOutput)??;
+    let response = results.pop().ok_or(IdentifyError::EmptyOutput)??;
 
     // d. Extract the YAML block from the (possibly prose-wrapped) response.
     let yaml_text = extract_yaml_block(&response)?;
@@ -158,8 +156,8 @@ fn candidates_to_yaml(candidates: &[CandidateAbstraction]) -> Result<String, Ide
 #[cfg(test)]
 mod reduce_tests {
     use super::*;
-    use brigid_core::{AbstractionKind, ProgressTracker, Tier};
     use crate::llm::{LlmClient, LlmError, MockClient};
+    use brigid_core::{AbstractionKind, ProgressTracker, Tier};
 
     /// Five-file inventory used across reduce-stage tests.
     fn sample_files() -> Vec<String> {
@@ -463,25 +461,29 @@ mod reduce_tests {
         }
         #[async_trait::async_trait]
         impl llm_kernel::llm::LLMClient for CapturingClient {
-            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
-                    let prompt = crate::llm::request_prompt(&request);
-                    let result: Result<String, crate::llm::LlmError> = async {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_two_final_abstractions())
-                    }.await;
-                    match result {
-                        Ok(s) => Ok(crate::llm::text_response(s)),
-                        Err(e) => Err(e.into_kernel()),
-                    }
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_two_final_abstractions())
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
             }
             fn model_name(&self) -> &str {
                 "mock"
             }
             async fn stream_complete(
-                    &self,
-                    _request: llm_kernel::llm::LLMRequest,
-                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
-                    crate::llm::stream_unsupported()
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
 
@@ -575,25 +577,29 @@ mod reduce_tests {
         }
         #[async_trait::async_trait]
         impl llm_kernel::llm::LLMClient for CapturingClient {
-            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
-                    let prompt = crate::llm::request_prompt(&request);
-                    let result: Result<String, crate::llm::LlmError> = async {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_two_final_abstractions())
-                    }.await;
-                    match result {
-                        Ok(s) => Ok(crate::llm::text_response(s)),
-                        Err(e) => Err(e.into_kernel()),
-                    }
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_two_final_abstractions())
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
             }
             fn model_name(&self) -> &str {
                 "mock"
             }
             async fn stream_complete(
-                    &self,
-                    _request: llm_kernel::llm::LLMRequest,
-                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
-                    crate::llm::stream_unsupported()
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
 

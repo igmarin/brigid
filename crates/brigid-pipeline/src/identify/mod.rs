@@ -64,15 +64,15 @@ pub fn enrich_identify_kinds(
     );
 }
 
+/// Re-export of [`crate::llm::LlmError`] for ergonomic matching at call sites
+/// that only depend on `brigid-pipeline`.
+pub use crate::llm::LlmError;
 /// Re-export of [`PromptError`] for ergonomic matching at call sites that
 /// only depend on `brigid-pipeline`.
 pub use crate::prompts::PromptError;
 /// Re-export of [`brigid_core::ExtractError`] for ergonomic matching at call
 /// sites that only depend on `brigid-pipeline`.
 pub use brigid_core::ExtractError;
-/// Re-export of [`crate::llm::LlmError`] for ergonomic matching at call sites
-/// that only depend on `brigid-pipeline`.
-pub use crate::llm::LlmError;
 
 pub use map::batch_files_by_size;
 pub(crate) use map::run_single_map_batch;

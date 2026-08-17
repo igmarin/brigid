@@ -839,8 +839,13 @@ mod tests {
         let dir = temp_dir();
         let store = CheckpointStore::new(&dir);
         let cfg = RunConfig::default();
-        let mut meta = CheckpointV1::new(&cfg, cfg.redacted_for_checkpoint(), "rev", "2026-07-24T00:00:00Z")
-            .unwrap();
+        let mut meta = CheckpointV1::new(
+            &cfg,
+            cfg.redacted_for_checkpoint(),
+            "rev",
+            "2026-07-24T00:00:00Z",
+        )
+        .unwrap();
         let files = vec![FileBundleRecord::from_raw_bytes(
             "a.txt",
             b"hello",
@@ -852,7 +857,9 @@ mod tests {
         tracker.reserve_llm_calls(3).unwrap();
 
         let initial_updated = meta.metadata.updated_at.clone();
-        store.persist_llm_calls(&mut meta, &files, &tracker).unwrap();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker)
+            .unwrap();
 
         assert_eq!(meta.metadata.llm_calls_used, 3);
         assert_ne!(meta.metadata.updated_at, initial_updated);
@@ -868,8 +875,13 @@ mod tests {
         let dir = temp_dir();
         let store = CheckpointStore::new(&dir);
         let cfg = RunConfig::default();
-        let mut meta = CheckpointV1::new(&cfg, cfg.redacted_for_checkpoint(), "rev", "2026-07-24T00:00:00Z")
-            .unwrap();
+        let mut meta = CheckpointV1::new(
+            &cfg,
+            cfg.redacted_for_checkpoint(),
+            "rev",
+            "2026-07-24T00:00:00Z",
+        )
+        .unwrap();
         let files = vec![FileBundleRecord::from_raw_bytes(
             "a.txt",
             b"hello",
@@ -879,11 +891,15 @@ mod tests {
 
         let mut tracker = ProgressTracker::new(10);
         tracker.reserve_llm_calls(2).unwrap();
-        store.persist_llm_calls(&mut meta, &files, &tracker).unwrap();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker)
+            .unwrap();
 
         let mut tracker2 = ProgressTracker::new(10);
         tracker2.reserve_llm_calls(4).unwrap();
-        store.persist_llm_calls(&mut meta, &files, &tracker2).unwrap();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker2)
+            .unwrap();
 
         assert_eq!(meta.metadata.llm_calls_used, 6);
 

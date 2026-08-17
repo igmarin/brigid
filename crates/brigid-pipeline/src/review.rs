@@ -18,10 +18,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::llm::{LlmClient, LlmError, complete_text};
 use brigid_core::{
     BudgetExceeded, Chapter, ChapterResult, ProgressTracker, sanitize_markdown_mermaid_blocks,
 };
-use crate::llm::{complete_text, LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -374,8 +374,8 @@ fn extract_file_paths(markdown: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::cancellation::CancelToken;
-    use brigid_core::Tier;
     use crate::llm::MockClient;
+    use brigid_core::Tier;
 
     fn no_cancel() -> CancelToken {
         CancelToken::new()

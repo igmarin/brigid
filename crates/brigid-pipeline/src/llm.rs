@@ -9,14 +9,14 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use brigid_core::progress::BudgetExceeded;
 use brigid_core::ProgressTracker;
+use brigid_core::progress::BudgetExceeded;
 use futures::future::join_all;
 use llm_kernel::error::KernelError;
 use llm_kernel::llm::{ChatMessage, LLMClient, LLMRequest, LLMResponse, LLMStream};
-use tokio::sync::Semaphore;
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Semaphore;
 
 /// Alias for the kernel client trait used throughout the pipeline.
 pub use llm_kernel::llm::LLMClient as LlmClient;
@@ -58,11 +58,7 @@ pub fn host_from_base_url(base_url: &str) -> Option<String> {
     let rest = base_url.split_once("://")?.1;
     let hostport = rest.split('/').next()?;
     let host = hostport.split(':').next()?.to_ascii_lowercase();
-    if host.is_empty() {
-        None
-    } else {
-        Some(host)
-    }
+    if host.is_empty() { None } else { Some(host) }
 }
 
 /// Reject a base URL whose host is not on the default provider allowlist.
@@ -203,10 +199,7 @@ pub fn text_response(content: impl Into<String>) -> LLMResponse {
 /// # Errors
 ///
 /// Returns [`LlmError`] when the kernel client fails.
-pub async fn complete_text(
-    client: &dyn LLMClient,
-    prompt: &str,
-) -> Result<String, LlmError> {
+pub async fn complete_text(client: &dyn LLMClient, prompt: &str) -> Result<String, LlmError> {
     let response = client
         .complete(prompt_request(prompt))
         .await
@@ -236,9 +229,10 @@ pub async fn bounded_complete(
     let futures = prompts.into_iter().map(|prompt| {
         let sem = Arc::clone(&semaphore);
         async move {
-            let _permit = sem.acquire_owned().await.map_err(|_| {
-                LlmError::network("concurrency semaphore closed unexpectedly")
-            })?;
+            let _permit = sem
+                .acquire_owned()
+                .await
+                .map_err(|_| LlmError::network("concurrency semaphore closed unexpectedly"))?;
             complete_text(client, &prompt).await
         }
     });
@@ -287,7 +281,9 @@ impl MockState {
 }
 
 fn lock(state: &Mutex<MockState>) -> MutexGuard<'_, MockState> {
-    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Network-free test double implementing [`LLMClient`].
@@ -408,10 +404,7 @@ mod helper_tests {
     #[test]
     fn validate_llm_base_url_rejects_unknown_host() {
         let err = validate_llm_base_url("https://evil.example/v1").unwrap_err();
-        assert!(
-            err.to_string().contains("not in the allowed"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("not in the allowed"), "got: {err}");
     }
 
     #[test]

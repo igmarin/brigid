@@ -415,7 +415,6 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
-
     }
 
     #[tokio::test]
@@ -480,7 +479,6 @@ mod tests {
 
         let stats = cache.stats();
         assert!(stats.evictions > 0, "eviction count should be positive");
-
     }
 
     #[tokio::test]
@@ -525,7 +523,6 @@ mod tests {
             "remaining size {total_size} should be within limit {limit_bytes}"
         );
         assert!(remaining > 0, "at least some entries should remain");
-
     }
 
     #[tokio::test]
@@ -742,7 +739,6 @@ mod tests {
 
         let stats = cache.stats();
         assert_eq!(stats.evictions, 0, "no evictions for unlimited cache");
-
     }
 
     /// `enforce_size_limit` on a missing root directory must return `Ok(0)`
@@ -756,7 +752,6 @@ mod tests {
 
         let evicted = cache.enforce_size_limit().await.expect("should be Ok");
         assert_eq!(evicted, 0, "missing root should return Ok(0)");
-
     }
 
     /// LRU eviction with a small size limit: writing 3 files that exceed the
@@ -834,7 +829,6 @@ mod tests {
             stats.current_size_bytes <= 5,
             "current_size_bytes should be within limit after eviction"
         );
-
     }
 
     /// `enforce_size_limit` when files are already under the limit must
@@ -862,7 +856,6 @@ mod tests {
             stats.current_size_bytes > 0,
             "current_size_bytes should reflect on-disk size"
         );
-
     }
 
     /// `put` into a read-only parent directory must return a graceful

@@ -17,11 +17,11 @@
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use brigid_core::{
     Abstraction, CheckpointV1, ProgressTracker, RelationshipsResult, StageId, extract_yaml_block,
     redact_content,
 };
-use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -540,8 +540,8 @@ fn build_evidence_context(selected: &[String], file_contents: &[(String, String)
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
-    use brigid_core::{Abstraction, IdentifyResult, RunConfig, Tier};
     use crate::llm::{LlmError, MockClient};
+    use brigid_core::{Abstraction, IdentifyResult, RunConfig, Tier};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -555,25 +555,29 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl llm_kernel::llm::LLMClient for CapturingClient {
-        async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
-                let prompt = crate::llm::request_prompt(&request);
-                let result: Result<String, crate::llm::LlmError> = async {
-            *self.captured.lock().unwrap() = prompt.to_string();
-            Ok(self.response.clone())
-                }.await;
-                match result {
-                    Ok(s) => Ok(crate::llm::text_response(s)),
-                    Err(e) => Err(e.into_kernel()),
-                }
+        async fn complete(
+            &self,
+            request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+            let prompt = crate::llm::request_prompt(&request);
+            let result: Result<String, crate::llm::LlmError> = async {
+                *self.captured.lock().unwrap() = prompt.to_string();
+                Ok(self.response.clone())
+            }
+            .await;
+            match result {
+                Ok(s) => Ok(crate::llm::text_response(s)),
+                Err(e) => Err(e.into_kernel()),
+            }
         }
         fn model_name(&self) -> &str {
             "mock"
         }
         async fn stream_complete(
-                &self,
-                _request: llm_kernel::llm::LLMRequest,
-            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
-                crate::llm::stream_unsupported()
+            &self,
+            _request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+            crate::llm::stream_unsupported()
         }
     }
 
@@ -775,10 +779,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect("happy path should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("happy path should succeed");
         assert!(!result.project_summary.is_empty());
         assert_eq!(result.relationships.len(), 3);
         assert_eq!(result.relationships[0].from, 0);
@@ -798,10 +808,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect("empty relationships should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("empty relationships should succeed");
         assert!(!result.project_summary.is_empty());
         assert!(result.relationships.is_empty());
     }
@@ -824,10 +840,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect_err("out-of-range relationship endpoint should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("out-of-range relationship endpoint should error");
         assert!(
             matches!(
                 err,
@@ -855,10 +877,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect_err("out-of-range from_abstraction endpoint should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("out-of-range from_abstraction endpoint should error");
         assert!(
             matches!(
                 err,
@@ -876,10 +904,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect_err("malformed yaml should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("malformed yaml should error");
         assert!(matches!(err, RelationshipsError::Parse(_)), "got: {err:?}");
     }
 
@@ -890,10 +924,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect_err("no block should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("no block should error");
         assert!(
             matches!(err, RelationshipsError::Extract(_)),
             "got: {err:?}"
@@ -907,10 +947,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect_err("llm failure should propagate");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("llm failure should propagate");
         assert!(
             matches!(err, RelationshipsError::Llm(LlmError::Timeout)),
             "got: {err:?}"
@@ -953,9 +999,16 @@ relationships:
             "DB_KEY=super-secret\nfn load() {}".to_string(),
         )];
         let config = sample_config();
-        let _ = analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-            .await
-            .expect("should succeed");
+        let _ = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
         assert!(
             !prompt.contains("super-secret"),
@@ -995,10 +1048,16 @@ relationships:
             ),
         ];
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, &mut ProgressTracker::new(10))
-                .await
-                .expect("multiple valid relationships should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("multiple valid relationships should succeed");
         assert_eq!(result.relationships.len(), 3, "got: {result:?}");
         let prompt = captured.lock().unwrap().clone();
         for secret in ["router-secret", "store-secret", "worker-secret"] {

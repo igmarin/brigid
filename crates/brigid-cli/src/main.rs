@@ -12,22 +12,21 @@ use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use async_trait::async_trait;
 use brigid_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
-    OverviewOutput, ProgressTracker, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats,
-    StageStatus,
-    TutorialFile, config_from_env_map, current_git_head, custom_host_warning, evaluate_tutorial,
-    parse_toml_config, parse_yaml_config, redact_content, resolve_config,
-    validate_config_for_check,
+    OverviewOutput, ProgressTracker, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput,
+    StageStats, StageStatus, TutorialFile, config_from_env_map, current_git_head,
+    custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
+    resolve_config, validate_config_for_check,
 };
 use brigid_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
+use brigid_llm::client::LlmClient as BrigidLlmClient;
 use brigid_pipeline::{
     CheckpointStore, DryRunError, LlmClient, LlmError, MockClient, check_identity,
     dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use async_trait::async_trait;
-use brigid_llm::client::LlmClient as BrigidLlmClient;
 use llm_kernel::llm::{LLMClient, LLMRequest, LLMResponse, LLMStream};
 
 /// Wraps a deprecated `brigid-llm` client as [`LLMClient`] until Phase 4.
@@ -1093,17 +1092,17 @@ fn main() -> ExitCode {
             };
             // Validate positive-integer flags (clap parses them, but 0 is
             // semantically invalid for concurrency and max-llm-calls).
-            if let Some(n) = concurrency {
-                if n == 0 {
-                    eprintln!("error: --concurrency must be a positive integer (got 0)");
-                    return ExitCode::from(EXIT_CONFIG);
-                }
+            if let Some(n) = concurrency
+                && n == 0
+            {
+                eprintln!("error: --concurrency must be a positive integer (got 0)");
+                return ExitCode::from(EXIT_CONFIG);
             }
-            if let Some(n) = max_llm_calls {
-                if n == 0 {
-                    eprintln!("error: --max-llm-calls must be a positive integer (got 0)");
-                    return ExitCode::from(EXIT_CONFIG);
-                }
+            if let Some(n) = max_llm_calls
+                && n == 0
+            {
+                eprintln!("error: --max-llm-calls must be a positive integer (got 0)");
+                return ExitCode::from(EXIT_CONFIG);
             }
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".brigid-checkpoint"));
@@ -2626,7 +2625,8 @@ fn cmd_generate(
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    let mut progress = ProgressTracker::from_config_and_checkpoint(run_config.max_llm_calls, &checkpoint);
+    let mut progress =
+        ProgressTracker::from_config_and_checkpoint(run_config.max_llm_calls, &checkpoint);
 
     let generate_start = std::time::Instant::now();
 
@@ -3148,10 +3148,7 @@ fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn LlmCl
             return Box::new(MockClient::new("").fail_on(0, err));
         }
     }
-    Box::new(
-        MockClient::with_responses(responses)
-            .unwrap_or_else(|_| MockClient::new(placeholder)),
-    )
+    Box::new(MockClient::with_responses(responses).unwrap_or_else(|_| MockClient::new(placeholder)))
 }
 
 fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
@@ -4540,10 +4537,7 @@ mod tests {
 
     #[test]
     fn mock_fail_error_returns_expected_variant_for_each_keyword() {
-        assert!(matches!(
-            mock_fail_error("timeout"),
-            LlmError::Timeout
-        ));
+        assert!(matches!(mock_fail_error("timeout"), LlmError::Timeout));
         assert!(matches!(
             mock_fail_error("ratelimit"),
             LlmError::RateLimit { retry_after: None }
@@ -4555,10 +4549,7 @@ mod tests {
             }
             other => panic!("expected Provider, got {other:?}"),
         }
-        assert!(matches!(
-            mock_fail_error("parse"),
-            LlmError::Parse { .. }
-        ));
+        assert!(matches!(mock_fail_error("parse"), LlmError::Parse { .. }));
         assert!(matches!(
             mock_fail_error("network"),
             LlmError::Network { .. }
@@ -4599,13 +4590,7 @@ mod tests {
     #[tokio::test]
     async fn mock_client_with_responses_serves_sequence_without_fallback() {
         let client = mock_client(vec!["first".to_string(), "second".to_string()]);
-        assert_eq!(
-            complete_text(client.as_ref(), "a").await.unwrap(),
-            "first"
-        );
-        assert_eq!(
-            complete_text(client.as_ref(), "b").await.unwrap(),
-            "second"
-        );
+        assert_eq!(complete_text(client.as_ref(), "a").await.unwrap(), "first");
+        assert_eq!(complete_text(client.as_ref(), "b").await.unwrap(), "second");
     }
 }

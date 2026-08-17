@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::checkpoint_store::CheckpointStoreError;
+use crate::llm::LlmError;
 use crate::prompts::PromptError;
 use brigid_core::ExtractError;
-use crate::llm::LlmError;
 
 // Doc-link only imports — these items are referenced in rustdoc intra-doc
 // links but not used in code. `#[allow(unused_imports)]` suppresses the

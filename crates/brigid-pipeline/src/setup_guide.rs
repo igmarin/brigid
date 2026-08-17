@@ -13,11 +13,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use brigid_core::{
     CheckpointV1, ProgressTracker, SetupGuide, StageId, redact_content,
     sanitize_markdown_mermaid_blocks,
 };
-use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde_json::json;
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
@@ -126,9 +126,7 @@ pub async fn write_setup_guide(
 
     let prompt = renderer.render(PromptId::WriteSetupGuide, &context)?;
     let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
-    let response = results
-        .pop()
-        .ok_or(SetupGuideError::EmptyOutput)??;
+    let response = results.pop().ok_or(SetupGuideError::EmptyOutput)??;
 
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -210,8 +208,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
-    use brigid_core::{ProgressTracker, RunConfig, StageId};
     use crate::llm::{LlmClient, LlmError, MockClient};
+    use brigid_core::{ProgressTracker, RunConfig, StageId};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -354,25 +352,29 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl llm_kernel::llm::LLMClient for CapturingClient {
-            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
-                    let prompt = crate::llm::request_prompt(&request);
-                    let result: Result<String, crate::llm::LlmError> = async {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_markdown())
-                    }.await;
-                    match result {
-                        Ok(s) => Ok(crate::llm::text_response(s)),
-                        Err(e) => Err(e.into_kernel()),
-                    }
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_markdown())
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
             }
             fn model_name(&self) -> &str {
                 "mock"
             }
             async fn stream_complete(
-                    &self,
-                    _request: llm_kernel::llm::LLMRequest,
-                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
-                    crate::llm::stream_unsupported()
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
 
@@ -435,9 +437,16 @@ mod tests {
         let client = MockClient::new(canned_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README content", &gaps);
-        let guide = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
-            .await
-            .expect("should succeed");
+        let guide = write_setup_guide_and_checkpoint(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &input,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert!(guide.markdown.contains("# Setup: my-project"));
         assert!(cp.is_stage_complete(StageId::Setup));
         assert!(dir.join("00_setup.md").is_file());
@@ -456,23 +465,29 @@ mod tests {
         let client = MockClient::new(canned_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README content", &gaps);
-        let first = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
-            .await
-            .expect("first run should succeed");
+        let first = write_setup_guide_and_checkpoint(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &input,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("first run should succeed");
         assert_eq!(client.call_count(), 1);
 
         let second_client = MockClient::new("SHOULD NOT BE CALLED");
-        let second =
-            write_setup_guide_and_checkpoint(
-                &second_client,
-                &renderer,
-                &store,
-                &mut cp,
-                &input,
-                &mut ProgressTracker::new(10),
-            )
-            .await
-            .expect("resume should succeed");
+        let second = write_setup_guide_and_checkpoint(
+            &second_client,
+            &renderer,
+            &store,
+            &mut cp,
+            &input,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("resume should succeed");
         assert_eq!(second_client.call_count(), 0);
         assert_eq!(second.markdown, first.markdown);
         let _ = fs::remove_dir_all(&dir);

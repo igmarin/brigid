@@ -16,8 +16,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, RunConfig, module_key};
 use crate::llm::LlmClient;
+use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, RunConfig, module_key};
 
 use crate::identify::{
     CandidateAbstraction, IdentifyError, IdentifyMapInput, IdentifyReduceInput, identify_map,
@@ -204,8 +204,8 @@ pub async fn incremental_identify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brigid_core::{Abstraction, AbstractionKind, RunConfig, Tier};
     use crate::llm::MockClient;
+    use brigid_core::{Abstraction, AbstractionKind, RunConfig, Tier};
 
     /// Build an [`Abstraction`] with entry_files set.
     fn abs(name: &str, entry_files: &[&str]) -> Abstraction {

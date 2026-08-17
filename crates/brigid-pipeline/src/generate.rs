@@ -450,7 +450,8 @@ pub async fn run_generate(
             forced: config.force_setup,
         };
         let guide =
-            write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input, progress).await?;
+            write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input, progress)
+                .await?;
         setup = Some(guide);
         progress.complete_stage();
     } else if checkpoint.is_stage_complete(StageId::Setup) {
@@ -1055,8 +1056,15 @@ pub async fn run_setup_stage(
         lang: locale.as_str(),
         forced,
     };
-    let guide =
-        write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input, progress_tracker).await?;
+    let guide = write_setup_guide_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &input,
+        progress_tracker,
+    )
+    .await?;
     Ok(guide)
 }
 
@@ -1101,8 +1109,15 @@ pub async fn run_overview_stage(
         strict_app_validation: true,
         tutorial_style: brigid_core::config::TutorialStyle::Book,
     };
-    let overview =
-        overview_and_checkpoint(client, renderer, store, checkpoint, &input, progress_tracker).await?;
+    let overview = overview_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &input,
+        progress_tracker,
+    )
+    .await?;
     Ok(overview)
 }
 
@@ -1159,13 +1174,13 @@ pub fn run_combine_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint_store::records_from_files;
-    use brigid_core::{Abstraction, RunConfig, Tier};
     use crate::chapters::ChaptersError;
+    use crate::checkpoint_store::records_from_files;
     use crate::llm::MockClient;
     use crate::order::OrderError;
     use crate::overview::OverviewError;
     use crate::relationships::RelationshipsError;
+    use brigid_core::{Abstraction, RunConfig, Tier};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2186,10 +2201,18 @@ mod tests {
         let renderer = PromptRenderer::new().unwrap();
         let fc = file_contents_for();
 
-        let result =
-            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "", &mut ProgressTracker::new(10))
-                .await
-                .expect("should run with identify complete");
+        let result = run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with identify complete");
 
         assert_eq!(
             result.project_summary,
@@ -2209,9 +2232,17 @@ mod tests {
         let renderer = PromptRenderer::new().unwrap();
         let fc = file_contents_for();
 
-        let result =
-            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "", &mut ProgressTracker::new(10))
-                .await;
+        let result = run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2231,9 +2262,17 @@ mod tests {
         let client = MockClient::with_responses(vec![canned_order()]).unwrap();
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "", &mut ProgressTracker::new(10))
-            .await
-            .expect("should run with relationships complete");
+        let result = run_order_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with relationships complete");
 
         assert_eq!(result.ordered_indices, vec![0, 1, 2]);
         assert!(cp.is_stage_complete(StageId::Order));
@@ -2248,7 +2287,16 @@ mod tests {
         let client = MockClient::new("should-not-be-called");
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "", &mut ProgressTracker::new(10)).await;
+        let result = run_order_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2339,9 +2387,18 @@ mod tests {
         let client = MockClient::with_responses(vec![canned_setup()]).unwrap();
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en", &mut ProgressTracker::new(10))
-            .await
-            .expect("should run with identify complete");
+        let result = run_setup_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &repo_dir,
+            true,
+            "en",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with identify complete");
 
         assert!(cp.is_stage_complete(StageId::Setup));
         assert!(result.forced);
@@ -2359,8 +2416,17 @@ mod tests {
         let client = MockClient::new("should-not-be-called");
         let renderer = PromptRenderer::new().unwrap();
 
-        let result =
-            run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en", &mut ProgressTracker::new(10)).await;
+        let result = run_setup_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &repo_dir,
+            true,
+            "en",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2982,10 +3048,17 @@ mod tests {
         .await;
 
         assert!(
-            matches!(result, Err(GenerateError::Relationships(RelationshipsError::Budget(_)))),
+            matches!(
+                result,
+                Err(GenerateError::Relationships(RelationshipsError::Budget(_)))
+            ),
             "expected budget error, got: {result:?}"
         );
-        assert_eq!(client.call_count(), 0, "no LLM calls should be made with zero budget");
+        assert_eq!(
+            client.call_count(),
+            0,
+            "no LLM calls should be made with zero budget"
+        );
         let _ = fs::remove_dir_all(&ckpt_dir);
     }
 
@@ -3037,7 +3110,10 @@ mod tests {
         .await;
 
         assert!(
-            matches!(result, Err(GenerateError::Overview(OverviewError::Budget(_)))),
+            matches!(
+                result,
+                Err(GenerateError::Overview(OverviewError::Budget(_)))
+            ),
             "expected budget error, got: {result:?}"
         );
         assert_eq!(client.call_count(), 0);
@@ -3069,7 +3145,10 @@ mod tests {
         .await;
 
         assert!(
-            matches!(result, Err(GenerateError::Chapters(ChaptersError::Budget(_)))),
+            matches!(
+                result,
+                Err(GenerateError::Chapters(ChaptersError::Budget(_)))
+            ),
             "expected budget error, got: {result:?}"
         );
         assert_eq!(client.call_count(), 0);
@@ -3086,9 +3165,18 @@ mod tests {
         let fc = file_contents_for();
 
         let tracker = &mut ProgressTracker::new(10);
-        run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "", tracker)
-            .await
-            .expect("should run with budget");
+        run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            tracker,
+        )
+        .await
+        .expect("should run with budget");
 
         assert_eq!(client.call_count(), 1);
         assert_eq!(tracker.llm_calls_used(), 1);
