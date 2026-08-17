@@ -371,6 +371,18 @@ impl LLMClient for MockClient {
     }
 }
 
+impl std::fmt::Debug for MockClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = lock(&self.state);
+        f.debug_struct("MockClient")
+            .field("responses_len", &state.responses.len())
+            .field("next", &state.next)
+            .field("calls", &state.calls)
+            .field("has_fail_on", &state.fail_on.is_some())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod helper_tests {
     use super::*;
@@ -411,17 +423,5 @@ mod helper_tests {
     fn validate_llm_base_url_rejects_empty() {
         assert!(validate_llm_base_url("").is_err());
         assert!(validate_llm_base_url("not-a-url").is_err());
-    }
-}
-
-impl std::fmt::Debug for MockClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = lock(&self.state);
-        f.debug_struct("MockClient")
-            .field("responses_len", &state.responses.len())
-            .field("next", &state.next)
-            .field("calls", &state.calls)
-            .field("has_fail_on", &state.fail_on.is_some())
-            .finish()
     }
 }

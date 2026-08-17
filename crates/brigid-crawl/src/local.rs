@@ -279,24 +279,22 @@ fn crawl_tree(root: &Path) -> Result<Vec<(String, u64)>, CrawlError> {
                             }
                             symlink_visited.insert(canon);
                             stack.push((path, depth + 1));
-                        } else if path.is_file() {
-                            if let Some(rel) = relative_posix(root, &path)? {
-                                if let Ok(meta) = fs::metadata(&path) {
-                                    files.push((rel, meta.len()));
-                                }
-                            }
+                        } else if path.is_file()
+                            && let Some(rel) = relative_posix(root, &path)?
+                            && let Ok(meta) = fs::metadata(&path)
+                        {
+                            files.push((rel, meta.len()));
                         }
                     }
                     Err(_) => {
                         eprintln!("skipping symlink cycle: {}", path.display());
                     }
                 }
-            } else if path.is_file() {
-                if let Some(rel) = relative_posix(root, &path)? {
-                    if let Ok(meta) = fs::metadata(&path) {
-                        files.push((rel, meta.len()));
-                    }
-                }
+            } else if path.is_file()
+                && let Some(rel) = relative_posix(root, &path)?
+                && let Ok(meta) = fs::metadata(&path)
+            {
+                files.push((rel, meta.len()));
             } else if path.is_dir() {
                 stack.push((path, depth));
             }

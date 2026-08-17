@@ -628,10 +628,10 @@ impl LlmClient for OpenAiCompatibleClient {
             extras: Some(&cache_extras),
         };
         // b. Cache hit short-circuits.
-        if let Some(cache) = &self.cache {
-            if let Ok(Some(cached)) = cache.get_for(&cache_input).await {
-                return Ok(cached);
-            }
+        if let Some(cache) = &self.cache
+            && let Ok(Some(cached)) = cache.get_for(&cache_input).await
+        {
+            return Ok(cached);
         }
 
         // c. Validate host before sending Authorization header.

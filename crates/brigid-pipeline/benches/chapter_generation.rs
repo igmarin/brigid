@@ -79,7 +79,7 @@ fn make_file_contents(n: usize) -> Vec<(String, String)> {
 
 /// Build a mock chapter response with enough mermaid blocks for the tier.
 fn mock_chapter_md(i: usize) -> String {
-    let tier = if i % 3 == 0 {
+    let tier = if i.is_multiple_of(3) {
         Tier::L
     } else if i % 3 == 1 {
         Tier::M

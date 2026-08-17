@@ -159,10 +159,10 @@ pub fn select_evidence_files(
                 }
             }
             for &idx in &a.file_indices {
-                if let Some(f) = inventory.get(idx) {
-                    if seen.insert(f.path.clone()) {
-                        cands.push(f.path.clone());
-                    }
+                if let Some(f) = inventory.get(idx)
+                    && seen.insert(f.path.clone())
+                {
+                    cands.push(f.path.clone());
                 }
             }
             cands
@@ -406,13 +406,13 @@ pub async fn relationships_and_checkpoint(
     progress: &mut ProgressTracker,
 ) -> Result<RelationshipsResult, RelationshipsError> {
     // 1. Resume: skip if the stage is already complete.
-    if !should_run_relationships(checkpoint) {
-        if let Some(existing) = load_relationships_result(checkpoint) {
-            return Ok(existing);
-        }
-        // Edge case: stage marked complete but no relationships payload. Fall
-        // through and re-run.
+    if !should_run_relationships(checkpoint)
+        && let Some(existing) = load_relationships_result(checkpoint)
+    {
+        return Ok(existing);
     }
+    // Edge case: stage marked complete but no relationships payload. Fall
+    // through and re-run.
 
     // 2. Run the relationships analysis.
     let result =

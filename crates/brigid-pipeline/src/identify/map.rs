@@ -51,7 +51,7 @@ pub struct IdentifyMapInput {
 /// 2. **Render** the `identify_map` prompt for each batch with global file
 ///    indices, batch metadata, and sanitized free-text variables.
 /// 3. **Call** the LLM with bounded concurrency via
-///    [`bounded_complete`] (or [`bounded_complete_with_budget`] when a
+///    [`crate::llm::bounded_complete`] (or [`bounded_complete_with_budget`] when a
 ///    [`ProgressTracker`] is supplied).
 /// 4. **Parse** each response's YAML block into [`CandidateAbstraction`]s,
 ///    validate `file_indices` against the global inventory, and fail closed

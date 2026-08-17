@@ -623,10 +623,10 @@ fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), Check
         source,
     })?;
     // Best-effort dir fsync (may fail on some FS; ignore ErrorKind::Unsupported).
-    if let Some(parent) = final_path.parent() {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = final_path.parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
     Ok(())
 }
@@ -695,13 +695,13 @@ fn write_stage_files_batch(
     // Phase 3: fsync each unique parent directory once (best-effort).
     let mut synced_dirs: Vec<PathBuf> = Vec::new();
     for (_, final_path) in &pending {
-        if let Some(parent) = final_path.parent() {
-            if !synced_dirs.contains(&parent.to_path_buf()) {
-                if let Ok(dir) = File::open(parent) {
-                    let _ = dir.sync_all();
-                }
-                synced_dirs.push(parent.to_path_buf());
+        if let Some(parent) = final_path.parent()
+            && !synced_dirs.contains(&parent.to_path_buf())
+        {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
             }
+            synced_dirs.push(parent.to_path_buf());
         }
     }
 

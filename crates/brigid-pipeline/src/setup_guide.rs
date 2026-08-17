@@ -162,10 +162,10 @@ pub async fn write_setup_guide_and_checkpoint(
     input: &WriteSetupGuideInput<'_>,
     progress: &mut ProgressTracker,
 ) -> Result<SetupGuide, SetupGuideError> {
-    if store.is_stage_complete_with_files(checkpoint, StageId::Setup)? {
-        if let Some(existing) = store.read_setup_guide(&store.dir, checkpoint)? {
-            return Ok(existing);
-        }
+    if store.is_stage_complete_with_files(checkpoint, StageId::Setup)?
+        && let Some(existing) = store.read_setup_guide(&store.dir, checkpoint)?
+    {
+        return Ok(existing);
     }
 
     let guide = write_setup_guide(client, renderer, input, progress).await?;

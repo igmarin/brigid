@@ -167,7 +167,7 @@ impl ProgressTracker {
     /// Create a tracker for a new run/stage that accounts for calls already
     /// consumed in `checkpoint`.
     ///
-    /// `max_llm_calls == None` falls back to [`DEFAULT_MAX_LLM_CALLS`]. The
+    /// `max_llm_calls == None` falls back to [`crate::DEFAULT_MAX_LLM_CALLS`]. The
     /// remaining budget is `max - used`, saturating at zero.
     #[must_use]
     pub fn from_config_and_checkpoint(

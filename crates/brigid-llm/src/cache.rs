@@ -210,7 +210,7 @@ impl DiskCache {
         let should_check = {
             let mut st = self.stats.lock().expect("cache stats mutex poisoned");
             st.write_count += 1;
-            st.write_count % EVICTION_CHECK_INTERVAL == 0
+            st.write_count.is_multiple_of(EVICTION_CHECK_INTERVAL)
         };
         if should_check {
             let _ = self.enforce_size_limit().await;

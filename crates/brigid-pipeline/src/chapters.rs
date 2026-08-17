@@ -257,10 +257,10 @@ pub fn select_chapter_file_context(
         }
     }
     for &idx in &abstraction.file_indices {
-        if let Some((path, _)) = file_contents.get(idx) {
-            if seen.insert(path.clone()) {
-                candidates.push(path.clone());
-            }
+        if let Some((path, _)) = file_contents.get(idx)
+            && seen.insert(path.clone())
+        {
+            candidates.push(path.clone());
         }
     }
 

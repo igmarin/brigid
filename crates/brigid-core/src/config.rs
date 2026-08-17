@@ -665,13 +665,13 @@ pub fn validate_config_for_check(cfg: &RunConfig) -> Vec<ConfigIssue> {
             });
         }
     }
-    if let Some(lang) = &cfg.language {
-        if lang.trim().is_empty() {
-            issues.push(ConfigIssue {
-                severity: "warning",
-                message: "language is empty — the default 'en' will be used.".to_owned(),
-            });
-        }
+    if let Some(lang) = &cfg.language
+        && lang.trim().is_empty()
+    {
+        issues.push(ConfigIssue {
+            severity: "warning",
+            message: "language is empty — the default 'en' will be used.".to_owned(),
+        });
     }
     if cfg.provider.is_some() && cfg.model.is_none() {
         issues.push(ConfigIssue {

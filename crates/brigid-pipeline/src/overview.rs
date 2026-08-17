@@ -175,13 +175,12 @@ pub async fn overview_and_checkpoint(
     input: &OverviewInput,
     progress: &mut ProgressTracker,
 ) -> Result<ArchitectureOverview, OverviewError> {
-    if !resume::should_run(StageId::Overview, checkpoint) {
-        if let Some(existing) = store
+    if !resume::should_run(StageId::Overview, checkpoint)
+        && let Some(existing) = store
             .read_architecture_overview(&store.dir, checkpoint)
             .map_err(OverviewError::from)?
-        {
-            return Ok(existing);
-        }
+    {
+        return Ok(existing);
     }
 
     let (overview, invented) =

@@ -192,10 +192,10 @@ pub async fn order_and_checkpoint(
     config: &OrderConfig,
     progress: &mut ProgressTracker,
 ) -> Result<ChapterOrder, OrderError> {
-    if !should_run_order(checkpoint) {
-        if let Some(existing) = load_order_result(checkpoint) {
-            return Ok(existing);
-        }
+    if !should_run_order(checkpoint)
+        && let Some(existing) = load_order_result(checkpoint)
+    {
+        return Ok(existing);
     }
 
     let result =
