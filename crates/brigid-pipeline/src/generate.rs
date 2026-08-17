@@ -744,6 +744,17 @@ pub async fn run_generate_each_app(
         )
         .await;
 
+        if let Err(e) = store.persist_llm_calls(&mut cp, &records, &progress) {
+            summaries.push(EachAppSummary {
+                app: module.as_str().to_string(),
+                slug: slug.clone(),
+                output_dir: scoped_output,
+                success: false,
+                error: Some(format!("checkpoint save: {e}")),
+            });
+            continue;
+        }
+
         match result {
             Ok(GenerateOutcome::Completed(_)) => {
                 summaries.push(EachAppSummary {
