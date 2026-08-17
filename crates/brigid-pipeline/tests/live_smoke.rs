@@ -31,18 +31,21 @@
 //!
 //! # Disk cache
 //!
-//! The identify test attaches a [`brigid_llm::DiskCache`] under
+//! The identify test attaches a [`llm_kernel::llm::CacheClient`] under
 //! `target/brigid-llm-cache` so that re-runs with an unchanged prompt are
 //! served from disk and cost nothing.
 
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use brigid_core::ProgressTracker;
 use brigid_crawl::local::crawl_local;
-use brigid_llm::{DiskCache, LlmClient, OpenAiClientConfig, OpenAiCompatibleClient};
+use brigid_pipeline::llm::complete_text;
 use brigid_pipeline::prompts::PromptRenderer;
 use brigid_pipeline::{IdentifySingleShotInput, identify_single_shot};
+use llm_kernel::llm::{CacheClient, LLMClient, ModelConfig, OpenAIClient};
+use llm_kernel::store::kv::SqliteKvStore;
 
 /// Maximum LLM calls a live smoke test may make. Overridable via
 /// `BRIGID_MAX_LLM_CALLS` for local tuning; defaults to a conservative `5`.
@@ -79,17 +82,37 @@ fn python_lib_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/python-lib")
 }
 
-/// Build an [`OpenAiCompatibleClient`] from the environment, optionally with a
-/// disk cache so re-runs are free.
-fn client_from_env(with_cache: bool) -> OpenAiCompatibleClient {
-    let config = OpenAiClientConfig::from_env().expect("API key present (checked by caller)");
-    let client = OpenAiCompatibleClient::new(config).expect("HTTP client build failed");
+/// Build an [`OpenAIClient`] from the environment, optionally wrapped in
+/// [`CacheClient`] so re-runs are free.
+///
+/// Blank env values are treated as unset. The resolved `base_url` host is
+/// checked against the same default allowlist as `brigid-llm` before the
+/// client is constructed, so a blank or attacker-controlled
+/// `BRIGID_LLM_BASE_URL` cannot send the API key to an unexpected host.
+fn client_from_env(with_cache: bool) -> Box<dyn LLMClient> {
+    use brigid_pipeline::llm::{nonempty_env, nonempty_env_or, validate_llm_base_url};
+
+    let mut config = ModelConfig::default();
+    config.provider = "deepseek".into();
+    config.model = nonempty_env_or("BRIGID_MODEL", "deepseek-chat");
+    config.api_key_env = if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
+        "BRIGID_LLM_API_KEY".into()
+    } else {
+        "DEEPSEEK_API_KEY".into()
+    };
+    let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", "https://api.deepseek.com/v1");
+    validate_llm_base_url(&base_url).expect("BRIGID_LLM_BASE_URL host is not allowlisted");
+    config.base_url = Some(base_url);
+    let client = OpenAIClient::new(&config).expect("HTTP client build failed");
     if with_cache {
         let cache_root =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/brigid-llm-cache");
-        client.with_cache(DiskCache::new(cache_root))
+        let _ = std::fs::create_dir_all(&cache_root);
+        let store = SqliteKvStore::open(&cache_root.join("cache.sqlite"))
+            .expect("open llm-kernel sqlite cache");
+        Box::new(CacheClient::new(client, Arc::new(store)))
     } else {
-        client
+        Box::new(client)
     }
 }
 
@@ -137,7 +160,7 @@ async fn smoke_identify_single_shot() {
         max_abstraction_num: 5,
     };
 
-    let result = match identify_single_shot(&client, &renderer, &input, Some(&mut progress)).await {
+    let result = match identify_single_shot(&client, &renderer, &input, &mut progress).await {
         Ok(r) => r,
         Err(e) => {
             // Network/API issues are tolerated for a smoke test — document and
@@ -199,7 +222,7 @@ async fn smoke_openai_client_complete() {
 
     let client = client_from_env(false);
 
-    let response = match client.complete("Say hello in one word.").await {
+    let response = match complete_text(client.as_ref(), "Say hello in one word.").await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("skipped: client.complete failed (likely network/API): {e}");

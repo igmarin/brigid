@@ -269,21 +269,21 @@ pub fn sanitize_template_input(text: &str) -> String {
             }
             out.push(c);
         } else if c == '}' {
-            if let Some(&next) = chars.peek() {
-                if next == '}' {
-                    out.push_str("} }");
-                    chars.next();
-                    continue;
-                }
+            if let Some(&next) = chars.peek()
+                && next == '}'
+            {
+                out.push_str("} }");
+                chars.next();
+                continue;
             }
             out.push(c);
         } else if c == '%' {
-            if let Some(&next) = chars.peek() {
-                if next == '}' {
-                    out.push_str("% }");
-                    chars.next();
-                    continue;
-                }
+            if let Some(&next) = chars.peek()
+                && next == '}'
+            {
+                out.push_str("% }");
+                chars.next();
+                continue;
             }
             out.push(c);
         } else {

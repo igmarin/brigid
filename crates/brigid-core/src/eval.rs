@@ -345,18 +345,18 @@ fn extract_internal_md_links(content: &str) -> Vec<String> {
     let bytes = content.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' {
-            if let Some(mid) = content[i..].find("](") {
-                let start = i + mid + 2;
-                if let Some(end_rel) = content[start..].find(')') {
-                    let target = &content[start..start + end_rel];
-                    let target = target.split('#').next().unwrap_or(target).trim();
-                    if target.ends_with(".md") && !target.contains("://") {
-                        out.push(target.to_owned());
-                    }
-                    i = start + end_rel + 1;
-                    continue;
+        if bytes[i] == b'['
+            && let Some(mid) = content[i..].find("](")
+        {
+            let start = i + mid + 2;
+            if let Some(end_rel) = content[start..].find(')') {
+                let target = &content[start..start + end_rel];
+                let target = target.split('#').next().unwrap_or(target).trim();
+                if target.ends_with(".md") && !target.contains("://") {
+                    out.push(target.to_owned());
                 }
+                i = start + end_rel + 1;
+                continue;
             }
         }
         i += 1;
@@ -491,15 +491,15 @@ mod tests {
                 let p = ent.path();
                 if p.is_dir() {
                     walk(&p, root, out);
-                } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                    if let Ok(content) = std::fs::read_to_string(&p) {
-                        let content = crate::redact_content(&content);
-                        let rel = p
-                            .strip_prefix(root)
-                            .map(|r| r.to_string_lossy().replace('\\', "/"))
-                            .unwrap_or_default();
-                        out.push(TutorialFile { path: rel, content });
-                    }
+                } else if p.extension().and_then(|e| e.to_str()) == Some("md")
+                    && let Ok(content) = std::fs::read_to_string(&p)
+                {
+                    let content = crate::redact_content(&content);
+                    let rel = p
+                        .strip_prefix(root)
+                        .map(|r| r.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    out.push(TutorialFile { path: rel, content });
                 }
             }
         }

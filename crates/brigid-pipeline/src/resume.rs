@@ -132,19 +132,18 @@ pub fn invalidate_from(checkpoint: &mut CheckpointV1, from: StageId) {
             s,
             StageId::Chapters | StageId::Setup | StageId::Overview | StageId::Combine
         )
-    }) {
-        if let Some(so) = checkpoint.stage_outputs.as_mut() {
-            for s in &drop {
-                if matches!(
-                    s,
-                    StageId::Chapters | StageId::Setup | StageId::Overview | StageId::Combine
-                ) {
-                    so.remove(s.as_str());
-                }
+    }) && let Some(so) = checkpoint.stage_outputs.as_mut()
+    {
+        for s in &drop {
+            if matches!(
+                s,
+                StageId::Chapters | StageId::Setup | StageId::Overview | StageId::Combine
+            ) {
+                so.remove(s.as_str());
             }
-            if so.entries.is_empty() {
-                checkpoint.stage_outputs = None;
-            }
+        }
+        if so.entries.is_empty() {
+            checkpoint.stage_outputs = None;
         }
     }
 }

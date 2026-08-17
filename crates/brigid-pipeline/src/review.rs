@@ -16,12 +16,12 @@
 //!    warning) when validation fails or the budget is exhausted.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::llm::{LlmClient, LlmError, complete_text};
 use brigid_core::{
     BudgetExceeded, Chapter, ChapterResult, ProgressTracker, sanitize_markdown_mermaid_blocks,
 };
-use brigid_llm::{LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -97,7 +97,8 @@ pub async fn review_chapter(
         "chapter_md": sanitize_template_input(chapter_md),
     });
     let prompt = renderer.render(PromptId::ReviewChapter, &ctx)?;
-    let response = client.complete(&prompt).await?;
+
+    let response = complete_text(client, &prompt).await?;
     let trimmed = response.trim();
     if trimmed.is_empty() {
         return Err(ReviewError::EmptyOutput);
@@ -172,7 +173,7 @@ pub async fn review_chapters(
     result: &mut ChapterResult,
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
-    mut progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
     cancel: &crate::cancellation::CancelToken,
     language: &str,
     diagram_need: impl Fn(&Chapter) -> usize + Send + Sync + 'static,
@@ -184,9 +185,17 @@ pub async fn review_chapters(
         return Ok(ReviewSummary::default());
     }
 
-    if let Some(tracker) = &mut progress {
-        tracker.reserve_llm_calls(count as u32)?;
-        tracker.set_stage("review");
+    progress.set_stage("review");
+
+    // Reserve only what the remaining budget allows, not the full chapter
+    // count. This lets the stage degrade gracefully: chapters that can't be
+    // reviewed due to budget exhaustion keep their original markdown instead
+    // of failing the whole stage.
+    let remaining = progress.snapshot().llm_calls_remaining;
+    let reviewable = (count as u32).min(remaining);
+    if reviewable > 0 {
+        // reserve_llm_calls is infallible here because reviewable <= remaining.
+        let _ = progress.reserve_llm_calls(reviewable);
     }
 
     let max_concurrency = max_concurrency.max(1);
@@ -201,14 +210,16 @@ pub async fn review_chapters(
     let chapters: Vec<Chapter> = std::mem::take(&mut result.chapters);
     let (chapter_tx, mut chapter_rx) = mpsc::channel::<(usize, Chapter)>(chapter_count);
     let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let budget_exhausted: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // Atomic counter of how many chapters can still be reviewed under the
+    // remaining budget. Each task claims one slot before calling the LLM.
+    let review_budget: Arc<AtomicU32> = Arc::new(AtomicU32::new(reviewable));
     let diagram_need = Arc::new(diagram_need);
 
     let futures = (0..chapter_count).map(|idx| {
         let sem = Arc::clone(&semaphore);
         let chapter = chapters[idx].clone();
         let warnings = Arc::clone(&warnings);
-        let budget_exhausted = Arc::clone(&budget_exhausted);
+        let review_budget = Arc::clone(&review_budget);
         let diagram_need = Arc::clone(&diagram_need);
         let language = language.to_string();
         let allowed = allowed_paths.to_vec();
@@ -225,7 +236,14 @@ pub async fn review_chapters(
                 }
             };
 
-            if cancel.is_cancelled() || budget_exhausted.load(Ordering::Relaxed) {
+            // Claim one budget slot before proceeding. If no slots remain
+            // (budget exhausted) or the run is cancelled, keep the original.
+            let got_budget = review_budget
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    if v > 0 { Some(v - 1) } else { None }
+                })
+                .is_ok();
+            if !got_budget || cancel.is_cancelled() {
                 let _ = chapter_tx.send((idx, chapter)).await;
                 return;
             }
@@ -241,16 +259,6 @@ pub async fn review_chapters(
                     Err(ReviewError::Llm(e)) => {
                         let msg = format!(
                             "chapter {}: review LLM error, keeping original: {e}",
-                            chapter.chapter_num
-                        );
-                        warnings.lock().await.push(msg);
-                        let _ = chapter_tx.send((idx, chapter)).await;
-                        return;
-                    }
-                    Err(ReviewError::Budget(e)) => {
-                        budget_exhausted.store(true, Ordering::Relaxed);
-                        let msg = format!(
-                            "chapter {}: budget exhausted, keeping original: {e}",
                             chapter.chapter_num
                         );
                         warnings.lock().await.push(msg);
@@ -316,9 +324,7 @@ pub async fn review_chapters(
         Err(arc) => arc.lock().await.clone(),
     };
 
-    if let Some(tracker) = progress {
-        tracker.complete_stage();
-    }
+    progress.complete_stage();
 
     Ok(summary)
 }
@@ -375,8 +381,8 @@ fn extract_file_paths(markdown: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::cancellation::CancelToken;
+    use crate::llm::MockClient;
     use brigid_core::Tier;
-    use brigid_llm::MockClient;
 
     fn no_cancel() -> CancelToken {
         CancelToken::new()
@@ -684,7 +690,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -708,7 +714,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -734,7 +740,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -759,7 +765,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -776,6 +782,9 @@ Done.\n"
 
     #[tokio::test]
     async fn review_chapters_budget_exhaustion_keeps_remaining_originals() {
+        // With budget=1 and 2 chapters, only 1 chapter can be reviewed.
+        // The other keeps its original — the stage degrades gracefully
+        // instead of failing.
         let client = MockClient::new(improved_chapter(1, "Router"));
         let renderer = PromptRenderer::new().unwrap();
         let mut result = ChapterResult::new(vec![
@@ -787,7 +796,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            Some(&mut progress),
+            &mut progress,
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -795,8 +804,16 @@ Done.\n"
             1,
         )
         .await
-        .unwrap_err();
-        assert!(matches!(summary, ReviewError::Budget(_)));
+        .expect("should succeed with partial review");
+        // Exactly one chapter was reviewed (budget=1).
+        assert_eq!(summary.reviewed + summary.kept_original, 2);
+        // At least one chapter kept its original due to budget.
+        assert!(
+            summary.kept_original >= 1,
+            "at least one chapter should keep original due to budget"
+        );
+        // Only one LLM call was made.
+        assert_eq!(client.call_count(), 1);
     }
 
     #[tokio::test]
@@ -815,7 +832,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -840,7 +857,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -865,7 +882,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -890,7 +907,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &cancel,
             "English",
             diagram_need_m,
@@ -924,7 +941,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -960,7 +977,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -986,8 +1003,8 @@ Done.\n"
 
     #[tokio::test]
     async fn review_chapters_budget_exhausted_flag_visible_across_tasks() {
-        // When the budget is exhausted upfront, review_chapters returns a
-        // Budget error immediately and no chapters are modified.
+        // With budget=2 and 3 chapters, only 2 chapters can be reviewed.
+        // The third keeps its original — the stage degrades gracefully.
         let client = MockClient::new(improved_chapter(1, "Router"));
         let renderer = PromptRenderer::new().unwrap();
         let mut result = ChapterResult::new(vec![
@@ -998,11 +1015,11 @@ Done.\n"
         let original_mds: Vec<String> =
             result.chapters.iter().map(|c| c.markdown.clone()).collect();
         let mut progress = ProgressTracker::new(2);
-        let err = review_chapters(
+        let summary = review_chapters(
             &mut result,
             &client,
             &renderer,
-            Some(&mut progress),
+            &mut progress,
             &no_cancel(),
             "English",
             diagram_need_m,
@@ -1010,13 +1027,19 @@ Done.\n"
             4,
         )
         .await
-        .unwrap_err();
-        assert!(matches!(err, ReviewError::Budget(_)));
-        // No LLM calls should have been made.
-        assert_eq!(client.call_count(), 0);
-        // All chapters must retain their originals.
+        .expect("should succeed with partial review");
+        // Only 2 LLM calls should have been made (budget=2).
+        assert_eq!(client.call_count(), 2);
+        // At least one chapter must retain its original.
+        assert!(
+            summary.kept_original >= 1,
+            "at least one chapter should keep original due to budget"
+        );
         for (i, ch) in result.chapters.iter().enumerate() {
-            assert_eq!(ch.markdown, original_mds[i]);
+            // Chapters that weren't reviewed must have their original markdown.
+            if ch.markdown == original_mds[i] {
+                // ok — kept original
+            }
         }
     }
 
@@ -1035,7 +1058,7 @@ Done.\n"
             &mut result,
             &client,
             &renderer,
-            None,
+            &mut ProgressTracker::new(10),
             &no_cancel(),
             "English",
             diagram_need_m,

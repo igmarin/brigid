@@ -21,6 +21,7 @@ pub mod generate;
 pub mod identify;
 pub mod identify_checkpoint;
 pub mod identify_runner;
+pub mod llm;
 pub mod order;
 pub mod overview;
 pub mod prompts;
@@ -59,6 +60,9 @@ pub use identify_checkpoint::{
 };
 pub use identify_runner::{
     IdentifyRunConfig, IdentifyRunOutcome, IdentifyStrategy, identify_with_cancellation,
+};
+pub use llm::{
+    LlmClient, LlmError, MockClient, bounded_complete, bounded_complete_with_budget, complete_text,
 };
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{

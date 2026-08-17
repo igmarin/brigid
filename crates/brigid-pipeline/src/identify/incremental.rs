@@ -16,8 +16,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::llm::LlmClient;
 use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, RunConfig, module_key};
-use brigid_llm::LlmClient;
 
 use crate::identify::{
     CandidateAbstraction, IdentifyError, IdentifyMapInput, IdentifyReduceInput, identify_map,
@@ -69,7 +69,7 @@ pub async fn incremental_identify(
     files: &[String],
     sizes: &[u64],
     config: &RunConfig,
-    mut progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<IdentifyResult, IdentifyError> {
     // 1. Determine the set of affected module keys (changed + deleted files).
     let affected_modules: BTreeSet<String> = changed_files
@@ -143,7 +143,7 @@ pub async fn incremental_identify(
             budget_config: budget_config_from_run(config),
             community_context: String::new(),
         };
-        let batches = identify_map(client, renderer, &map_input, progress.as_deref_mut()).await?;
+        let batches = identify_map(client, renderer, &map_input, progress).await?;
         for b in batches {
             for mut cand in b.candidates {
                 // Remap sub-list file indices → full inventory indices.
@@ -204,8 +204,8 @@ pub async fn incremental_identify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::MockClient;
     use brigid_core::{Abstraction, AbstractionKind, RunConfig, Tier};
-    use brigid_llm::MockClient;
 
     /// Build an [`Abstraction`] with entry_files set.
     fn abs(name: &str, entry_files: &[&str]) -> Abstraction {
@@ -308,7 +308,7 @@ mod tests {
             &files,
             &sizes,
             &cfg_with_small_batches(),
-            None,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("incremental identify should succeed");
@@ -399,7 +399,7 @@ mod tests {
             &files,
             &sizes,
             &cfg_with_small_batches(),
-            None,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("merge should succeed");
@@ -452,7 +452,7 @@ mod tests {
             &files,
             &sizes,
             &cfg_with_small_batches(),
-            None,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("should succeed");

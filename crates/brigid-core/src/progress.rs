@@ -158,6 +158,26 @@ impl ProgressTracker {
         &self.stage_timings
     }
 
+    /// Number of LLM calls already reserved/used.
+    #[must_use]
+    pub fn llm_calls_used(&self) -> u32 {
+        self.llm_calls_used
+    }
+
+    /// Create a tracker for a new run/stage that accounts for calls already
+    /// consumed in `checkpoint`.
+    ///
+    /// `max_llm_calls == None` falls back to [`crate::DEFAULT_MAX_LLM_CALLS`]. The
+    /// remaining budget is `max - used`, saturating at zero.
+    #[must_use]
+    pub fn from_config_and_checkpoint(
+        max_llm_calls: Option<u32>,
+        checkpoint: &crate::CheckpointV1,
+    ) -> Self {
+        let max = max_llm_calls.unwrap_or(crate::DEFAULT_MAX_LLM_CALLS);
+        Self::new(max.saturating_sub(checkpoint.metadata.llm_calls_used))
+    }
+
     /// Immutable snapshot for display / tests.
     #[must_use]
     pub fn snapshot(&self) -> ProgressSnapshot {
@@ -174,6 +194,7 @@ impl ProgressTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CheckpointV1, DEFAULT_MAX_LLM_CALLS, RunConfig};
 
     #[test]
     fn records_until_ceiling() {
@@ -260,5 +281,40 @@ mod tests {
         let timings = t.stage_timings();
         assert_eq!(timings[0].llm_calls, 1);
         assert_eq!(t.snapshot().llm_calls_used, 2);
+    }
+
+    #[test]
+    fn from_config_and_checkpoint_defaults_to_max_llm_calls() {
+        let cfg = RunConfig::empty();
+        let cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "0Z").unwrap();
+        let t = ProgressTracker::from_config_and_checkpoint(None, &cp);
+        assert_eq!(t.snapshot().llm_calls_remaining, DEFAULT_MAX_LLM_CALLS);
+    }
+
+    #[test]
+    fn from_config_and_checkpoint_subtracts_used_calls() {
+        let cfg = RunConfig::empty();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "0Z").unwrap();
+        cp.record_llm_calls(10);
+        let t = ProgressTracker::from_config_and_checkpoint(Some(50), &cp);
+        assert_eq!(t.snapshot().llm_calls_remaining, 40);
+    }
+
+    #[test]
+    fn from_config_and_checkpoint_saturates_at_zero() {
+        let cfg = RunConfig::empty();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "0Z").unwrap();
+        cp.record_llm_calls(100);
+        let t = ProgressTracker::from_config_and_checkpoint(Some(50), &cp);
+        assert_eq!(t.snapshot().llm_calls_remaining, 0);
+    }
+
+    #[test]
+    fn from_config_and_checkpoint_used_equals_max_yields_zero() {
+        let cfg = RunConfig::empty();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "0Z").unwrap();
+        cp.record_llm_calls(50);
+        let t = ProgressTracker::from_config_and_checkpoint(Some(50), &cp);
+        assert_eq!(t.snapshot().llm_calls_remaining, 0);
     }
 }

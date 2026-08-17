@@ -3,6 +3,8 @@
 //! This binary only parses arguments and wires up library crates; business
 //! logic lives in `brigid-core`, `brigid-crawl`, and `brigid-pipeline`.
 
+#![allow(deprecated)]
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -10,19 +12,54 @@ use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use async_trait::async_trait;
 use brigid_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
-    OverviewOutput, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats, StageStatus,
-    TutorialFile, config_from_env_map, current_git_head, custom_host_warning, evaluate_tutorial,
-    parse_toml_config, parse_yaml_config, redact_content, resolve_config,
-    validate_config_for_check,
+    OverviewOutput, ProgressTracker, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput,
+    StageStats, StageStatus, TutorialFile, config_from_env_map, current_git_head,
+    custom_host_warning, evaluate_tutorial, parse_toml_config, parse_yaml_config, redact_content,
+    resolve_config, validate_config_for_check,
 };
 use brigid_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
+use brigid_llm::client::LlmClient as BrigidLlmClient;
 use brigid_pipeline::{
-    CheckpointStore, DryRunError, check_identity, dry_run_with_options, is_checkpoint_stale,
-    next_stage, pending_stages,
+    CheckpointStore, DryRunError, LlmClient, LlmError, MockClient, check_identity,
+    dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use llm_kernel::llm::{LLMClient, LLMRequest, LLMResponse, LLMStream};
+
+/// Wraps a deprecated `brigid-llm` client as [`LLMClient`] until Phase 4.
+struct LegacyLlmClient(Box<dyn BrigidLlmClient>);
+
+#[async_trait]
+impl LLMClient for LegacyLlmClient {
+    async fn complete(&self, request: LLMRequest) -> llm_kernel::error::Result<LLMResponse> {
+        let prompt = request
+            .messages
+            .iter()
+            .map(llm_kernel::llm::ChatMessage::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        match self.0.complete(&prompt).await {
+            Ok(content) => Ok(LLMResponse {
+                content,
+                ..LLMResponse::default()
+            }),
+            Err(err) => Err(legacy_llm_error(err).into_kernel()),
+        }
+    }
+
+    fn model_name(&self) -> &str {
+        "brigid-llm"
+    }
+
+    async fn stream_complete(&self, _request: LLMRequest) -> llm_kernel::error::Result<LLMStream> {
+        Err(llm_kernel::error::KernelError::LlmApi(
+            "streaming is not supported by this client".into(),
+        ))
+    }
+}
 
 /// Success.
 const EXIT_OK: u8 = 0;
@@ -147,7 +184,7 @@ fn build_real_llm_client(
     custom_hosts: &[String],
     provider: Option<&str>,
     model: Option<&str>,
-) -> Result<Box<dyn brigid_llm::LlmClient>, brigid_llm::LlmError> {
+) -> Result<Box<dyn LlmClient>, brigid_llm::LlmError> {
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
@@ -161,7 +198,7 @@ fn build_real_llm_client(
     } else {
         client
     };
-    Ok(Box::new(client))
+    Ok(Box::new(LegacyLlmClient(Box::new(client))))
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +237,26 @@ const PLACEHOLDER_OVERVIEW: &str = "# Architecture Overview\n\nThis project has 
 /// Build a typed [`brigid_llm::LlmError`] for the given `BRIGID_LLM_MOCK_FAIL`
 /// fault-injection keyword.  Extracted as a pure function so it can be unit
 /// tested without mutating the process environment.
-fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
+fn legacy_llm_error(err: brigid_llm::LlmError) -> LlmError {
+    match err {
+        brigid_llm::LlmError::Timeout => LlmError::Timeout,
+        brigid_llm::LlmError::RateLimit { retry_after } => LlmError::RateLimit { retry_after },
+        brigid_llm::LlmError::Provider { status, body } => LlmError::Provider { status, body },
+        brigid_llm::LlmError::Parse { message } => LlmError::parse(message),
+        brigid_llm::LlmError::Network { message } => LlmError::network(message),
+    }
+}
+
+fn mock_fail_error(kind: &str) -> LlmError {
     match kind {
-        "timeout" => brigid_llm::LlmError::Timeout,
-        "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-        "provider" => brigid_llm::LlmError::Provider {
+        "timeout" => LlmError::Timeout,
+        "ratelimit" => LlmError::RateLimit { retry_after: None },
+        "provider" => LlmError::Provider {
             status: 502,
             body: "mock provider error".to_string(),
         },
-        "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-        _ => brigid_llm::LlmError::network("mock network failure"),
+        "parse" => LlmError::parse("mock parse failure"),
+        _ => LlmError::network("mock network failure"),
     }
 }
 
@@ -219,7 +266,7 @@ fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
 /// can inject a typed error on the first call instead of returning placeholder
 /// responses.  This is a developer-only fault-injection hook and is compiled out
 /// of release builds.
-fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
+fn mock_client(responses: Vec<String>) -> Box<dyn LlmClient> {
     mock_client_with_diag(responses, &mut std::io::stderr())
 }
 
@@ -229,7 +276,7 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
 fn mock_client_with_diag(
     responses: Vec<String>,
     diag: &mut dyn std::io::Write,
-) -> Box<dyn brigid_llm::LlmClient> {
+) -> Box<dyn LlmClient> {
     let fallback = PLACEHOLDER_IDENTIFY_YAML;
     #[cfg(debug_assertions)]
     {
@@ -238,16 +285,16 @@ fn mock_client_with_diag(
             .filter(|value| !value.is_empty())
         {
             let error = mock_fail_error(&kind);
-            return Box::new(brigid_llm::MockClient::new("").fail_on(0, error));
+            return Box::new(MockClient::new("").fail_on(0, error));
         }
     }
     Box::new(
-        brigid_llm::MockClient::with_responses(responses).unwrap_or_else(|error| {
+        MockClient::with_responses(responses).unwrap_or_else(|error| {
             let _ = writeln!(
                 diag,
                 "warning: mock client: falling back to default placeholder response: {error}"
             );
-            brigid_llm::MockClient::new(fallback)
+            MockClient::new(fallback)
         }),
     )
 }
@@ -1045,17 +1092,17 @@ fn main() -> ExitCode {
             };
             // Validate positive-integer flags (clap parses them, but 0 is
             // semantically invalid for concurrency and max-llm-calls).
-            if let Some(n) = concurrency {
-                if n == 0 {
-                    eprintln!("error: --concurrency must be a positive integer (got 0)");
-                    return ExitCode::from(EXIT_CONFIG);
-                }
+            if let Some(n) = concurrency
+                && n == 0
+            {
+                eprintln!("error: --concurrency must be a positive integer (got 0)");
+                return ExitCode::from(EXIT_CONFIG);
             }
-            if let Some(n) = max_llm_calls {
-                if n == 0 {
-                    eprintln!("error: --max-llm-calls must be a positive integer (got 0)");
-                    return ExitCode::from(EXIT_CONFIG);
-                }
+            if let Some(n) = max_llm_calls
+                && n == 0
+            {
+                eprintln!("error: --max-llm-calls must be a positive integer (got 0)");
+                return ExitCode::from(EXIT_CONFIG);
             }
             let checkpoint_dir =
                 checkpoint_dir.unwrap_or_else(|| PathBuf::from(".brigid-checkpoint"));
@@ -1128,6 +1175,7 @@ fn main() -> ExitCode {
                 &language,
                 &diagram_level,
                 format,
+                cfg.max_llm_calls,
             )
         }
         Commands::Setup {
@@ -2116,7 +2164,7 @@ fn cmd_identify(
         files: records,
     };
 
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         eprintln!(
             "warning: identify: BRIGID_FORCE_MOCK is set — using a mock client. \
              The output will be a placeholder, not a real LLM analysis."
@@ -2440,7 +2488,7 @@ fn cmd_generate(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         print_progress(
             verbosity,
             "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
@@ -2504,7 +2552,7 @@ fn cmd_generate(
 
     let store = CheckpointStore::new(checkpoint_dir);
 
-    let (mut checkpoint, existing_files) = match store.load() {
+    let (mut checkpoint, files) = match store.load() {
         Ok((meta, files)) => {
             // Checkpoint collision detection (issue #266): if the checkpoint
             // was created for a different --dir, discard it and start fresh.
@@ -2572,16 +2620,13 @@ fn cmd_generate(
     if !checkpoint.is_stage_complete(brigid_core::StageId::DryRun) {
         checkpoint.mark_stage_complete(brigid_core::StageId::DryRun, "0Z");
     }
-    if let Err(e) = store.save(checkpoint.clone(), &existing_files) {
+    if let Err(e) = store.save(checkpoint.clone(), &files) {
         eprintln!("error: generate: checkpoint save failed: {e}");
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    let mut progress = brigid_core::ProgressTracker::new(
-        run_config
-            .max_llm_calls
-            .unwrap_or(brigid_core::DEFAULT_MAX_LLM_CALLS),
-    );
+    let mut progress =
+        ProgressTracker::from_config_and_checkpoint(run_config.max_llm_calls, &checkpoint);
 
     let generate_start = std::time::Instant::now();
 
@@ -2656,6 +2701,11 @@ fn cmd_generate(
 
         match outcome {
             Ok(brigid_pipeline::GenerateOutcome::Completed(combined)) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: generate: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
+
                 print_progress(
                     verbosity,
                     &format!(
@@ -2683,7 +2733,7 @@ fn cmd_generate(
                             llm_calls: t.llm_calls,
                         })
                         .collect();
-                    let total_llm_calls = progress.snapshot().llm_calls_used;
+                    let total_llm_calls = checkpoint.metadata.llm_calls_used;
                     let elapsed_ms = generate_start.elapsed().as_millis() as u64;
                     let data = brigid_core::GenerateOutput {
                         stages,
@@ -2711,6 +2761,9 @@ fn cmd_generate(
                 ExitCode::from(EXIT_OK)
             }
             Ok(brigid_pipeline::GenerateOutcome::Cancelled { checkpoint_path }) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: generate: checkpoint save failed: {e}");
+                }
                 print_progress(verbosity, "generate: cancelled");
                 print_progress(
                     verbosity,
@@ -2722,48 +2775,10 @@ fn cmd_generate(
                 ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
             }
             Err(e) => {
-                let code = match &e {
-                    brigid_pipeline::GenerateError::Budget(_)
-                    | brigid_pipeline::GenerateError::Identify(
-                        brigid_pipeline::identify::IdentifyError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Relationships(
-                        brigid_pipeline::relationships::RelationshipsError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Order(
-                        brigid_pipeline::order::OrderError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Chapters(
-                        brigid_pipeline::chapters::ChaptersError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Review(
-                        brigid_pipeline::review::ReviewError::Budget(_),
-                    ) => EXIT_BUDGET,
-                    brigid_pipeline::GenerateError::Identify(
-                        brigid_pipeline::identify::IdentifyError::Llm(_)
-                        | brigid_pipeline::identify::IdentifyError::LlmBatch { .. },
-                    )
-                    | brigid_pipeline::GenerateError::Relationships(
-                        brigid_pipeline::relationships::RelationshipsError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Order(
-                        brigid_pipeline::order::OrderError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Chapters(
-                        brigid_pipeline::chapters::ChaptersError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Review(
-                        brigid_pipeline::review::ReviewError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Setup(
-                        brigid_pipeline::setup_guide::SetupGuideError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Overview(
-                        brigid_pipeline::overview::OverviewError::Llm(_),
-                    ) => EXIT_LLM,
-                    brigid_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
-                    _ => EXIT_FAIL,
-                };
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: generate: checkpoint save failed: {save_err}");
+                }
+                let code = stage_exit_code(&e);
                 print_error("generate failed", &e);
                 ExitCode::from(code)
             }
@@ -2844,7 +2859,7 @@ fn cmd_generate_each_app(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         print_progress(
             verbosity,
             "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
@@ -3073,7 +3088,7 @@ fn stage_language_instruction(language: &str) -> String {
     }
 }
 
-fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn brigid_llm::LlmClient> {
+fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn LlmClient> {
     let api_key = env::var("BRIGID_LLM_API_KEY").ok();
     if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
         eprintln!(
@@ -3088,23 +3103,11 @@ fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn brigi
             .ok()
             .filter(|s| !s.is_empty())
         {
-            let err = match kind.as_str() {
-                "timeout" => brigid_llm::LlmError::Timeout,
-                "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-                "provider" => brigid_llm::LlmError::Provider {
-                    status: 502,
-                    body: "mock provider error".to_string(),
-                },
-                "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-                _ => brigid_llm::LlmError::network("mock network failure"),
-            };
-            return Box::new(brigid_llm::MockClient::new("").fail_on(0, err));
+            let err = mock_fail_error(&kind);
+            return Box::new(MockClient::new("").fail_on(0, err));
         }
     }
-    Box::new(
-        brigid_llm::MockClient::with_responses(responses)
-            .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder)),
-    )
+    Box::new(MockClient::with_responses(responses).unwrap_or_else(|_| MockClient::new(placeholder)))
 }
 
 fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
@@ -3119,6 +3122,13 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
         | brigid_pipeline::GenerateError::Order(brigid_pipeline::order::OrderError::Budget(_))
         | brigid_pipeline::GenerateError::Chapters(
             brigid_pipeline::chapters::ChaptersError::Budget(_),
+        )
+        | brigid_pipeline::GenerateError::Review(brigid_pipeline::review::ReviewError::Budget(_))
+        | brigid_pipeline::GenerateError::Setup(
+            brigid_pipeline::setup_guide::SetupGuideError::Budget(_),
+        )
+        | brigid_pipeline::GenerateError::Overview(
+            brigid_pipeline::overview::OverviewError::Budget(_),
         ) => EXIT_BUDGET,
         brigid_pipeline::GenerateError::Identify(
             brigid_pipeline::identify::IdentifyError::Llm(_)
@@ -3131,6 +3141,7 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
         | brigid_pipeline::GenerateError::Chapters(
             brigid_pipeline::chapters::ChaptersError::Llm(_),
         )
+        | brigid_pipeline::GenerateError::Review(brigid_pipeline::review::ReviewError::Llm(_))
         | brigid_pipeline::GenerateError::Setup(
             brigid_pipeline::setup_guide::SetupGuideError::Llm(_),
         )
@@ -3169,6 +3180,7 @@ fn cmd_relationships(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_rel =
         "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
@@ -3202,10 +3214,15 @@ fn cmd_relationships(
             &file_contents,
             &project_name,
             &language_instruction,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: relationships: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Text => {
                         eprintln!(
@@ -3235,10 +3252,12 @@ fn cmd_relationships(
                         print_json(&out);
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: relationships: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: relationships failed: {e}");
                 ExitCode::from(code)
@@ -3256,6 +3275,7 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_order = "```yaml\n- 0\n```\n";
     let client = make_stage_client(vec![placeholder_order.to_string()], placeholder_order);
@@ -3287,10 +3307,15 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
             &mut checkpoint,
             &project_name,
             &language_instruction,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: order: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Text => {
                         eprintln!(
@@ -3332,10 +3357,12 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
                         print_json(&out);
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: order: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: order failed: {e}");
                 ExitCode::from(code)
@@ -3352,6 +3379,7 @@ fn cmd_chapters(
     language: &str,
     diagram_level: &str,
     format: OutputFormat,
+    max_llm_calls: Option<u32>,
 ) -> ExitCode {
     let diagram_level_parsed = match brigid_pipeline::DiagramLevel::parse(diagram_level) {
         Some(dl) => dl,
@@ -3385,6 +3413,7 @@ fn cmd_chapters(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(language);
+    let mut progress = ProgressTracker::from_config_and_checkpoint(max_llm_calls, &checkpoint);
 
     let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
     let identify = match brigid_pipeline::identify_checkpoint::load_identify_result(&checkpoint) {
@@ -3431,10 +3460,15 @@ fn cmd_chapters(
             language,
             diagram_level_parsed,
             brigid_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: chapters: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let summaries: Vec<ChapterSummary> = result
@@ -3472,10 +3506,12 @@ fn cmd_chapters(
                         eprintln!("output: {}", output_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: chapters: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: chapters failed: {e}");
                 ExitCode::from(code)
@@ -3509,6 +3545,7 @@ fn cmd_setup(
     };
 
     let lang = cfg.language.as_deref().unwrap_or("en");
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -3530,10 +3567,15 @@ fn cmd_setup(
             dir,
             force,
             lang,
+            &mut progress,
         )
         .await
         {
             Ok(guide) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: setup: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let out = StageOutput {
@@ -3554,10 +3596,12 @@ fn cmd_setup(
                         eprintln!("checkpoint: {}", checkpoint_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: setup: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: setup failed: {e}");
                 ExitCode::from(code)
@@ -3593,6 +3637,7 @@ fn cmd_overview(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
     let client = make_stage_client(vec![placeholder_overview.to_string()], placeholder_overview);
@@ -3625,10 +3670,15 @@ fn cmd_overview(
             &project_name,
             &language_instruction,
             &modules,
+            &mut progress,
         )
         .await
         {
             Ok(overview) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: overview: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let out = StageOutput {
@@ -3649,10 +3699,12 @@ fn cmd_overview(
                         eprintln!("checkpoint: {}", checkpoint_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: overview: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: overview failed: {e}");
                 ExitCode::from(code)
@@ -3816,6 +3868,7 @@ fn walk_md(dir: &Path, root: &Path, out: &mut Vec<TutorialFile>) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brigid_pipeline::complete_text;
 
     /// Unique temp dir helper for unit tests in main.rs.
     fn temp_dir(label: &str) -> PathBuf {
@@ -4448,33 +4501,27 @@ mod tests {
 
     #[test]
     fn mock_fail_error_returns_expected_variant_for_each_keyword() {
-        assert!(matches!(
-            mock_fail_error("timeout"),
-            brigid_llm::LlmError::Timeout
-        ));
+        assert!(matches!(mock_fail_error("timeout"), LlmError::Timeout));
         assert!(matches!(
             mock_fail_error("ratelimit"),
-            brigid_llm::LlmError::RateLimit { retry_after: None }
+            LlmError::RateLimit { retry_after: None }
         ));
         match mock_fail_error("provider") {
-            brigid_llm::LlmError::Provider { status, body } => {
+            LlmError::Provider { status, body } => {
                 assert_eq!(status, 502);
                 assert_eq!(body, "mock provider error");
             }
             other => panic!("expected Provider, got {other:?}"),
         }
-        assert!(matches!(
-            mock_fail_error("parse"),
-            brigid_llm::LlmError::Parse { .. }
-        ));
+        assert!(matches!(mock_fail_error("parse"), LlmError::Parse { .. }));
         assert!(matches!(
             mock_fail_error("network"),
-            brigid_llm::LlmError::Network { .. }
+            LlmError::Network { .. }
         ));
         // Unknown keyword falls through to network error.
         assert!(matches!(
             mock_fail_error("unknown"),
-            brigid_llm::LlmError::Network { .. }
+            LlmError::Network { .. }
         ));
     }
 
@@ -4489,8 +4536,7 @@ mod tests {
         // process stderr.
         let mut diag = Vec::new();
         let client = mock_client_with_diag(Vec::new(), &mut diag);
-        let response = client
-            .complete("anything")
+        let response = complete_text(client.as_ref(), "anything")
             .await
             .expect("fallback client should respond");
         assert_eq!(response, PLACEHOLDER_IDENTIFY_YAML);
@@ -4508,7 +4554,7 @@ mod tests {
     #[tokio::test]
     async fn mock_client_with_responses_serves_sequence_without_fallback() {
         let client = mock_client(vec!["first".to_string(), "second".to_string()]);
-        assert_eq!(client.complete("a").await.unwrap(), "first");
-        assert_eq!(client.complete("b").await.unwrap(), "second");
+        assert_eq!(complete_text(client.as_ref(), "a").await.unwrap(), "first");
+        assert_eq!(complete_text(client.as_ref(), "b").await.unwrap(), "second");
     }
 }

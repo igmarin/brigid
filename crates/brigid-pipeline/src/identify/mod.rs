@@ -2,14 +2,14 @@
 //! list for small repos where map/reduce is unnecessary.
 //!
 //! This is the Rust port of the Python reference's `_single_shot_identify`
-//! node. The function takes a [`brigid_llm::LlmClient`] (so it works with
-//! [`brigid_llm::MockClient`] in tests and a real provider client in
+//! node. The function takes a [`crate::llm::LlmClient`] (so it works with
+//! [`crate::llm::MockClient`] in tests and a real provider client in
 //! production), renders the `identify_single_shot` prompt, calls the LLM,
 //! extracts the YAML block, parses it into [`Abstraction`]s, and validates the
 //! `file_indices` against the crawl inventory.
 //!
 //! Caching is intentionally NOT handled here — the caller (or a later ticket)
-//! wraps the LLM call with [`brigid_llm::DiskCache`]. Likewise, heuristic
+//! wraps the LLM call with [`llm_kernel::llm::CacheClient`]. Likewise, heuristic
 //! enrichment of `tier`/`kind`/`apps`/`entry_files` beyond what the LLM
 //! returns is a separate concern.
 
@@ -64,15 +64,15 @@ pub fn enrich_identify_kinds(
     );
 }
 
+/// Re-export of [`crate::llm::LlmError`] for ergonomic matching at call sites
+/// that only depend on `brigid-pipeline`.
+pub use crate::llm::LlmError;
 /// Re-export of [`PromptError`] for ergonomic matching at call sites that
 /// only depend on `brigid-pipeline`.
 pub use crate::prompts::PromptError;
 /// Re-export of [`brigid_core::ExtractError`] for ergonomic matching at call
 /// sites that only depend on `brigid-pipeline`.
 pub use brigid_core::ExtractError;
-/// Re-export of [`brigid_llm::LlmError`] for ergonomic matching at call sites
-/// that only depend on `brigid-pipeline`.
-pub use brigid_llm::LlmError;
 
 pub use map::batch_files_by_size;
 pub(crate) use map::run_single_map_batch;

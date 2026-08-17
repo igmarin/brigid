@@ -13,11 +13,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use brigid_core::{
     ChapterOrder, ChapterOrderError, CheckpointV1, IdentifyResult, ProgressTracker,
     RelationshipsResult, StageId, extract_yaml_block, redact_content,
 };
-use brigid_llm::LlmClient;
 use serde_json::json;
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
@@ -36,7 +36,10 @@ pub enum OrderError {
     Prompt(#[from] crate::prompts::PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
+    /// The LLM returned empty output.
+    #[error("LLM returned empty output")]
+    EmptyOutput,
     /// No YAML block could be extracted from the LLM response.
     #[error("YAML/JSON block extraction failed: {0}")]
     Extract(#[from] brigid_core::ExtractError),
@@ -89,7 +92,7 @@ pub async fn order_chapters(
     identify: &IdentifyResult,
     relationships: &RelationshipsResult,
     config: &OrderConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterOrder, OrderError> {
     let abstractions = &identify.abstractions;
     let abstraction_count = abstractions.len();
@@ -111,12 +114,9 @@ pub async fn order_chapters(
 
     let prompt = renderer.render(PromptId::OrderChapters, &render_ctx)?;
 
-    if let Some(tracker) = progress {
-        tracker.reserve_llm_calls(1).map_err(OrderError::from)?;
-        tracker.set_stage("order");
-    }
-
-    let response = client.complete(&prompt).await?;
+    progress.set_stage("order");
+    let result = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = result.into_iter().next().ok_or(OrderError::EmptyOutput)??;
 
     let yaml_text = extract_yaml_block(&response)?;
 
@@ -190,12 +190,12 @@ pub async fn order_and_checkpoint(
     identify: &IdentifyResult,
     relationships: &RelationshipsResult,
     config: &OrderConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterOrder, OrderError> {
-    if !should_run_order(checkpoint) {
-        if let Some(existing) = load_order_result(checkpoint) {
-            return Ok(existing);
-        }
+    if !should_run_order(checkpoint)
+        && let Some(existing) = load_order_result(checkpoint)
+    {
+        return Ok(existing);
     }
 
     let result =
@@ -294,8 +294,8 @@ fn build_order_context(relationships: &RelationshipsResult) -> String {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
+    use crate::llm::{LlmError, MockClient};
     use brigid_core::{Abstraction, Relationship, RunConfig, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -425,9 +425,16 @@ mod tests {
         let identify = IdentifyResult::new(five_abstractions());
         let relationships = sample_relationships();
         let config = sample_config();
-        let result = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect("happy path should succeed");
+        let result = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("happy path should succeed");
         assert_eq!(result.ordered_indices, vec![3, 1, 0, 4, 2]);
         assert_eq!(client.call_count(), 1);
     }
@@ -440,9 +447,16 @@ mod tests {
         let identify = IdentifyResult::new(abs[..4].to_vec());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("missing abstraction should error");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("missing abstraction should error");
         assert!(
             matches!(
                 err,
@@ -460,9 +474,16 @@ mod tests {
         let identify = IdentifyResult::new(abs[..4].to_vec());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("duplicate index should error");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("duplicate index should error");
         assert!(
             matches!(
                 err,
@@ -480,9 +501,16 @@ mod tests {
         let identify = IdentifyResult::new(abs[..4].to_vec());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("out of bounds should error");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("out of bounds should error");
         assert!(
             matches!(
                 err,
@@ -504,9 +532,16 @@ mod tests {
         )]);
         let relationships = RelationshipsResult::new("Solo project.", vec![]);
         let config = sample_config();
-        let result = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect("single abstraction should succeed");
+        let result = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("single abstraction should succeed");
         assert_eq!(result.ordered_indices, vec![0]);
     }
 
@@ -517,9 +552,16 @@ mod tests {
         let identify = IdentifyResult::new(vec![]);
         let relationships = RelationshipsResult::new(String::new(), vec![]);
         let config = sample_config();
-        let result = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect("empty abstraction list should succeed");
+        let result = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("empty abstraction list should succeed");
         assert!(result.ordered_indices.is_empty());
     }
 
@@ -530,9 +572,16 @@ mod tests {
         let identify = IdentifyResult::new(five_abstractions());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("malformed yaml should error");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("malformed yaml should error");
         assert!(matches!(err, OrderError::Parse(_)), "got: {err:?}");
     }
 
@@ -543,9 +592,16 @@ mod tests {
         let identify = IdentifyResult::new(five_abstractions());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("no block should error");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("no block should error");
         assert!(matches!(err, OrderError::Extract(_)), "got: {err:?}");
     }
 
@@ -556,9 +612,16 @@ mod tests {
         let identify = IdentifyResult::new(five_abstractions());
         let relationships = sample_relationships();
         let config = sample_config();
-        let err = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect_err("llm failure should propagate");
+        let err = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("llm failure should propagate");
         assert!(
             matches!(err, OrderError::Llm(LlmError::Timeout)),
             "got: {err:?}"
@@ -571,10 +634,30 @@ mod tests {
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_order(&[0]))
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_order(&[0]))
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -589,9 +672,16 @@ mod tests {
             vec![Relationship::new(0, 0, "API_KEY=hush", "calls")],
         );
         let config = sample_config();
-        let _ = order_chapters(&client, &renderer, &identify, &relationships, &config, None)
-            .await
-            .expect("should succeed");
+        let _ = order_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &relationships,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
         assert!(
             !prompt.contains("super-secret"),
@@ -621,7 +711,7 @@ mod tests {
             &identify,
             &relationships,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect_err("budget exceeded should error");
@@ -694,7 +784,7 @@ mod tests {
             &identify,
             &relationships,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -727,7 +817,7 @@ mod tests {
             &identify,
             &relationships,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("skip should succeed");

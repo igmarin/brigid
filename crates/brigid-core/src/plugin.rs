@@ -263,11 +263,11 @@ fn pick_classification_target<'a>(
         return (entry.as_str(), content);
     }
     // Fall back to the first file_index.
-    if let Some(&idx) = abs.file_indices.first() {
-        if let Some(path) = files.get(idx) {
-            let content = contents.get(idx).map(String::as_str).unwrap_or("");
-            return (path.as_str(), content);
-        }
+    if let Some(&idx) = abs.file_indices.first()
+        && let Some(path) = files.get(idx)
+    {
+        let content = contents.get(idx).map(String::as_str).unwrap_or("");
+        return (path.as_str(), content);
     }
     ("", "")
 }

@@ -36,7 +36,7 @@ use crate::setup_guide::{
     WriteSetupGuideInput, should_generate_setup, write_setup_guide_and_checkpoint,
 };
 
-use brigid_llm::LlmClient;
+use crate::llm::LlmClient;
 
 /// Errors returned by the generate pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -251,7 +251,7 @@ pub async fn run_generate(
             &files,
             &sizes,
             &config.run_config,
-            Some(progress),
+            progress,
         )
         .await?;
         save_identify_result(store, checkpoint, &result)?;
@@ -311,7 +311,7 @@ pub async fn run_generate(
             &identify,
             file_contents,
             &rel_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -340,7 +340,7 @@ pub async fn run_generate(
             &identify,
             &relationships,
             &order_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -375,7 +375,7 @@ pub async fn run_generate(
             &order,
             file_contents,
             &chapters_config,
-            Some(progress),
+            progress,
         )
         .await?;
         progress.complete_stage();
@@ -399,7 +399,7 @@ pub async fn run_generate(
             &mut chapters,
             client,
             renderer,
-            Some(progress),
+            progress,
             cancel,
             &lang_str,
             move |ch: &brigid_core::Chapter| {
@@ -450,7 +450,8 @@ pub async fn run_generate(
             forced: config.force_setup,
         };
         let guide =
-            write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+            write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input, progress)
+                .await?;
         setup = Some(guide);
         progress.complete_stage();
     } else if checkpoint.is_stage_complete(StageId::Setup) {
@@ -483,7 +484,8 @@ pub async fn run_generate(
             strict_app_validation: config.strict_app_validation,
             tutorial_style: config.tutorial_style,
         };
-        let ov = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+        let ov =
+            overview_and_checkpoint(client, renderer, store, checkpoint, &input, progress).await?;
         overview = Some(ov);
         progress.complete_stage();
     } else if checkpoint.is_stage_complete(StageId::Overview) {
@@ -743,6 +745,28 @@ pub async fn run_generate_each_app(
         )
         .await;
 
+        // Handle cancellation first — even if checkpoint persistence fails
+        // below, a cancellation must return Partial, not continue the loop.
+        if let Ok(GenerateOutcome::Cancelled { .. }) = &result {
+            // Best-effort persist before returning.
+            let _ = store.persist_llm_calls(&mut cp, &records, &progress);
+            return Ok(EachAppOutcome::Partial {
+                summaries,
+                cancelled_app: module.as_str().to_string(),
+            });
+        }
+
+        if let Err(e) = store.persist_llm_calls(&mut cp, &records, &progress) {
+            summaries.push(EachAppSummary {
+                app: module.as_str().to_string(),
+                slug: slug.clone(),
+                output_dir: scoped_output,
+                success: false,
+                error: Some(format!("checkpoint save: {e}")),
+            });
+            continue;
+        }
+
         match result {
             Ok(GenerateOutcome::Completed(_)) => {
                 summaries.push(EachAppSummary {
@@ -754,10 +778,8 @@ pub async fn run_generate_each_app(
                 });
             }
             Ok(GenerateOutcome::Cancelled { .. }) => {
-                return Ok(EachAppOutcome::Partial {
-                    summaries,
-                    cancelled_app: module.as_str().to_string(),
-                });
+                // Already handled above — unreachable but the compiler needs it.
+                unreachable!("cancelled outcome handled before persistence")
             }
             Err(e) => {
                 summaries.push(EachAppSummary {
@@ -858,6 +880,7 @@ fn prerequisite_error(stage: &str, prerequisite: &str) -> GenerateError {
 ///
 /// Returns [`GenerateError::Config`] if the identify stage is not complete.
 /// Returns stage errors from [`relationships_and_checkpoint`].
+#[allow(clippy::too_many_arguments)]
 pub async fn run_relationships_stage(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
@@ -866,6 +889,7 @@ pub async fn run_relationships_stage(
     file_contents: &[(String, String)],
     project_name: &str,
     language_instruction: &str,
+    progress_tracker: &mut ProgressTracker,
 ) -> Result<RelationshipsResult, GenerateError> {
     if !checkpoint.is_stage_complete(StageId::Identify) {
         return Err(prerequisite_error("relationships", "identify"));
@@ -884,7 +908,7 @@ pub async fn run_relationships_stage(
         &identify,
         file_contents,
         &rel_config,
-        None,
+        progress_tracker,
     )
     .await?;
     Ok(result)
@@ -908,6 +932,7 @@ pub async fn run_order_stage(
     checkpoint: &mut CheckpointV1,
     project_name: &str,
     language_instruction: &str,
+    progress_tracker: &mut ProgressTracker,
 ) -> Result<ChapterOrder, GenerateError> {
     if !checkpoint.is_stage_complete(StageId::Relationships) {
         return Err(prerequisite_error("order", "relationships"));
@@ -927,7 +952,7 @@ pub async fn run_order_stage(
         &identify,
         &relationships,
         &order_config,
-        None,
+        progress_tracker,
     )
     .await?;
     Ok(result)
@@ -959,6 +984,7 @@ pub async fn run_chapters_stage(
     lang: &str,
     diagram_level: DiagramLevel,
     chapter_concurrency: usize,
+    progress_tracker: &mut ProgressTracker,
 ) -> Result<ChapterResult, GenerateError> {
     if !checkpoint.is_stage_complete(StageId::Order) {
         return Err(prerequisite_error("chapters", "order"));
@@ -984,7 +1010,7 @@ pub async fn run_chapters_stage(
         &order,
         file_contents,
         &chapters_config,
-        None,
+        progress_tracker,
     )
     .await?;
     Ok(result)
@@ -1002,6 +1028,7 @@ pub async fn run_chapters_stage(
 /// Returns [`GenerateError::Config`] if the identify stage is not complete or
 /// the dry-run fails. Returns stage errors from
 /// [`write_setup_guide_and_checkpoint`].
+#[allow(clippy::too_many_arguments)]
 pub async fn run_setup_stage(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
@@ -1010,6 +1037,7 @@ pub async fn run_setup_stage(
     dir: &Path,
     forced: bool,
     lang: &str,
+    progress_tracker: &mut ProgressTracker,
 ) -> Result<brigid_core::SetupGuide, GenerateError> {
     if !checkpoint.is_stage_complete(StageId::Identify) {
         return Err(prerequisite_error("setup", "identify"));
@@ -1037,8 +1065,15 @@ pub async fn run_setup_stage(
         lang: locale.as_str(),
         forced,
     };
-    let guide =
-        write_setup_guide_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+    let guide = write_setup_guide_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &input,
+        progress_tracker,
+    )
+    .await?;
     Ok(guide)
 }
 
@@ -1057,6 +1092,7 @@ pub async fn run_setup_stage(
 ///
 /// Returns [`GenerateError::Config`] if the relationships stage is not
 /// complete. Returns stage errors from [`overview_and_checkpoint`].
+#[allow(clippy::too_many_arguments)]
 pub async fn run_overview_stage(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
@@ -1065,6 +1101,7 @@ pub async fn run_overview_stage(
     project_name: &str,
     lang_note: &str,
     modules: &[ModuleKey],
+    progress_tracker: &mut ProgressTracker,
 ) -> Result<brigid_core::ArchitectureOverview, GenerateError> {
     if !checkpoint.is_stage_complete(StageId::Relationships) {
         return Err(prerequisite_error("overview", "relationships"));
@@ -1081,7 +1118,15 @@ pub async fn run_overview_stage(
         strict_app_validation: true,
         tutorial_style: brigid_core::config::TutorialStyle::Book,
     };
-    let overview = overview_and_checkpoint(client, renderer, store, checkpoint, &input).await?;
+    let overview = overview_and_checkpoint(
+        client,
+        renderer,
+        store,
+        checkpoint,
+        &input,
+        progress_tracker,
+    )
+    .await?;
     Ok(overview)
 }
 
@@ -1138,9 +1183,13 @@ pub fn run_combine_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chapters::ChaptersError;
     use crate::checkpoint_store::records_from_files;
+    use crate::llm::MockClient;
+    use crate::order::OrderError;
+    use crate::overview::OverviewError;
+    use crate::relationships::RelationshipsError;
     use brigid_core::{Abstraction, RunConfig, Tier};
-    use brigid_llm::MockClient;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1960,7 +2009,7 @@ mod tests {
         let responses = repeated_responses(per_app_responses_with_overview(), 2);
         let client = MockClient::with_responses(responses).unwrap().fail_on(
             5,
-            brigid_llm::LlmError::network("mock failure for second app"),
+            crate::llm::LlmError::network("mock failure for second app"),
         );
         let renderer = PromptRenderer::new().unwrap();
         let cancel = CancelToken::new();
@@ -2161,10 +2210,18 @@ mod tests {
         let renderer = PromptRenderer::new().unwrap();
         let fc = file_contents_for();
 
-        let result =
-            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "")
-                .await
-                .expect("should run with identify complete");
+        let result = run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with identify complete");
 
         assert_eq!(
             result.project_summary,
@@ -2184,9 +2241,17 @@ mod tests {
         let renderer = PromptRenderer::new().unwrap();
         let fc = file_contents_for();
 
-        let result =
-            run_relationships_stage(&client, &renderer, &store, &mut cp, &fc, "my-project", "")
-                .await;
+        let result = run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2206,9 +2271,17 @@ mod tests {
         let client = MockClient::with_responses(vec![canned_order()]).unwrap();
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "")
-            .await
-            .expect("should run with relationships complete");
+        let result = run_order_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with relationships complete");
 
         assert_eq!(result.ordered_indices, vec![0, 1, 2]);
         assert!(cp.is_stage_complete(StageId::Order));
@@ -2223,7 +2296,16 @@ mod tests {
         let client = MockClient::new("should-not-be-called");
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_order_stage(&client, &renderer, &store, &mut cp, "my-project", "").await;
+        let result = run_order_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2260,6 +2342,7 @@ mod tests {
             "en",
             DiagramLevel::Standard,
             4,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("should run with order complete");
@@ -2289,6 +2372,7 @@ mod tests {
             "en",
             DiagramLevel::Standard,
             4,
+            &mut ProgressTracker::new(10),
         )
         .await;
 
@@ -2312,9 +2396,18 @@ mod tests {
         let client = MockClient::with_responses(vec![canned_setup()]).unwrap();
         let renderer = PromptRenderer::new().unwrap();
 
-        let result = run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en")
-            .await
-            .expect("should run with identify complete");
+        let result = run_setup_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &repo_dir,
+            true,
+            "en",
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should run with identify complete");
 
         assert!(cp.is_stage_complete(StageId::Setup));
         assert!(result.forced);
@@ -2332,8 +2425,17 @@ mod tests {
         let client = MockClient::new("should-not-be-called");
         let renderer = PromptRenderer::new().unwrap();
 
-        let result =
-            run_setup_stage(&client, &renderer, &store, &mut cp, &repo_dir, true, "en").await;
+        let result = run_setup_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &repo_dir,
+            true,
+            "en",
+            &mut ProgressTracker::new(10),
+        )
+        .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2362,6 +2464,7 @@ mod tests {
             "my-project",
             "",
             &two_modules(),
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("should run with relationships complete");
@@ -2386,6 +2489,7 @@ mod tests {
             "my-project",
             "",
             &two_modules(),
+            &mut ProgressTracker::new(10),
         )
         .await;
 
@@ -2595,7 +2699,7 @@ mod tests {
         let responses = repeated_responses(per_app_responses_with_overview(), 2);
         let client = MockClient::with_responses(responses)
             .unwrap()
-            .fail_on(5, brigid_llm::LlmError::network("beta identify failure"));
+            .fail_on(5, crate::llm::LlmError::network("beta identify failure"));
         let renderer = PromptRenderer::new().unwrap();
         let cancel = CancelToken::new();
 
@@ -2929,5 +3033,162 @@ mod tests {
 
         let _ = fs::remove_dir_all(&ckpt_dir);
         let _ = fs::remove_dir_all(&output_dir);
+    }
+
+    #[tokio::test]
+    async fn run_relationships_stage_respects_zero_budget() {
+        let ckpt_dir = temp_dir("rel-stage-zero-budget");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::with_responses(vec![canned_relationships()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result = run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(0),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(GenerateError::Relationships(RelationshipsError::Budget(_)))
+            ),
+            "expected budget error, got: {result:?}"
+        );
+        assert_eq!(
+            client.call_count(),
+            0,
+            "no LLM calls should be made with zero budget"
+        );
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_order_stage_respects_zero_budget() {
+        let ckpt_dir = temp_dir("order-stage-zero-budget");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_relationships_complete(&store);
+        let client = MockClient::with_responses(vec![canned_order()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_order_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &mut ProgressTracker::new(0),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(GenerateError::Order(OrderError::Budget(_)))),
+            "expected budget error, got: {result:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_overview_stage_respects_zero_budget() {
+        let ckpt_dir = temp_dir("overview-stage-zero-budget");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_relationships_complete(&store);
+        let client = MockClient::with_responses(vec![canned_overview()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+
+        let result = run_overview_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            "my-project",
+            "",
+            &two_modules(),
+            &mut ProgressTracker::new(0),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(GenerateError::Overview(OverviewError::Budget(_)))
+            ),
+            "expected budget error, got: {result:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_chapters_stage_respects_zero_budget() {
+        let ckpt_dir = temp_dir("chapters-stage-zero-budget");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_order_complete(&store);
+        let client = MockClient::with_responses(vec![canned_chapter("Router", 1)]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let result = run_chapters_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            "en",
+            DiagramLevel::Standard,
+            4,
+            &mut ProgressTracker::new(0),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(GenerateError::Chapters(ChaptersError::Budget(_)))
+            ),
+            "expected budget error, got: {result:?}"
+        );
+        assert_eq!(client.call_count(), 0);
+        let _ = fs::remove_dir_all(&ckpt_dir);
+    }
+
+    #[tokio::test]
+    async fn run_relationships_stage_records_llm_calls_used() {
+        let ckpt_dir = temp_dir("rel-stage-records-calls");
+        let store = CheckpointStore::new(&ckpt_dir);
+        let mut cp = seed_identify_complete(&store);
+        let client = MockClient::with_responses(vec![canned_relationships()]).unwrap();
+        let renderer = PromptRenderer::new().unwrap();
+        let fc = file_contents_for();
+
+        let tracker = &mut ProgressTracker::new(10);
+        run_relationships_stage(
+            &client,
+            &renderer,
+            &store,
+            &mut cp,
+            &fc,
+            "my-project",
+            "",
+            tracker,
+        )
+        .await
+        .expect("should run with budget");
+
+        assert_eq!(client.call_count(), 1);
+        assert_eq!(tracker.llm_calls_used(), 1);
+        let _ = fs::remove_dir_all(&ckpt_dir);
     }
 }

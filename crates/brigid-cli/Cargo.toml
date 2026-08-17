@@ -21,10 +21,14 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-brigid-core = { path = "../brigid-core", version = "1.3.0" }
-brigid-crawl = { path = "../brigid-crawl", version = "1.3.0" }
-brigid-llm = { path = "../brigid-llm", version = "1.3.0" }
-brigid-pipeline = { path = "../brigid-pipeline", version = "1.3.0" }
+brigid-core = { path = "../brigid-core", version = "2.0.0" }
+brigid-crawl = { path = "../brigid-crawl", version = "2.0.0" }
+# Live construction still uses OpenAiCompatibleClient (host allowlist,
+# OpenRouter headers) wrapped as LLMClient. Removed in issue #297 Phase 4.
+brigid-llm = { path = "../brigid-llm", version = "2.0.0" }
+brigid-pipeline = { path = "../brigid-pipeline", version = "2.0.0" }
+llm-kernel.workspace = true
+async-trait = "0.1"
 clap = { version = "4.6", features = ["derive"] }
 clap_mangen = "0.2"
 clap_complete = "4.6"

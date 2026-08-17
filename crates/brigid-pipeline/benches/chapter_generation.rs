@@ -6,9 +6,9 @@
 //! chapter templates), secret redaction, MockClient LLM call, mermaid
 //! sanitization, and evidence-footer attachment. No network or real LLM calls.
 
-use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, Tier};
-use brigid_llm::MockClient;
+use brigid_core::{Abstraction, AbstractionKind, IdentifyResult, ProgressTracker, Tier};
 use brigid_pipeline::chapters::{DiagramLevel, write_single_chapter};
+use brigid_pipeline::llm::MockClient;
 use brigid_pipeline::prompts::PromptRenderer;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
@@ -79,7 +79,7 @@ fn make_file_contents(n: usize) -> Vec<(String, String)> {
 
 /// Build a mock chapter response with enough mermaid blocks for the tier.
 fn mock_chapter_md(i: usize) -> String {
-    let tier = if i % 3 == 0 {
+    let tier = if i.is_multiple_of(3) {
         Tier::L
     } else if i % 3 == 1 {
         Tier::M
@@ -189,7 +189,7 @@ fn bench_write_single_chapter(c: &mut Criterion) {
                     black_box(&order),
                     black_box(&file_contents),
                     black_box(&config),
-                    black_box(None),
+                    black_box(&mut ProgressTracker::new(u32::MAX)),
                 ));
                 let _ = black_box(result);
             });

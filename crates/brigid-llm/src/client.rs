@@ -15,6 +15,7 @@ use crate::LlmError;
 use async_trait::async_trait;
 
 /// Provider-agnostic LLM completion client.
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::LLMClient instead")]
 ///
 /// Implementations are expected to be cheap to clone (wrap an HTTP client
 /// handle) and safe to share across tasks (`Send + Sync`).

@@ -34,6 +34,7 @@ use tokio::sync::Semaphore;
 /// Each call acquires a permit before invoking `complete` and releases it when
 /// done. Calls that cannot immediately acquire a permit wait until one is
 /// freed.
+#[deprecated(since = "2.0.0", note = "use brigid_pipeline::llm::bounded_complete")]
 pub async fn bounded_complete(
     client: &dyn LlmClient,
     prompts: Vec<String>,

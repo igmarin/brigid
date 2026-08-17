@@ -292,12 +292,10 @@ pub fn sanitize_mermaid(source: &str) -> String {
             continue;
         }
 
-        if is_sequence {
-            if let Some(refs) = sequence_line_participant_refs(trimmed) {
-                let ok = refs.iter().all(|r| kept_ids.iter().any(|k| k == r));
-                if !ok {
-                    continue;
-                }
+        if is_sequence && let Some(refs) = sequence_line_participant_refs(trimmed) {
+            let ok = refs.iter().all(|r| kept_ids.iter().any(|k| k == r));
+            if !ok {
+                continue;
             }
         }
 

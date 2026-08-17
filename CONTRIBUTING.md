@@ -6,7 +6,8 @@ changes in the workspace.
 
 ## Quick start
 
-You need a recent Rust toolchain. The workspace declares `rust-version = "1.85"`.
+You need a recent Rust toolchain. The workspace declares `rust-version = "1.92"`
+(llm-kernel's MSRV; 1.97+ is fine).
 
 ```bash
 # Clone and enter the workspace

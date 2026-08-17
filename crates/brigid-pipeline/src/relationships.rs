@@ -17,11 +17,11 @@
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use brigid_core::{
     Abstraction, CheckpointV1, ProgressTracker, RelationshipsResult, StageId, extract_yaml_block,
     redact_content,
 };
-use brigid_llm::LlmClient;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -44,7 +44,10 @@ pub enum RelationshipsError {
     Prompt(#[from] crate::prompts::PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
+    /// The LLM returned empty output.
+    #[error("LLM returned empty output")]
+    EmptyOutput,
     /// No YAML block could be extracted from the LLM response.
     #[error("YAML/JSON block extraction failed: {0}")]
     Extract(#[from] brigid_core::ExtractError),
@@ -156,10 +159,10 @@ pub fn select_evidence_files(
                 }
             }
             for &idx in &a.file_indices {
-                if let Some(f) = inventory.get(idx) {
-                    if seen.insert(f.path.clone()) {
-                        cands.push(f.path.clone());
-                    }
+                if let Some(f) = inventory.get(idx)
+                    && seen.insert(f.path.clone())
+                {
+                    cands.push(f.path.clone());
                 }
             }
             cands
@@ -230,7 +233,7 @@ pub async fn analyze_relationships(
     identify: &brigid_core::IdentifyResult,
     file_contents: &[(String, String)],
     config: &RelationshipsConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<RelationshipsResult, RelationshipsError> {
     let abstractions = &identify.abstractions;
 
@@ -276,16 +279,13 @@ pub async fn analyze_relationships(
     // e. Render the prompt.
     let prompt = renderer.render(PromptId::AnalyzeRelationships, &render_ctx)?;
 
-    // f. Reserve budget up front (fail closed before spending a network call).
-    if let Some(tracker) = progress {
-        tracker
-            .reserve_llm_calls(1)
-            .map_err(RelationshipsError::from)?;
-        tracker.set_stage("relationships");
-    }
-
-    // g. Call the LLM.
-    let response = client.complete(&prompt).await?;
+    // f. Call the LLM with bounded budget enforcement.
+    progress.set_stage("relationships");
+    let result = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = result
+        .into_iter()
+        .next()
+        .ok_or(RelationshipsError::EmptyOutput)??;
 
     // h. Extract the YAML block from the (possibly prose-wrapped) response.
     let yaml_text = extract_yaml_block(&response)?;
@@ -403,16 +403,16 @@ pub async fn relationships_and_checkpoint(
     identify: &brigid_core::IdentifyResult,
     file_contents: &[(String, String)],
     config: &RelationshipsConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<RelationshipsResult, RelationshipsError> {
     // 1. Resume: skip if the stage is already complete.
-    if !should_run_relationships(checkpoint) {
-        if let Some(existing) = load_relationships_result(checkpoint) {
-            return Ok(existing);
-        }
-        // Edge case: stage marked complete but no relationships payload. Fall
-        // through and re-run.
+    if !should_run_relationships(checkpoint)
+        && let Some(existing) = load_relationships_result(checkpoint)
+    {
+        return Ok(existing);
     }
+    // Edge case: stage marked complete but no relationships payload. Fall
+    // through and re-run.
 
     // 2. Run the relationships analysis.
     let result =
@@ -540,8 +540,8 @@ fn build_evidence_context(selected: &[String], file_contents: &[(String, String)
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
+    use crate::llm::{LlmError, MockClient};
     use brigid_core::{Abstraction, IdentifyResult, RunConfig, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -554,10 +554,30 @@ mod tests {
         response: String,
     }
     #[async_trait::async_trait]
-    impl LlmClient for CapturingClient {
-        async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-            *self.captured.lock().unwrap() = prompt.to_string();
-            Ok(self.response.clone())
+    impl llm_kernel::llm::LLMClient for CapturingClient {
+        async fn complete(
+            &self,
+            request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+            let prompt = crate::llm::request_prompt(&request);
+            let result: Result<String, crate::llm::LlmError> = async {
+                *self.captured.lock().unwrap() = prompt.to_string();
+                Ok(self.response.clone())
+            }
+            .await;
+            match result {
+                Ok(s) => Ok(crate::llm::text_response(s)),
+                Err(e) => Err(e.into_kernel()),
+            }
+        }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        async fn stream_complete(
+            &self,
+            _request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+            crate::llm::stream_unsupported()
         }
     }
 
@@ -759,10 +779,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect("happy path should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("happy path should succeed");
         assert!(!result.project_summary.is_empty());
         assert_eq!(result.relationships.len(), 3);
         assert_eq!(result.relationships[0].from, 0);
@@ -782,10 +808,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect("empty relationships should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("empty relationships should succeed");
         assert!(!result.project_summary.is_empty());
         assert!(result.relationships.is_empty());
     }
@@ -808,10 +840,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect_err("out-of-range relationship endpoint should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("out-of-range relationship endpoint should error");
         assert!(
             matches!(
                 err,
@@ -839,10 +877,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect_err("out-of-range from_abstraction endpoint should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("out-of-range from_abstraction endpoint should error");
         assert!(
             matches!(
                 err,
@@ -860,10 +904,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect_err("malformed yaml should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("malformed yaml should error");
         assert!(matches!(err, RelationshipsError::Parse(_)), "got: {err:?}");
     }
 
@@ -874,10 +924,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect_err("no block should error");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("no block should error");
         assert!(
             matches!(err, RelationshipsError::Extract(_)),
             "got: {err:?}"
@@ -891,10 +947,16 @@ relationships:
         let identify = IdentifyResult::new(three_abstractions_two_apps());
         let file_contents = file_contents_for(&identify.abstractions);
         let config = sample_config();
-        let err =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect_err("llm failure should propagate");
+        let err = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("llm failure should propagate");
         assert!(
             matches!(err, RelationshipsError::Llm(LlmError::Timeout)),
             "got: {err:?}"
@@ -937,9 +999,16 @@ relationships:
             "DB_KEY=super-secret\nfn load() {}".to_string(),
         )];
         let config = sample_config();
-        let _ = analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-            .await
-            .expect("should succeed");
+        let _ = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
         assert!(
             !prompt.contains("super-secret"),
@@ -979,10 +1048,16 @@ relationships:
             ),
         ];
         let config = sample_config();
-        let result =
-            analyze_relationships(&client, &renderer, &identify, &file_contents, &config, None)
-                .await
-                .expect("multiple valid relationships should succeed");
+        let result = analyze_relationships(
+            &client,
+            &renderer,
+            &identify,
+            &file_contents,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("multiple valid relationships should succeed");
         assert_eq!(result.relationships.len(), 3, "got: {result:?}");
         let prompt = captured.lock().unwrap().clone();
         for secret in ["router-secret", "store-secret", "worker-secret"] {
@@ -1013,7 +1088,7 @@ relationships:
             &identify,
             &file_contents,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed with progress");
@@ -1037,7 +1112,7 @@ relationships:
             &identify,
             &file_contents,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect_err("budget exceeded should error");
@@ -1116,7 +1191,7 @@ relationships:
             &identify,
             &file_contents,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -1152,7 +1227,7 @@ relationships:
             &identify,
             &file_contents,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("skip should succeed");

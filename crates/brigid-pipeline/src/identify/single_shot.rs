@@ -1,5 +1,5 @@
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, extract_yaml_block};
-use brigid_llm::LlmClient;
 use serde_json::json;
 
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -34,7 +34,7 @@ pub async fn identify_single_shot(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &IdentifySingleShotInput,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<IdentifyResult, IdentifyError> {
     // a. Build the render context. The `identify_single_shot.md.j2` template
     //    expects: project_name, context, language_instruction,
@@ -58,21 +58,10 @@ pub async fn identify_single_shot(
     // b. Render the prompt.
     let prompt = renderer.render(PromptId::IdentifySingleShot, &context)?;
 
-    // c. Reserve budget up front (fail closed before spending a network call)
-    //    and tag the current stage for observability. `reserve_llm_calls(1)`
-    //    is the authoritative counter: it advances `llm_calls_used` by one,
-    //    matching the single call we make. We intentionally do NOT also call
-    //    `record_llm_call` (that would double-count).
-    if let Some(tracker) = progress {
-        tracker.reserve_llm_calls(1).map_err(IdentifyError::from)?;
-        tracker.set_stage("identify");
-    }
-
-    // d. Call the LLM.
-    let response = client.complete(&prompt).await?;
-
-    // e. (Budget accounting happened in step c via `reserve_llm_calls`; no
-    //    further counter mutation is needed here.)
+    // c. Call the LLM with budget enforcement.
+    progress.set_stage("identify");
+    let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = results.pop().ok_or(IdentifyError::EmptyOutput)??;
 
     // f. Extract the YAML block from the (possibly prose-wrapped) response.
     let yaml_text = extract_yaml_block(&response)?;
@@ -114,8 +103,8 @@ fn format_file_listing(files: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{LlmClient, LlmError, MockClient};
     use brigid_core::{AbstractionKind, ProgressTracker, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
 
     /// Two-file inventory used across happy-path tests.
     fn sample_files() -> Vec<String> {
@@ -164,9 +153,10 @@ mod tests {
         let client = MockClient::new(canned_two_abstractions());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let result = identify_single_shot(&client, &renderer, &input, None)
-            .await
-            .expect("happy path should succeed");
+        let result =
+            identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
+                .await
+                .expect("happy path should succeed");
         assert_eq!(result.abstractions.len(), 2);
         assert_eq!(result.abstractions[0].name, "Core Module");
         assert_eq!(result.abstractions[0].tier, Tier::S);
@@ -183,7 +173,7 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("empty list should error");
         assert!(matches!(err, IdentifyError::NoAbstractions), "got: {err:?}");
@@ -206,7 +196,7 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("oob index should error");
         match err {
@@ -224,7 +214,7 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("malformed yaml should error");
         assert!(matches!(err, IdentifyError::Parse(_)), "got: {err:?}");
@@ -244,9 +234,10 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let result = identify_single_shot(&client, &renderer, &input, None)
-            .await
-            .expect("partial yaml should succeed with defaults");
+        let result =
+            identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
+                .await
+                .expect("partial yaml should succeed with defaults");
         assert_eq!(result.abstractions.len(), 1);
         assert_eq!(result.abstractions[0].name, "Core Module");
         assert_eq!(result.abstractions[0].tier, Tier::M);
@@ -261,7 +252,7 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("malformed yaml should error");
         // The Parse variant must hold a typed serde_yaml_ng::Error, not a String,
@@ -281,7 +272,7 @@ mod tests {
         let client = MockClient::new("just prose, no structured output here".to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("no block should error");
         assert!(matches!(err, IdentifyError::Extract(_)), "got: {err:?}");
@@ -292,7 +283,7 @@ mod tests {
         let client = MockClient::new("ignored").fail_on(0, LlmError::Timeout);
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let err = identify_single_shot(&client, &renderer, &input, None)
+        let err = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("llm failure should propagate");
         assert!(
@@ -308,7 +299,7 @@ mod tests {
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
         let mut progress = ProgressTracker::new(10);
-        let result = identify_single_shot(&client, &renderer, &input, Some(&mut progress))
+        let result = identify_single_shot(&client, &renderer, &input, &mut progress)
             .await
             .expect("should succeed with progress");
         assert_eq!(result.abstractions.len(), 2);
@@ -324,7 +315,7 @@ mod tests {
         let input = sample_input();
         // max=0 means no calls allowed.
         let mut progress = ProgressTracker::new(0);
-        let err = identify_single_shot(&client, &renderer, &input, Some(&mut progress))
+        let err = identify_single_shot(&client, &renderer, &input, &mut progress)
             .await
             .expect_err("budget exceeded should error");
         assert!(matches!(err, IdentifyError::Budget(_)), "got: {err:?}");
@@ -342,10 +333,30 @@ mod tests {
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_two_abstractions())
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_two_abstractions())
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
 
@@ -361,7 +372,7 @@ mod tests {
             lang_note: "Use 简体中文".to_string(),
             max_abstraction_num: 7,
         };
-        let _ = identify_single_shot(&client, &renderer, &input, None)
+        let _ = identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
@@ -387,9 +398,10 @@ mod tests {
         let client: Box<dyn LlmClient> = Box::new(MockClient::new(canned_two_abstractions()));
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let result = identify_single_shot(&*client, &renderer, &input, None)
-            .await
-            .expect("dyn client should work");
+        let result =
+            identify_single_shot(&*client, &renderer, &input, &mut ProgressTracker::new(10))
+                .await
+                .expect("dyn client should work");
         assert_eq!(result.abstractions.len(), 2);
     }
 
@@ -409,9 +421,10 @@ mod tests {
         let client = MockClient::new(yaml.to_string());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input();
-        let result = identify_single_shot(&client, &renderer, &input, None)
-            .await
-            .expect("single abstraction should succeed");
+        let result =
+            identify_single_shot(&client, &renderer, &input, &mut ProgressTracker::new(10))
+                .await
+                .expect("single abstraction should succeed");
         assert_eq!(result.abstractions.len(), 1);
         let a = &result.abstractions[0];
         assert_eq!(a.name, "Solo");

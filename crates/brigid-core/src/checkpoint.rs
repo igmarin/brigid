@@ -144,6 +144,10 @@ pub struct CheckpointMeta {
     pub updated_at: String,
     /// Source identity (git SHA or resolved URL/revision).
     pub source_revision: String,
+    /// Total LLM calls already consumed across previous runs/stages.
+    /// Used to enforce `max_llm_calls` across resume and per-stage subcommands.
+    #[serde(default)]
+    pub llm_calls_used: u32,
 }
 
 /// One line in `files.ndjson.gz` (decompressed NDJSON object).
@@ -335,6 +339,7 @@ impl CheckpointV1 {
                 created_at: created.clone(),
                 updated_at: created,
                 source_revision: source_revision.into(),
+                llm_calls_used: 0,
             },
         })
     }
@@ -417,6 +422,13 @@ impl CheckpointV1 {
         self.stage_timestamps
             .insert(stage.as_str().to_owned(), ts.clone());
         self.metadata.updated_at = ts;
+    }
+
+    /// Add `used` LLM calls to the running total stored in the checkpoint.
+    ///
+    /// Uses saturating arithmetic so totals approaching `u32::MAX` do not wrap.
+    pub fn record_llm_calls(&mut self, used: u32) {
+        self.metadata.llm_calls_used = self.metadata.llm_calls_used.saturating_add(used);
     }
 
     /// Whether `stage` is listed as completed.
@@ -544,6 +556,25 @@ mod tests {
         let json = serde_json::to_string(&cp).unwrap();
         let err = CheckpointV1::from_json(&json).unwrap_err();
         assert!(matches!(err, CheckpointError::UnsupportedVersion(99)));
+    }
+
+    #[test]
+    fn record_llm_calls_adds_to_total() {
+        let cfg = sample_config();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        cp.record_llm_calls(3);
+        assert_eq!(cp.metadata.llm_calls_used, 3);
+        cp.record_llm_calls(2);
+        assert_eq!(cp.metadata.llm_calls_used, 5);
+    }
+
+    #[test]
+    fn record_llm_calls_saturates_at_u32_max() {
+        let cfg = sample_config();
+        let mut cp = CheckpointV1::new(&cfg, cfg.clone(), "rev", "t0").unwrap();
+        cp.metadata.llm_calls_used = u32::MAX - 1;
+        cp.record_llm_calls(5);
+        assert_eq!(cp.metadata.llm_calls_used, u32::MAX);
     }
 
     #[test]

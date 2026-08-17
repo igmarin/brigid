@@ -129,6 +129,12 @@ output and checkpoint were written. It does **not** include the full stage
 payloads (abstractions, chapters, etc.); consumers who need those should run
 the per-stage subcommands with `--format json`.
 
+> **Note on `total_llm_calls` semantics:** This field is **cumulative** — it
+> reflects `checkpoint.metadata.llm_calls_used`, which includes LLM calls
+> consumed by previous resumes and per-stage subcommands, not just the calls
+> made in the current invocation. To get per-invocation usage, subtract the
+> checkpoint's `llm_calls_used` at the start of the run from the final value.
+
 ## Alternatives Considered
 
 ### Option A — Per-stage ad-hoc JSON (no envelope)

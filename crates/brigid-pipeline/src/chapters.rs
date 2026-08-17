@@ -23,12 +23,12 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::{LlmClient, LlmError, complete_text};
 use brigid_core::{
     Abstraction, BudgetExceeded, Chapter, ChapterOrder, ChapterResult, CheckpointV1,
     IdentifyResult, ProgressTracker, StageId, Tier, path_stub, path_stub_chars, redact_content,
     sanitize_markdown_mermaid_blocks, truncate_content,
 };
-use brigid_llm::{LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -105,7 +105,7 @@ pub enum ChaptersError {
     Prompt(#[from] crate::prompts::PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
     /// The LLM returned empty output.
     #[error("LLM returned empty chapter output")]
     EmptyOutput,
@@ -257,10 +257,10 @@ pub fn select_chapter_file_context(
         }
     }
     for &idx in &abstraction.file_indices {
-        if let Some((path, _)) = file_contents.get(idx) {
-            if seen.insert(path.clone()) {
-                candidates.push(path.clone());
-            }
+        if let Some((path, _)) = file_contents.get(idx)
+            && seen.insert(path.clone())
+        {
+            candidates.push(path.clone());
         }
     }
 
@@ -375,7 +375,7 @@ pub async fn write_single_chapter(
 
     let prompt = renderer.render(PromptId::WriteChapter, &render_ctx)?;
 
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
 
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -425,7 +425,7 @@ pub async fn write_chapters(
     order: &ChapterOrder,
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     generate_chapters_internal(
         client,
@@ -464,7 +464,7 @@ pub async fn chapters_and_checkpoint(
     order: &ChapterOrder,
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     // When the stage is already complete and there are no changed files,
     // return the existing chapters without re-generation.
@@ -539,7 +539,7 @@ async fn generate_chapters_internal(
     file_contents: &[(String, String)],
     config: &ChaptersConfig,
     existing: Option<&HashMap<usize, Chapter>>,
-    progress: Option<&mut ProgressTracker>,
+    progress: &mut ProgressTracker,
 ) -> Result<ChapterResult, ChaptersError> {
     let abstractions = &identify.abstractions;
     let ordered_indices = &order.ordered_indices;
@@ -649,13 +649,11 @@ async fn generate_chapters_internal(
     };
 
     let gen_count = positions_to_generate.len();
-    if let Some(tracker) = progress {
-        if gen_count > 0 {
-            tracker
-                .reserve_llm_calls(gen_count as u32)
-                .map_err(ChaptersError::from)?;
-        }
-        tracker.set_stage("chapters");
+    progress.set_stage("chapters");
+    if gen_count > 0 {
+        progress
+            .reserve_llm_calls(gen_count as u32)
+            .map_err(ChaptersError::from)?;
     }
 
     if gen_count == 0 {
@@ -974,8 +972,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
+    use crate::llm::MockClient;
     use brigid_core::{AbstractionKind, RunConfig};
-    use brigid_llm::{LlmClient, MockClient};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -1564,10 +1562,30 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                *self.captured.lock().unwrap() = prompt.to_string();
-                Ok(canned_chapter("Router", 1))
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    *self.captured.lock().unwrap() = prompt.to_string();
+                    Ok(canned_chapter("Router", 1))
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<String>> =
@@ -1622,9 +1640,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("happy path should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("happy path should succeed");
         assert_eq!(result.chapters.len(), 3);
         assert_eq!(result.chapters[0].chapter_num, 1);
         assert_eq!(result.chapters[0].title, "Chapter 1: Router");
@@ -1655,9 +1681,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![1, 0, 2]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(result.chapters[0].abstraction_index, 1);
         assert_eq!(result.chapters[0].chapter_num, 1);
         assert_eq!(result.chapters[1].abstraction_index, 0);
@@ -1682,7 +1716,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect_err("budget exceeded should error");
@@ -1711,7 +1745,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -1726,9 +1760,17 @@ We learned routing.\n";
         let identify = IdentifyResult::new(vec![]);
         let order = ChapterOrder::new(vec![]);
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("empty order should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("empty order should succeed");
         assert!(result.chapters.is_empty());
         assert_eq!(client.call_count(), 0);
     }
@@ -1741,9 +1783,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let err = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect_err("malformed output should error");
+        let err = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect_err("malformed output should error");
         assert!(matches!(err, ChaptersError::EmptyOutput), "got: {err:?}");
     }
 
@@ -1759,9 +1809,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(result.chapters.len(), 1);
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
         assert_eq!(
@@ -1782,9 +1840,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0]);
         let files = file_contents_for();
         let config = sample_config();
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("should succeed (warning, not error)");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
         assert!(
             diagram_quota_for_tier(
@@ -1805,9 +1871,17 @@ We learned routing.\n";
         let files = file_contents_for();
         let mut config = sample_config();
         config.diagram_level = DiagramLevel::Minimal;
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 1);
         assert_eq!(
             diagram_quota_for_tier(
@@ -1828,9 +1902,17 @@ We learned routing.\n";
         let files = file_contents_for();
         let mut config = sample_config();
         config.diagram_level = DiagramLevel::Minimal;
-        let result = write_chapters(&client, &renderer, &identify, &order, &files, &config, None)
-            .await
-            .expect("should succeed (warning, not error)");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &files,
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed (warning, not error)");
         assert_eq!(count_mermaid_blocks(&result.chapters[0].markdown), 0);
         assert!(
             diagram_quota_for_tier(
@@ -1849,10 +1931,30 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<Vec<String>>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                self.captured.lock().unwrap().push(prompt.to_string());
-                Ok(canned_chapter("Next", 2))
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    self.captured.lock().unwrap().push(prompt.to_string());
+                    Ok(canned_chapter("Next", 2))
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<Vec<String>>> =
@@ -1868,9 +1970,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1]);
         let mut config = sample_config();
         config.max_concurrency = 1;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(result.chapters.len(), 2);
         let prompts = captured.lock().unwrap();
         assert_eq!(prompts.len(), 2);
@@ -1914,14 +2024,34 @@ We learned routing.\n";
     }
 
     #[async_trait::async_trait]
-    impl LlmClient for ConcurrencyTracker {
-        async fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_seen.fetch_max(current, Ordering::SeqCst);
-            tokio::time::sleep(self.delay).await;
-            self.current.fetch_sub(1, Ordering::SeqCst);
-            Ok(canned_chapter("Test", 1))
+    impl llm_kernel::llm::LLMClient for ConcurrencyTracker {
+        async fn complete(
+            &self,
+            request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+            let _prompt = crate::llm::request_prompt(&request);
+            let result: Result<String, crate::llm::LlmError> = async {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_seen.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(self.delay).await;
+                self.current.fetch_sub(1, Ordering::SeqCst);
+                Ok(canned_chapter("Test", 1))
+            }
+            .await;
+            match result {
+                Ok(s) => Ok(crate::llm::text_response(s)),
+                Err(e) => Err(e.into_kernel()),
+            }
+        }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        async fn stream_complete(
+            &self,
+            _request: llm_kernel::llm::LLMRequest,
+        ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+            crate::llm::stream_unsupported()
         }
     }
 
@@ -1936,9 +2066,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2, 3, 4]);
         let mut config = sample_config();
         config.max_concurrency = 2;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &tracker,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(result.chapters.len(), 5);
         assert_eq!(
             tracker.max_concurrent(),
@@ -1961,9 +2099,17 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..20).collect());
         let mut config = sample_config();
         config.max_concurrency = 8;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("20-chapter concurrent generation should succeed without deadlock");
+        let result = write_chapters(
+            &tracker,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(100),
+        )
+        .await
+        .expect("20-chapter concurrent generation should succeed without deadlock");
         assert_eq!(result.chapters.len(), 20);
         // Chapters should be sorted by chapter_num.
         for (i, ch) in result.chapters.iter().enumerate() {
@@ -1987,9 +2133,17 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..8).collect());
         let mut config = sample_config();
         config.max_concurrency = 8;
-        let result = write_chapters(&tracker, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("8-chapter high-concurrency generation should succeed");
+        let result = write_chapters(
+            &tracker,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("8-chapter high-concurrency generation should succeed");
         assert_eq!(
             result.chapters.len(),
             8,
@@ -2015,14 +2169,34 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<Vec<String>>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-                let idx = {
-                    let mut caps = self.captured.lock().unwrap();
-                    caps.push(prompt.to_string());
-                    caps.len()
-                };
-                Ok(canned_chapter(&format!("Abs{}", idx - 1), idx))
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(
+                &self,
+                request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
+                    let idx = {
+                        let mut caps = self.captured.lock().unwrap();
+                        caps.push(prompt.to_string());
+                        caps.len()
+                    };
+                    Ok(canned_chapter(&format!("Abs{}", idx - 1), idx))
+                }
+                .await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<Vec<String>>> =
@@ -2038,9 +2212,17 @@ We learned routing.\n";
         let order = ChapterOrder::new(vec![0, 1, 2]);
         let mut config = sample_config();
         config.max_concurrency = 1;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(result.chapters.len(), 3);
         let prompts = captured.lock().unwrap();
         assert_eq!(prompts.len(), 3, "should have 3 prompts");
@@ -2073,9 +2255,17 @@ We learned routing.\n";
         let order = ChapterOrder::new((0..6).collect());
         let mut config = sample_config();
         config.max_concurrency = 3;
-        let result = write_chapters(&client, &renderer, &identify, &order, &[], &config, None)
-            .await
-            .expect("should succeed");
+        let result = write_chapters(
+            &client,
+            &renderer,
+            &identify,
+            &order,
+            &[],
+            &config,
+            &mut ProgressTracker::new(10),
+        )
+        .await
+        .expect("should succeed");
         assert_eq!(
             result.chapters.len(),
             6,
@@ -2119,7 +2309,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("should succeed");
@@ -2185,7 +2375,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("resume should succeed");
@@ -2266,7 +2456,7 @@ We learned routing.\n";
             &order,
             &files,
             &config,
-            Some(&mut progress),
+            &mut progress,
         )
         .await
         .expect("incremental regen should succeed");
@@ -2327,7 +2517,7 @@ We learned routing.\n";
             &order,
             &[],
             &config,
-            None,
+            &mut ProgressTracker::new(10),
         )
         .await
         .expect("should succeed");

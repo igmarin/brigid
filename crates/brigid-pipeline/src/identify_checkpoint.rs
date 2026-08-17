@@ -26,11 +26,11 @@
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llm::LlmClient;
 use brigid_core::{
     BudgetConfig, CheckpointError, CheckpointV1, IdentifyResult, ProgressTracker, RunConfig,
     StageId, config_hash, module_key,
 };
-use brigid_llm::LlmClient;
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
 use crate::identify::{
@@ -211,7 +211,7 @@ pub async fn identify_and_checkpoint(
             lang_note: String::new(),
             max_abstraction_num: max_abstractions_from_config(config),
         };
-        identify_single_shot(client, renderer, &input, Some(progress)).await?
+        identify_single_shot(client, renderer, &input, progress).await?
     } else {
         // Map + reduce: batch files, call LLM per batch, then reduce.
         let module_summary = module_summary_from_files(&files);
@@ -227,7 +227,7 @@ pub async fn identify_and_checkpoint(
             budget_config: budget_config_from_run(config),
             community_context: String::new(),
         };
-        let candidate_batches = identify_map(client, renderer, &map_input, Some(progress)).await?;
+        let candidate_batches = identify_map(client, renderer, &map_input, progress).await?;
 
         // Flatten candidate batches into a single candidate list.
         let candidates: Vec<_> = candidate_batches
@@ -245,7 +245,7 @@ pub async fn identify_and_checkpoint(
             module_summary,
             multimodal_context: String::new(),
         };
-        identify_reduce(client, renderer, &reduce_input, Some(progress)).await?
+        identify_reduce(client, renderer, &reduce_input, progress).await?
     };
 
     // d. Save the result to the checkpoint.
@@ -364,8 +364,8 @@ fn use_single_shot(files: &[String], sizes: &[u64]) -> bool {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
+    use crate::llm::MockClient;
     use brigid_core::{Abstraction, RunConfig, StageId, Tier};
-    use brigid_llm::MockClient;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};

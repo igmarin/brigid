@@ -283,13 +283,12 @@ pub fn combine_and_checkpoint(
     locale: Locale,
     output_dir: &Path,
 ) -> Result<CombinedTutorial, CombineError> {
-    if !resume::should_run(StageId::Combine, checkpoint) {
-        if let Some(existing) = store
+    if !resume::should_run(StageId::Combine, checkpoint)
+        && let Some(existing) = store
             .read_combined_index(&store.dir, checkpoint)
             .map_err(CombineError::from)?
-        {
-            return Ok(existing);
-        }
+    {
+        return Ok(existing);
     }
 
     let combined = combine_tutorial(

@@ -6,13 +6,14 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use brigid_core::{
     ArchitectureOverview, Chapter, ChapterResult, CheckpointError, CheckpointV1, CombinedTutorial,
-    DEFAULT_MANIFEST_REL_PATH, FileBundleRecord, ManifestPointer, SetupGuide, StageId,
-    StageOutputEntry, StageOutputs, sha256_hex_prefixed,
+    DEFAULT_MANIFEST_REL_PATH, FileBundleRecord, ManifestPointer, ProgressTracker, SetupGuide,
+    StageId, StageOutputEntry, StageOutputs, sha256_hex_prefixed,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -127,6 +128,22 @@ impl CheckpointStore {
         let cp_tmp = self.dir.join("checkpoint.json.tmp");
         write_atomic(&cp_tmp, &cp_final, json.as_bytes())?;
         Ok(())
+    }
+
+    /// Persist the LLM calls consumed during the current invocation back into
+    /// the checkpoint and write it to disk.
+    ///
+    /// This updates `metadata.llm_calls_used` and `metadata.updated_at` so the
+    /// running total is accurate for the next stage or resume.
+    pub fn persist_llm_calls(
+        &self,
+        checkpoint: &mut CheckpointV1,
+        files: &[FileBundleRecord],
+        progress: &ProgressTracker,
+    ) -> Result<(), CheckpointStoreError> {
+        checkpoint.record_llm_calls(progress.llm_calls_used());
+        checkpoint.metadata.updated_at = now_iso8601_utc();
+        self.save(checkpoint.clone(), files)
     }
 
     /// Load metadata and all file records; validates manifest checksum/size.
@@ -606,10 +623,10 @@ fn write_atomic(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), Check
         source,
     })?;
     // Best-effort dir fsync (may fail on some FS; ignore ErrorKind::Unsupported).
-    if let Some(parent) = final_path.parent() {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = final_path.parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
     Ok(())
 }
@@ -678,13 +695,13 @@ fn write_stage_files_batch(
     // Phase 3: fsync each unique parent directory once (best-effort).
     let mut synced_dirs: Vec<PathBuf> = Vec::new();
     for (_, final_path) in &pending {
-        if let Some(parent) = final_path.parent() {
-            if !synced_dirs.contains(&parent.to_path_buf()) {
-                if let Ok(dir) = File::open(parent) {
-                    let _ = dir.sync_all();
-                }
-                synced_dirs.push(parent.to_path_buf());
+        if let Some(parent) = final_path.parent()
+            && !synced_dirs.contains(&parent.to_path_buf())
+        {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
             }
+            synced_dirs.push(parent.to_path_buf());
         }
     }
 
@@ -734,6 +751,34 @@ fn chapter_from_bytes(bytes: &[u8]) -> Result<Chapter, CheckpointStoreError> {
     serde_json::from_slice::<Chapter>(bytes).map_err(|e| {
         CheckpointStoreError::StageOutputIntegrity(format!("chapter parse error: {e}"))
     })
+}
+
+/// Generate an ISO 8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`).
+fn now_iso8601_utc() -> String {
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let hour = rem / 3_600;
+    let min = (rem % 3_600) / 60;
+    let sec = rem % 60;
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
 }
 
 #[cfg(test)]
@@ -786,6 +831,78 @@ mod tests {
         assert_eq!(loaded_files[0].path, "a.txt");
         assert_eq!(loaded_files[0].sha256, files[0].sha256);
         assert!(loaded.manifest.size > 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_llm_calls_adds_used_calls_and_updates_timestamp() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let cfg = RunConfig::default();
+        let mut meta = CheckpointV1::new(
+            &cfg,
+            cfg.redacted_for_checkpoint(),
+            "rev",
+            "2026-07-24T00:00:00Z",
+        )
+        .unwrap();
+        let files = vec![FileBundleRecord::from_raw_bytes(
+            "a.txt",
+            b"hello",
+            B64.encode(b"hello"),
+        )];
+        store.save(meta.clone(), &files).unwrap();
+
+        let mut tracker = ProgressTracker::new(10);
+        tracker.reserve_llm_calls(3).unwrap();
+
+        let initial_updated = meta.metadata.updated_at.clone();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker)
+            .unwrap();
+
+        assert_eq!(meta.metadata.llm_calls_used, 3);
+        assert_ne!(meta.metadata.updated_at, initial_updated);
+
+        let (loaded, _) = store.load().unwrap();
+        assert_eq!(loaded.metadata.llm_calls_used, 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_llm_calls_does_not_double_count() {
+        let dir = temp_dir();
+        let store = CheckpointStore::new(&dir);
+        let cfg = RunConfig::default();
+        let mut meta = CheckpointV1::new(
+            &cfg,
+            cfg.redacted_for_checkpoint(),
+            "rev",
+            "2026-07-24T00:00:00Z",
+        )
+        .unwrap();
+        let files = vec![FileBundleRecord::from_raw_bytes(
+            "a.txt",
+            b"hello",
+            B64.encode(b"hello"),
+        )];
+        store.save(meta.clone(), &files).unwrap();
+
+        let mut tracker = ProgressTracker::new(10);
+        tracker.reserve_llm_calls(2).unwrap();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker)
+            .unwrap();
+
+        let mut tracker2 = ProgressTracker::new(10);
+        tracker2.reserve_llm_calls(4).unwrap();
+        store
+            .persist_llm_calls(&mut meta, &files, &tracker2)
+            .unwrap();
+
+        assert_eq!(meta.metadata.llm_calls_used, 6);
+
         let _ = fs::remove_dir_all(&dir);
     }
 

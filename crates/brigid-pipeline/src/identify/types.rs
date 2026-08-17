@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::checkpoint_store::CheckpointStoreError;
+use crate::llm::LlmError;
 use crate::prompts::PromptError;
 use brigid_core::ExtractError;
-use brigid_llm::LlmError;
 
 // Doc-link only imports — these items are referenced in rustdoc intra-doc
 // links but not used in code. `#[allow(unused_imports)]` suppresses the
@@ -42,6 +42,9 @@ pub enum IdentifyError {
     /// The LLM returned no abstractions.
     #[error("no abstractions found in LLM output")]
     NoAbstractions,
+    /// The LLM returned empty output.
+    #[error("LLM returned empty output")]
+    EmptyOutput,
     /// The configured LLM call budget was exceeded.
     #[error("budget exceeded: {0}")]
     Budget(#[from] BudgetExceeded),
