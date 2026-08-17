@@ -3,6 +3,8 @@
 //! This binary only parses arguments and wires up library crates; business
 //! logic lives in `brigid-core`, `brigid-crawl`, and `brigid-pipeline`.
 
+#![allow(deprecated)]
+
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -19,10 +21,45 @@ use brigid_core::{
 };
 use brigid_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
 use brigid_pipeline::{
-    CheckpointStore, DryRunError, check_identity, dry_run_with_options, is_checkpoint_stale,
-    next_stage, pending_stages,
+    CheckpointStore, DryRunError, LlmClient, LlmError, MockClient, check_identity,
+    complete_text, dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use async_trait::async_trait;
+use brigid_llm::client::LlmClient as BrigidLlmClient;
+use llm_kernel::llm::{LLMClient, LLMRequest, LLMResponse, LLMStream};
+
+/// Wraps a deprecated `brigid-llm` client as [`LLMClient`] until Phase 4.
+struct LegacyLlmClient(Box<dyn BrigidLlmClient>);
+
+#[async_trait]
+impl LLMClient for LegacyLlmClient {
+    async fn complete(&self, request: LLMRequest) -> llm_kernel::error::Result<LLMResponse> {
+        let prompt = request
+            .messages
+            .iter()
+            .map(llm_kernel::llm::ChatMessage::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        match self.0.complete(&prompt).await {
+            Ok(content) => Ok(LLMResponse {
+                content,
+                ..LLMResponse::default()
+            }),
+            Err(err) => Err(legacy_llm_error(err).into_kernel()),
+        }
+    }
+
+    fn model_name(&self) -> &str {
+        "brigid-llm"
+    }
+
+    async fn stream_complete(&self, _request: LLMRequest) -> llm_kernel::error::Result<LLMStream> {
+        Err(llm_kernel::error::KernelError::LlmApi(
+            "streaming is not supported by this client".into(),
+        ))
+    }
+}
 
 /// Success.
 const EXIT_OK: u8 = 0;
@@ -147,7 +184,7 @@ fn build_real_llm_client(
     custom_hosts: &[String],
     provider: Option<&str>,
     model: Option<&str>,
-) -> Result<Box<dyn brigid_llm::LlmClient>, brigid_llm::LlmError> {
+) -> Result<Box<dyn LlmClient>, brigid_llm::LlmError> {
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
@@ -161,7 +198,7 @@ fn build_real_llm_client(
     } else {
         client
     };
-    Ok(Box::new(client))
+    Ok(Box::new(LegacyLlmClient(Box::new(client))))
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +237,26 @@ const PLACEHOLDER_OVERVIEW: &str = "# Architecture Overview\n\nThis project has 
 /// Build a typed [`brigid_llm::LlmError`] for the given `BRIGID_LLM_MOCK_FAIL`
 /// fault-injection keyword.  Extracted as a pure function so it can be unit
 /// tested without mutating the process environment.
-fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
+fn legacy_llm_error(err: brigid_llm::LlmError) -> LlmError {
+    match err {
+        brigid_llm::LlmError::Timeout => LlmError::Timeout,
+        brigid_llm::LlmError::RateLimit { retry_after } => LlmError::RateLimit { retry_after },
+        brigid_llm::LlmError::Provider { status, body } => LlmError::Provider { status, body },
+        brigid_llm::LlmError::Parse { message } => LlmError::parse(message),
+        brigid_llm::LlmError::Network { message } => LlmError::network(message),
+    }
+}
+
+fn mock_fail_error(kind: &str) -> LlmError {
     match kind {
-        "timeout" => brigid_llm::LlmError::Timeout,
-        "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-        "provider" => brigid_llm::LlmError::Provider {
+        "timeout" => LlmError::Timeout,
+        "ratelimit" => LlmError::RateLimit { retry_after: None },
+        "provider" => LlmError::Provider {
             status: 502,
             body: "mock provider error".to_string(),
         },
-        "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-        _ => brigid_llm::LlmError::network("mock network failure"),
+        "parse" => LlmError::parse("mock parse failure"),
+        _ => LlmError::network("mock network failure"),
     }
 }
 
@@ -219,7 +266,7 @@ fn mock_fail_error(kind: &str) -> brigid_llm::LlmError {
 /// can inject a typed error on the first call instead of returning placeholder
 /// responses.  This is a developer-only fault-injection hook and is compiled out
 /// of release builds.
-fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
+fn mock_client(responses: Vec<String>) -> Box<dyn LlmClient> {
     mock_client_with_diag(responses, &mut std::io::stderr())
 }
 
@@ -229,7 +276,7 @@ fn mock_client(responses: Vec<String>) -> Box<dyn brigid_llm::LlmClient> {
 fn mock_client_with_diag(
     responses: Vec<String>,
     diag: &mut dyn std::io::Write,
-) -> Box<dyn brigid_llm::LlmClient> {
+) -> Box<dyn LlmClient> {
     let fallback = PLACEHOLDER_IDENTIFY_YAML;
     #[cfg(debug_assertions)]
     {
@@ -238,16 +285,16 @@ fn mock_client_with_diag(
             .filter(|value| !value.is_empty())
         {
             let error = mock_fail_error(&kind);
-            return Box::new(brigid_llm::MockClient::new("").fail_on(0, error));
+            return Box::new(MockClient::new("").fail_on(0, error));
         }
     }
     Box::new(
-        brigid_llm::MockClient::with_responses(responses).unwrap_or_else(|error| {
+        MockClient::with_responses(responses).unwrap_or_else(|error| {
             let _ = writeln!(
                 diag,
                 "warning: mock client: falling back to default placeholder response: {error}"
             );
-            brigid_llm::MockClient::new(fallback)
+            MockClient::new(fallback)
         }),
     )
 }
@@ -2116,7 +2163,7 @@ fn cmd_identify(
         files: records,
     };
 
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         eprintln!(
             "warning: identify: BRIGID_FORCE_MOCK is set — using a mock client. \
              The output will be a placeholder, not a real LLM analysis."
@@ -2440,7 +2487,7 @@ fn cmd_generate(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         print_progress(
             verbosity,
             "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
@@ -2844,7 +2891,7 @@ fn cmd_generate_each_app(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn brigid_llm::LlmClient> = if force_mock_client() {
+    let client: Box<dyn LlmClient> = if force_mock_client() {
         print_progress(
             verbosity,
             "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
@@ -3073,7 +3120,7 @@ fn stage_language_instruction(language: &str) -> String {
     }
 }
 
-fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn brigid_llm::LlmClient> {
+fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn LlmClient> {
     let api_key = env::var("BRIGID_LLM_API_KEY").ok();
     if api_key.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
         eprintln!(
@@ -3088,22 +3135,13 @@ fn make_stage_client(responses: Vec<String>, placeholder: &str) -> Box<dyn brigi
             .ok()
             .filter(|s| !s.is_empty())
         {
-            let err = match kind.as_str() {
-                "timeout" => brigid_llm::LlmError::Timeout,
-                "ratelimit" => brigid_llm::LlmError::RateLimit { retry_after: None },
-                "provider" => brigid_llm::LlmError::Provider {
-                    status: 502,
-                    body: "mock provider error".to_string(),
-                },
-                "parse" => brigid_llm::LlmError::parse("mock parse failure"),
-                _ => brigid_llm::LlmError::network("mock network failure"),
-            };
-            return Box::new(brigid_llm::MockClient::new("").fail_on(0, err));
+            let err = mock_fail_error(&kind);
+            return Box::new(MockClient::new("").fail_on(0, err));
         }
     }
     Box::new(
-        brigid_llm::MockClient::with_responses(responses)
-            .unwrap_or_else(|_| brigid_llm::MockClient::new(placeholder)),
+        MockClient::with_responses(responses)
+            .unwrap_or_else(|_| MockClient::new(placeholder)),
     )
 }
 
@@ -4450,14 +4488,14 @@ mod tests {
     fn mock_fail_error_returns_expected_variant_for_each_keyword() {
         assert!(matches!(
             mock_fail_error("timeout"),
-            brigid_llm::LlmError::Timeout
+            LlmError::Timeout
         ));
         assert!(matches!(
             mock_fail_error("ratelimit"),
-            brigid_llm::LlmError::RateLimit { retry_after: None }
+            LlmError::RateLimit { retry_after: None }
         ));
         match mock_fail_error("provider") {
-            brigid_llm::LlmError::Provider { status, body } => {
+            LlmError::Provider { status, body } => {
                 assert_eq!(status, 502);
                 assert_eq!(body, "mock provider error");
             }
@@ -4465,16 +4503,16 @@ mod tests {
         }
         assert!(matches!(
             mock_fail_error("parse"),
-            brigid_llm::LlmError::Parse { .. }
+            LlmError::Parse { .. }
         ));
         assert!(matches!(
             mock_fail_error("network"),
-            brigid_llm::LlmError::Network { .. }
+            LlmError::Network { .. }
         ));
         // Unknown keyword falls through to network error.
         assert!(matches!(
             mock_fail_error("unknown"),
-            brigid_llm::LlmError::Network { .. }
+            LlmError::Network { .. }
         ));
     }
 
@@ -4489,8 +4527,7 @@ mod tests {
         // process stderr.
         let mut diag = Vec::new();
         let client = mock_client_with_diag(Vec::new(), &mut diag);
-        let response = client
-            .complete("anything")
+        let response = complete_text(client.as_ref(), "anything")
             .await
             .expect("fallback client should respond");
         assert_eq!(response, PLACEHOLDER_IDENTIFY_YAML);
@@ -4508,7 +4545,13 @@ mod tests {
     #[tokio::test]
     async fn mock_client_with_responses_serves_sequence_without_fallback() {
         let client = mock_client(vec!["first".to_string(), "second".to_string()]);
-        assert_eq!(client.complete("a").await.unwrap(), "first");
-        assert_eq!(client.complete("b").await.unwrap(), "second");
+        assert_eq!(
+            complete_text(client.as_ref(), "a").await.unwrap(),
+            "first"
+        );
+        assert_eq!(
+            complete_text(client.as_ref(), "b").await.unwrap(),
+            "second"
+        );
     }
 }

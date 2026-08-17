@@ -12,6 +12,36 @@ tracks the latest.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-17
+
+Breaking release that adopts [`llm-kernel`](https://crates.io/crates/llm-kernel)
+as the LLM provider layer and deprecates `brigid-llm` (issue #297, Phases 1–3).
+The `brigid-llm` crate is not removed yet (Phase 4 is a follow-up).
+
+### Changed
+
+- **MSRV is now 1.92** (was 1.85). Required by `llm-kernel`. Rust 1.97+ is
+  supported.
+- **`brigid-pipeline` depends on `llm-kernel` 0.25** with features
+  `client-async`, `provider`, `tokens`, `safety`, and `cache`. Stage code
+  calls `LLMClient::complete(LLMRequest)` via `brigid_pipeline::llm::complete_text`
+  instead of `brigid_llm::LlmClient::complete(&str)`.
+- Workspace version **1.3.0 → 2.0.0**.
+- The published crate version in the issue text (`0.19`) is superseded by the
+  current docs.rs release (`0.25`), which provides `CacheClient` / `KvStore`.
+
+### Deprecated
+
+- **`brigid-llm` is deprecated.** README, crate docs, and public items carry
+  `#[deprecated]` pointing at `llm-kernel`. No new features; bug fixes only
+  until removal.
+
+### Added
+
+- `brigid_pipeline::llm` — `MockClient` implementing `llm_kernel::llm::LLMClient`,
+  `complete_text`, and thin `bounded_complete` / `bounded_complete_with_budget`
+  wrappers.
+
 ## [1.3.0] - 2026-08-07
 
 Minor release adding two major features: an MCP (Model Context Protocol) server

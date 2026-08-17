@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use brigid_core::{
     CheckpointV1, SetupGuide, StageId, redact_content, sanitize_markdown_mermaid_blocks,
 };
-use brigid_llm::LlmClient;
+use crate::llm::{complete_text, LlmClient};
 use serde_json::json;
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
@@ -38,7 +38,7 @@ pub enum SetupGuideError {
     Prompt(#[from] PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
     /// The LLM returned empty output.
     #[error("LLM returned empty setup guide output")]
     EmptyOutput,
@@ -120,7 +120,7 @@ pub async fn write_setup_guide(
     });
 
     let prompt = renderer.render(PromptId::WriteSetupGuide, &context)?;
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
 
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -202,7 +202,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{RunConfig, StageId};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
+    use crate::llm::{LlmClient, LlmError, MockClient};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -344,10 +344,26 @@ mod tests {
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 *self.captured.lock().unwrap() = prompt.to_string();
                 Ok(canned_markdown())
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
 

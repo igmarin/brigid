@@ -79,6 +79,7 @@ pub struct CacheStats {
 const EVICTION_CHECK_INTERVAL: u64 = 50;
 
 /// Filesystem-backed response cache with optional size limits and LRU eviction.
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::CacheClient over KvStore")]
 #[derive(Clone, Debug)]
 pub struct DiskCache {
     /// Root directory for cache entries.

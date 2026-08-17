@@ -17,7 +17,7 @@ use brigid_core::{
     Abstraction, ArchitectureOverview, CheckpointV1, ModuleKey, Relationship, StageId,
     redact_content, sanitize_markdown_mermaid_blocks,
 };
-use brigid_llm::LlmClient;
+use crate::llm::{complete_text, LlmClient};
 use serde_json::json;
 use thiserror::Error;
 
@@ -33,7 +33,7 @@ pub enum OverviewError {
     Prompt(#[from] PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
     /// The LLM returned empty output.
     #[error("LLM returned empty output")]
     EmptyOutput,
@@ -118,7 +118,7 @@ pub async fn write_architecture_overview(
         brigid_core::config::TutorialStyle::BlogPost => PromptId::WriteArchitectureOverviewBlog,
     };
     let prompt = renderer.render(overview_prompt, &context)?;
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
 
     if response.trim().is_empty() {
         return Err(OverviewError::EmptyOutput);
@@ -302,7 +302,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{StageId, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
+    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -558,10 +558,26 @@ flowchart LR
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 *self.captured.lock().unwrap() = prompt.to_string();
                 Ok(canned_overview_markdown())
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
 

@@ -36,7 +36,7 @@ use crate::setup_guide::{
     WriteSetupGuideInput, should_generate_setup, write_setup_guide_and_checkpoint,
 };
 
-use brigid_llm::LlmClient;
+use crate::llm::{complete_text, LlmClient};
 
 /// Errors returned by the generate pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -1140,7 +1140,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{Abstraction, RunConfig, Tier};
-    use brigid_llm::MockClient;
+    use crate::llm::MockClient;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1960,7 +1960,7 @@ mod tests {
         let responses = repeated_responses(per_app_responses_with_overview(), 2);
         let client = MockClient::with_responses(responses).unwrap().fail_on(
             5,
-            brigid_llm::LlmError::network("mock failure for second app"),
+            crate::llm::LlmError::network("mock failure for second app"),
         );
         let renderer = PromptRenderer::new().unwrap();
         let cancel = CancelToken::new();
@@ -2595,7 +2595,7 @@ mod tests {
         let responses = repeated_responses(per_app_responses_with_overview(), 2);
         let client = MockClient::with_responses(responses)
             .unwrap()
-            .fail_on(5, brigid_llm::LlmError::network("beta identify failure"));
+            .fail_on(5, crate::llm::LlmError::network("beta identify failure"));
         let renderer = PromptRenderer::new().unwrap();
         let cancel = CancelToken::new();
 

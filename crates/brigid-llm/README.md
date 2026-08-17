@@ -1,5 +1,11 @@
 # brigid-llm
 
+> **Deprecated (brigid 2.0.0).** This crate is superseded by
+> [`llm-kernel`](https://crates.io/crates/llm-kernel). Use
+> `llm_kernel::llm::LLMClient` / `OpenAIClient` / `CacheClient` for new code.
+> `brigid-llm` remains in the workspace until Phase 4 of
+> [issue #297](https://github.com/igmarin/brigid/issues/297). Bug fixes only.
+
 [![crates.io](https://img.shields.io/crates/v/brigid-llm.svg)](https://crates.io/crates/brigid-llm)
 [![docs.rs](https://docs.rs/brigid-llm/badge.svg?version=latest)](https://docs.rs/brigid-llm)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/igmarin/brigid/blob/main/LICENSE)

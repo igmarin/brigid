@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use brigid_core::{
     BudgetConfig, ProgressTracker, capped_file_chars, extract_yaml_block, module_key,
 };
-use brigid_llm::{LlmClient, bounded_complete, bounded_complete_with_budget};
+use crate::llm::{LlmClient, bounded_complete, bounded_complete_with_budget, complete_text};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -186,7 +186,7 @@ pub(crate) async fn run_single_map_batch(
         tracker.set_stage("identify_map");
     }
 
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
     let yaml_text = extract_yaml_block(&response)?;
     let candidates = parse_candidates(&yaml_text, batch_idx)?;
 
@@ -363,7 +363,7 @@ pub(crate) fn parse_candidates(
 mod map_tests {
     use super::*;
     use brigid_core::{BudgetConfig, ProgressTracker, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
+    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
 
     /// Four-file inventory used across map-stage tests.
     fn sample_files() -> Vec<String> {
@@ -729,10 +729,26 @@ mod map_tests {
             captured: Arc<Mutex<Vec<String>>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 self.captured.lock().unwrap().push(prompt.to_string());
                 Ok(canned_candidates_yaml())
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
 

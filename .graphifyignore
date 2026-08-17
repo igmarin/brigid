@@ -6,8 +6,6 @@
 .zed
 .codegraph
 graphify-out
-repomix-output.xml
-repomix-output.md
 coverage
 review-result.txt
 rs-guard-metrics.json

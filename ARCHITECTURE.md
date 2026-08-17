@@ -19,7 +19,7 @@ pure for easy unit testing.
 graph TD
     CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
     Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
-    LLM["brigid-llm<br/>(LlmClient trait, provider clients, cache, retries)"]
+    LLM["llm-kernel (pipeline)<br/>brigid-llm deprecated"]
     Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 

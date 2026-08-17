@@ -44,6 +44,10 @@ impl MockState {
 }
 
 /// A network-free mock implementation of [`LlmClient`].
+#[deprecated(
+    since = "2.0.0",
+    note = "use brigid_pipeline::llm::MockClient (implements llm_kernel::llm::LLMClient)"
+)]
 ///
 /// Construct with [`MockClient::new`] (single canned response) or
 /// [`MockClient::with_responses`] (a sequence). Chain

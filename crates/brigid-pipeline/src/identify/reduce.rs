@@ -1,5 +1,5 @@
 use brigid_core::{Abstraction, IdentifyResult, ProgressTracker, extract_yaml_block};
-use brigid_llm::LlmClient;
+use crate::llm::{complete_text, LlmClient};
 use serde_json::json;
 
 use crate::prompts::{PromptId, PromptRenderer, sanitize_template_input};
@@ -101,7 +101,7 @@ pub async fn identify_reduce(
     }
 
     // d. Call the LLM.
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
 
     // e. Extract the YAML block from the (possibly prose-wrapped) response.
     let yaml_text = extract_yaml_block(&response)?;
@@ -164,7 +164,7 @@ fn candidates_to_yaml(candidates: &[CandidateAbstraction]) -> Result<String, Ide
 mod reduce_tests {
     use super::*;
     use brigid_core::{AbstractionKind, ProgressTracker, Tier};
-    use brigid_llm::{LlmClient, LlmError, MockClient};
+    use crate::llm::{LlmClient, LlmError, MockClient, complete_text};
 
     /// Five-file inventory used across reduce-stage tests.
     fn sample_files() -> Vec<String> {
@@ -467,10 +467,26 @@ mod reduce_tests {
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 *self.captured.lock().unwrap() = prompt.to_string();
                 Ok(canned_two_final_abstractions())
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
 
@@ -563,10 +579,26 @@ mod reduce_tests {
             captured: Arc<Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 *self.captured.lock().unwrap() = prompt.to_string();
                 Ok(canned_two_final_abstractions())
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
 

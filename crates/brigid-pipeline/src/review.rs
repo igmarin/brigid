@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use brigid_core::{
     BudgetExceeded, Chapter, ChapterResult, ProgressTracker, sanitize_markdown_mermaid_blocks,
 };
-use brigid_llm::{LlmClient, LlmError};
+use crate::llm::{complete_text, LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -97,7 +97,7 @@ pub async fn review_chapter(
         "chapter_md": sanitize_template_input(chapter_md),
     });
     let prompt = renderer.render(PromptId::ReviewChapter, &ctx)?;
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
     let trimmed = response.trim();
     if trimmed.is_empty() {
         return Err(ReviewError::EmptyOutput);
@@ -376,7 +376,7 @@ mod tests {
     use super::*;
     use crate::cancellation::CancelToken;
     use brigid_core::Tier;
-    use brigid_llm::MockClient;
+    use crate::llm::MockClient;
 
     fn no_cancel() -> CancelToken {
         CancelToken::new()

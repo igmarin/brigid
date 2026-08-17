@@ -19,6 +19,7 @@ pub mod combine;
 pub mod dry_run;
 pub mod generate;
 pub mod identify;
+pub mod llm;
 pub mod identify_checkpoint;
 pub mod identify_runner;
 pub mod order;
@@ -42,6 +43,9 @@ pub use combine::{
     slugify_chapter_filename, write_output_directory,
 };
 pub use dry_run::{DryRunError, DryRunPlan, dry_run, dry_run_with_budget, dry_run_with_options};
+pub use llm::{
+    LlmClient, LlmError, MockClient, bounded_complete, bounded_complete_with_budget, complete_text,
+};
 pub use generate::{
     EachAppOutcome, EachAppSummary, GenerateConfig, GenerateError, GenerateOutcome,
     run_chapters_stage, run_combine_stage, run_generate, run_generate_each_app, run_order_stage,

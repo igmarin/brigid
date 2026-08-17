@@ -187,7 +187,7 @@ fn flatten_candidates(batches: &[CandidateBatch]) -> Vec<CandidateAbstraction> {
 ///
 /// [`StageId::Identify`]: brigid_core::StageId::Identify
 pub async fn identify_with_cancellation(
-    client: &dyn brigid_llm::LlmClient,
+    client: &dyn crate::llm::LlmClient,
     renderer: &PromptRenderer,
     run_cfg: &IdentifyRunConfig,
     progress: &mut ProgressTracker,
@@ -329,7 +329,7 @@ mod tests {
     use crate::identify::{IdentifyMapInput, IdentifyReduceInput, IdentifySingleShotInput};
     use crate::prompts::PromptRenderer;
     use brigid_core::{BudgetConfig, RunConfig, Tier};
-    use brigid_llm::{LlmClient, MockClient};
+    use crate::llm::{LlmClient, MockClient, complete_text};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -543,15 +543,31 @@ mod tests {
             map_calls: usize,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CancelAfterMap {
-            async fn complete(&self, prompt: &str) -> Result<String, brigid_llm::LlmError> {
+        impl llm_kernel::llm::LLMClient for CancelAfterMap {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let result = self.inner.complete(prompt).await?;
+                let result = crate::llm::complete_text(&self.inner, &prompt).await?;
                 // After the last map call, cancel so the reduce check fires.
                 if n + 1 == self.map_calls {
                     self.cancel.cancel();
                 }
                 Ok(result)
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
         let client = CancelAfterMap {
@@ -676,18 +692,34 @@ mod tests {
             calls: std::sync::atomic::AtomicUsize,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CancelAfterFirst {
-            async fn complete(&self, prompt: &str) -> Result<String, brigid_llm::LlmError> {
+        impl llm_kernel::llm::LLMClient for CancelAfterFirst {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if n == 0 {
                     // After the first map call returns, cancel so the next
                     // wave check stops.
-                    let result = self.inner.complete(prompt).await?;
+                    let result = crate::llm::complete_text(&self.inner, &prompt).await?;
                     self.cancel.cancel();
                     Ok(result)
                 } else {
-                    self.inner.complete(prompt).await
+                    crate::llm::complete_text(&self.inner, &prompt).await
                 }
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
         let client = CancelAfterFirst {

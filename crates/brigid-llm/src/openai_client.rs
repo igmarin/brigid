@@ -39,6 +39,7 @@ fn nonblank_env(key: &str) -> Option<String> {
 }
 
 /// Configuration for an OpenAI-compatible LLM client.
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::ModelConfig")]
 #[derive(Clone, Debug)]
 pub struct OpenAiClientConfig {
     /// Base URL (e.g. `https://api.openai.com/v1` or DeepSeek
@@ -520,6 +521,7 @@ impl OpenAiClientConfig {
 }
 
 /// OpenAI-compatible LLM client using `reqwest` with retry/backoff/timeout.
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::OpenAIClient")]
 pub struct OpenAiCompatibleClient {
     config: OpenAiClientConfig,
     http: reqwest::Client,

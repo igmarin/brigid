@@ -30,7 +30,7 @@ use brigid_core::{
     BudgetConfig, CheckpointError, CheckpointV1, IdentifyResult, ProgressTracker, RunConfig,
     StageId, config_hash, module_key,
 };
-use brigid_llm::LlmClient;
+use crate::llm::{complete_text, LlmClient};
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
 use crate::identify::{
@@ -365,7 +365,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{Abstraction, RunConfig, StageId, Tier};
-    use brigid_llm::MockClient;
+    use crate::llm::MockClient;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};

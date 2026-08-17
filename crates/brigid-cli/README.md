@@ -8,7 +8,7 @@ The `brigid` command-line tool: deconstruct a codebase into an AI-generated tuto
 
 `brigid` crawls a codebase, identifies its core abstractions via an LLM map/reduce pipeline, and produces a multi-chapter Markdown + Mermaid tutorial explaining how the system works: setup, architecture, and inter-concept relationships. Built for monorepos and large codebases where "read the source" is not a realistic onboarding path.
 
-This is the only binary crate in the `brigid` workspace. The business logic lives in the companion library crates (`brigid-core`, `brigid-crawl`, `brigid-llm`, `brigid-pipeline`); `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and maps errors to exit codes.
+This is the only binary crate in the `brigid` workspace. The business logic lives in the companion library crates (`brigid-core`, `brigid-crawl`, `brigid-pipeline`, plus deprecated `brigid-llm`); live completions go through [`llm-kernel`](https://crates.io/crates/llm-kernel). `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and maps errors to exit codes.
 
 ---
 
@@ -68,7 +68,7 @@ See `brigid --help` and `brigid <command> --help` for all options.
 
 - `brigid-core` — pure domain types and logic
 - `brigid-crawl` — filesystem and GitHub repository crawling
-- `brigid-llm` — LLM provider clients and caching
+- `brigid-llm` — deprecated; pipeline uses `llm-kernel`
 - `brigid-pipeline` — stage orchestration, checkpoint/resume, dry-run planning
 - `brigid-cli` — this crate: the `brigid` binary
 

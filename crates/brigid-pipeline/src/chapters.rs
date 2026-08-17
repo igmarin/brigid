@@ -28,7 +28,7 @@ use brigid_core::{
     IdentifyResult, ProgressTracker, StageId, Tier, path_stub, path_stub_chars, redact_content,
     sanitize_markdown_mermaid_blocks, truncate_content,
 };
-use brigid_llm::{LlmClient, LlmError};
+use crate::llm::{complete_text, LlmClient, LlmError};
 use futures::future::join_all;
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore, mpsc};
@@ -105,7 +105,7 @@ pub enum ChaptersError {
     Prompt(#[from] crate::prompts::PromptError),
     /// The LLM call failed (network, timeout, rate limit, provider error).
     #[error("LLM call failed: {0}")]
-    Llm(#[from] brigid_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
     /// The LLM returned empty output.
     #[error("LLM returned empty chapter output")]
     EmptyOutput,
@@ -375,7 +375,7 @@ pub async fn write_single_chapter(
 
     let prompt = renderer.render(PromptId::WriteChapter, &render_ctx)?;
 
-    let response = client.complete(&prompt).await?;
+    let response = complete_text(client, &prompt).await?;
 
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -975,7 +975,7 @@ mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
     use brigid_core::{AbstractionKind, RunConfig};
-    use brigid_llm::{LlmClient, MockClient};
+    use crate::llm::{LlmClient, MockClient, complete_text};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -1564,10 +1564,26 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<String>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 *self.captured.lock().unwrap() = prompt.to_string();
                 Ok(canned_chapter("Router", 1))
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<String>> =
@@ -1849,10 +1865,26 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<Vec<String>>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 self.captured.lock().unwrap().push(prompt.to_string());
                 Ok(canned_chapter("Next", 2))
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<Vec<String>>> =
@@ -1914,14 +1946,30 @@ We learned routing.\n";
     }
 
     #[async_trait::async_trait]
-    impl LlmClient for ConcurrencyTracker {
-        async fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+    impl llm_kernel::llm::LLMClient for ConcurrencyTracker {
+        async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                let _prompt = crate::llm::request_prompt(&request);
+                let result: Result<String, crate::llm::LlmError> = async {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let current = self.current.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_seen.fetch_max(current, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             self.current.fetch_sub(1, Ordering::SeqCst);
             Ok(canned_chapter("Test", 1))
+                }.await;
+                match result {
+                    Ok(s) => Ok(crate::llm::text_response(s)),
+                    Err(e) => Err(e.into_kernel()),
+                }
+        }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        async fn stream_complete(
+                &self,
+                _request: llm_kernel::llm::LLMRequest,
+            ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                crate::llm::stream_unsupported()
         }
     }
 
@@ -2015,14 +2063,30 @@ We learned routing.\n";
             captured: Arc<std::sync::Mutex<Vec<String>>>,
         }
         #[async_trait::async_trait]
-        impl LlmClient for CapturingClient {
-            async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        impl llm_kernel::llm::LLMClient for CapturingClient {
+            async fn complete(&self, request: llm_kernel::llm::LLMRequest) -> llm_kernel::error::Result<llm_kernel::llm::LLMResponse> {
+                    let prompt = crate::llm::request_prompt(&request);
+                    let result: Result<String, crate::llm::LlmError> = async {
                 let idx = {
                     let mut caps = self.captured.lock().unwrap();
                     caps.push(prompt.to_string());
                     caps.len()
                 };
                 Ok(canned_chapter(&format!("Abs{}", idx - 1), idx))
+                    }.await;
+                    match result {
+                        Ok(s) => Ok(crate::llm::text_response(s)),
+                        Err(e) => Err(e.into_kernel()),
+                    }
+            }
+            fn model_name(&self) -> &str {
+                "mock"
+            }
+            async fn stream_complete(
+                    &self,
+                    _request: llm_kernel::llm::LLMRequest,
+                ) -> llm_kernel::error::Result<llm_kernel::llm::LLMStream> {
+                    crate::llm::stream_unsupported()
             }
         }
         let captured: Arc<std::sync::Mutex<Vec<String>>> =
