@@ -19,25 +19,22 @@ pure for easy unit testing.
 graph TD
     CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
     Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
-    LLMKernel["llm-kernel<br/>(pipeline LLM interface)"]
-    LegacyLLM["brigid-llm<br/>(DEPRECATED: CLI compat bridge)"]
+    LLMKernel["llm-kernel<br/>(LLM provider interface)"]
     Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 
     CLI --> Pipeline
-    CLI --> LegacyLLM
+    CLI --> LLMKernel
     CLI --> Crawl
     CLI --> Core
     Pipeline --> LLMKernel
     Pipeline --> Crawl
     Pipeline --> Core
-    LegacyLLM --> Core
     Crawl --> Core
 ```
 
-The pipeline uses the `llm-kernel` interface directly. The CLI still adapts the
-deprecated `brigid-llm` crate for live provider calls (compatibility bridge)
-until Phase 4 completes the full migration to `llm-kernel`.
+Both the pipeline and the CLI use `llm-kernel` directly for LLM calls. The
+`brigid-llm` crate has been removed (issue #297 Phase 4).
 
 The layering rule: **library crates perform no CLI or main-binary logic**.
 `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and
@@ -51,7 +48,6 @@ brigid/
 ├── crates/
 │   ├── brigid-core/       # Pure domain models, traits, budgeting, mermaid sanitize
 │   ├── brigid-crawl/      # Local filesystem inventory and git-diff filtering
-│   ├── brigid-llm/        # LlmClient trait, provider clients, disk cache, retries
 │   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
 │   │   └── prompts/        # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 │   ├── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes

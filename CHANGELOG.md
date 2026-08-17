@@ -12,11 +12,27 @@ tracks the latest.
 
 ## [Unreleased]
 
+### Phase 4: brigid-llm removal (issue #297)
+
+- **Removed `brigid-llm` crate** from the workspace. The CLI now uses
+  `llm_kernel::llm::{OpenAIClient, CacheClient}` directly — no adapter layer.
+- The `LegacyLlmClient` adapter, `legacy_llm_error` mapping, and
+  `brigid_llm::DiskCache` have been replaced with `llm_kernel` native types.
+- **Cache backend changed** from `brigid_llm::DiskCache` (file-based with LRU
+  eviction and size limits) to `llm_kernel::store::SqliteKvStore` (SQLite-backed
+  KV store). The SQLite cache does not enforce a size limit; clear it manually
+  with `rm -rf <cache-dir>/cache.sqlite` if needed. Cache hit/miss stats are no
+  longer reported in verbose output.
+- Provider resolution (DeepSeek, OpenAI, OpenRouter, custom) and API key chain
+  (`BRIGID_LLM_API_KEY` → provider-specific key) logic moved into the CLI
+  (`build_real_llm_client` in `brigid-cli/src/main.rs`).
+- Removed `async-trait` dependency from `brigid-cli` (no longer needed without
+  the adapter).
+
 ## [2.0.0] - 2026-08-17
 
 Breaking release that adopts [`llm-kernel`](https://crates.io/crates/llm-kernel)
-as the LLM provider layer and deprecates `brigid-llm` (issue #297, Phases 1–3).
-The `brigid-llm` crate is not removed yet (Phase 4 is a follow-up).
+as the LLM provider layer and removes `brigid-llm` (issue #297, Phases 1–4).
 
 ### Changed
 

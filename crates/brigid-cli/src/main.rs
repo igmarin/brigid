@@ -12,7 +12,6 @@ use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use async_trait::async_trait;
 use brigid_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
     OverviewOutput, ProgressTracker, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput,
@@ -21,45 +20,14 @@ use brigid_core::{
     resolve_config, validate_config_for_check,
 };
 use brigid_crawl::{CrawlOptions, crawl_local, crawl_local_with_options};
-use brigid_llm::client::LlmClient as BrigidLlmClient;
 use brigid_pipeline::{
     CheckpointStore, DryRunError, LlmClient, LlmError, MockClient, check_identity,
     dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use llm_kernel::llm::{LLMClient, LLMRequest, LLMResponse, LLMStream};
-
-/// Wraps a deprecated `brigid-llm` client as [`LLMClient`] until Phase 4.
-struct LegacyLlmClient(Box<dyn BrigidLlmClient>);
-
-#[async_trait]
-impl LLMClient for LegacyLlmClient {
-    async fn complete(&self, request: LLMRequest) -> llm_kernel::error::Result<LLMResponse> {
-        let prompt = request
-            .messages
-            .iter()
-            .map(llm_kernel::llm::ChatMessage::text_content)
-            .collect::<Vec<_>>()
-            .join("\n");
-        match self.0.complete(&prompt).await {
-            Ok(content) => Ok(LLMResponse {
-                content,
-                ..LLMResponse::default()
-            }),
-            Err(err) => Err(legacy_llm_error(err).into_kernel()),
-        }
-    }
-
-    fn model_name(&self) -> &str {
-        "brigid-llm"
-    }
-
-    async fn stream_complete(&self, _request: LLMRequest) -> llm_kernel::error::Result<LLMStream> {
-        Err(llm_kernel::error::KernelError::LlmApi(
-            "streaming is not supported by this client".into(),
-        ))
-    }
-}
+use llm_kernel::llm::{CacheClient, ModelConfig, OpenAIClient};
+use llm_kernel::store::kv::SqliteKvStore;
+use std::sync::Arc;
 
 /// Success.
 const EXIT_OK: u8 = 0;
@@ -94,9 +62,6 @@ fn default_max_llm_calls(max_abstractions: usize, review_chapters: bool) -> u32 
     }
 }
 
-/// Default cache size limit in megabytes.
-const DEFAULT_CACHE_SIZE_LIMIT_MB: usize = 100;
-
 /// Check whether the `BRIGID_NO_CACHE` env var disables the cache.
 fn cache_is_disabled(vars: &BTreeMap<String, String>) -> bool {
     vars.get("BRIGID_NO_CACHE")
@@ -128,28 +93,30 @@ fn resolve_cache_root(
     Some(base.join("brigid").join("llm-cache"))
 }
 
-/// Build a [`brigid_llm::DiskCache`] from the environment and run config, or
-/// `None` when the cache is disabled via `BRIGID_NO_CACHE=1`.
-fn build_llm_cache(cfg: &RunConfig) -> Option<brigid_llm::DiskCache> {
+/// Build a [`SqliteKvStore`] for LLM response caching from the environment and
+/// run config, or `None` when the cache is disabled via `BRIGID_NO_CACHE=1`.
+fn build_llm_cache(cfg: &RunConfig) -> Option<Arc<SqliteKvStore>> {
     let env_map: BTreeMap<String, String> = env::vars().collect();
     if cache_is_disabled(&env_map) {
         return None;
     }
     let root = resolve_cache_root(&env_map, cfg.cache_dir.as_deref())?;
-    let limit_mb = cfg
-        .cache_size_limit_mb
-        .unwrap_or(DEFAULT_CACHE_SIZE_LIMIT_MB);
-    Some(brigid_llm::DiskCache::with_size_limit(root, limit_mb))
+    let _ = std::fs::create_dir_all(&root);
+    let store = SqliteKvStore::open(&root.join("cache.sqlite"))
+        .map_err(|e| {
+            eprintln!(
+                "warning: failed to open LLM cache at {}: {e}",
+                root.display()
+            )
+        })
+        .ok()?;
+    Some(Arc::new(store))
 }
 
-/// Print cache statistics to stderr.
-fn print_cache_stats(cache: Option<&brigid_llm::DiskCache>) {
-    if let Some(cache) = cache {
-        let stats = cache.stats();
-        eprintln!(
-            "cache: hits={} misses={} evictions={} size={}B",
-            stats.hits, stats.misses, stats.evictions, stats.current_size_bytes
-        );
+/// Print cache status to stderr.
+fn print_cache_stats(cache: Option<&Arc<SqliteKvStore>>) {
+    if cache.is_some() {
+        eprintln!("cache: enabled (sqlite kv-store)");
     }
 }
 
@@ -169,8 +136,8 @@ fn force_mock_client() -> bool {
     is_force_mock_enabled(env::var("BRIGID_FORCE_MOCK").ok().as_deref())
 }
 
-/// Build a live [`brigid_llm::LlmClient`] from the environment and optional
-/// `RunConfig` provider/model overrides, optionally with a disk cache.
+/// Build a live [`LlmClient`] from the environment and optional `RunConfig`
+/// provider/model overrides, optionally with a disk cache.
 ///
 /// `provider` and `model` come from the resolved [`brigid_core::RunConfig`]
 /// (CLI / `brigid.toml` / `BRIGID_PROVIDER` / `BRIGID_MODEL`). When set they
@@ -180,25 +147,101 @@ fn force_mock_client() -> bool {
 /// `true`. Missing credentials or invalid client configuration are surfaced as
 /// errors so a successful command never emits placeholder output by accident.
 fn build_real_llm_client(
-    cache: Option<brigid_llm::DiskCache>,
+    cache: Option<Arc<SqliteKvStore>>,
     custom_hosts: &[String],
     provider: Option<&str>,
     model: Option<&str>,
-) -> Result<Box<dyn LlmClient>, brigid_llm::LlmError> {
+) -> Result<Box<dyn LlmClient>, String> {
+    use brigid_pipeline::llm::{nonempty_env, nonempty_env_or, validate_llm_base_url};
+
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    let config = brigid_llm::OpenAiClientConfig::from_env_with(provider, model)?;
-    let config = custom_hosts
-        .iter()
-        .fold(config, |acc, h| acc.with_allowed_host(h));
-    let client = brigid_llm::OpenAiCompatibleClient::new(config)?;
-    let client = if let Some(cache) = cache {
-        client.with_cache(cache)
-    } else {
-        client
+
+    // --- Provider resolution (ADR 0017) ---
+    let provider_hint = provider
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| nonempty_env("BRIGID_PROVIDER"));
+
+    let (default_base_url, default_model, api_key_env) = match provider_hint
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("deepseek") => (
+            "https://api.deepseek.com/v1",
+            Some("deepseek-chat"),
+            "DEEPSEEK_API_KEY",
+        ),
+        Some("openai") => ("https://api.openai.com/v1", None, "OPENAI_API_KEY"),
+        Some("openrouter") => ("https://openrouter.ai/api/v1", None, "OPENROUTER_API_KEY"),
+        _ => {
+            // Unset or custom — infer from base URL later.
+            ("https://api.deepseek.com/v1", None, "")
+        }
     };
-    Ok(Box::new(LegacyLlmClient(Box::new(client))))
+
+    let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", default_base_url);
+
+    // Validate the base URL host before constructing the client.
+    validate_llm_base_url(&base_url).map_err(|e| e.to_string())?;
+
+    // Re-infer provider from base URL when no explicit provider was given.
+    let (api_key_env, default_model) = if provider_hint.is_none()
+        || provider_hint
+            .as_deref()
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+    {
+        let lower = base_url.to_ascii_lowercase();
+        if lower.contains("openrouter") {
+            ("OPENROUTER_API_KEY", None)
+        } else if lower.contains("openai") {
+            ("OPENAI_API_KEY", None)
+        } else {
+            ("DEEPSEEK_API_KEY", Some("deepseek-chat"))
+        }
+    } else {
+        (api_key_env, default_model)
+    };
+
+    // --- Model resolution ---
+    let model = model
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| nonempty_env("BRIGID_LLM_MODEL"))
+        .or_else(|| default_model.map(|s| s.to_string()))
+        .ok_or_else(|| {
+            "provider requires an explicit model (set model in brigid.toml, BRIGID_MODEL, or BRIGID_LLM_MODEL)"
+                .to_string()
+        })?;
+
+    // --- API key resolution: BRIGID_LLM_API_KEY → provider-specific key ---
+    let api_key_env = if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
+        "BRIGID_LLM_API_KEY"
+    } else {
+        api_key_env
+    };
+
+    let config = ModelConfig {
+        provider: provider_hint.clone().unwrap_or_else(|| "deepseek".into()),
+        model,
+        api_key_env: api_key_env.to_string(),
+        base_url: Some(base_url),
+        temperature: 0.7,
+        max_tokens: Some(4096),
+    };
+
+    let client = OpenAIClient::new(&config).map_err(|e| e.to_string())?;
+
+    if let Some(store) = cache {
+        Ok(Box::new(CacheClient::new(client, store)))
+    } else {
+        Ok(Box::new(client))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -234,19 +277,6 @@ const PLACEHOLDER_SETUP: &str = "# Setup: project\n\n## Prerequisites\n\nInstall
 const PLACEHOLDER_OVERVIEW: &str = "# Architecture Overview\n\nThis project has multiple \
     modules.\n";
 
-/// Build a typed [`brigid_llm::LlmError`] for the given `BRIGID_LLM_MOCK_FAIL`
-/// fault-injection keyword.  Extracted as a pure function so it can be unit
-/// tested without mutating the process environment.
-fn legacy_llm_error(err: brigid_llm::LlmError) -> LlmError {
-    match err {
-        brigid_llm::LlmError::Timeout => LlmError::Timeout,
-        brigid_llm::LlmError::RateLimit { retry_after } => LlmError::RateLimit { retry_after },
-        brigid_llm::LlmError::Provider { status, body } => LlmError::Provider { status, body },
-        brigid_llm::LlmError::Parse { message } => LlmError::parse(message),
-        brigid_llm::LlmError::Network { message } => LlmError::network(message),
-    }
-}
-
 fn mock_fail_error(kind: &str) -> LlmError {
     match kind {
         "timeout" => LlmError::Timeout,
@@ -260,7 +290,7 @@ fn mock_fail_error(kind: &str) -> LlmError {
     }
 }
 
-/// Build a mock [`brigid_llm::LlmClient`] from a pre-assembled response sequence.
+/// Build a mock [`LlmClient`] from a pre-assembled response sequence.
 ///
 /// In `debug_assertions` builds, the `BRIGID_LLM_MOCK_FAIL` environment variable
 /// can inject a typed error on the first call instead of returning placeholder
@@ -720,7 +750,7 @@ fn fmt_duration(d: std::time::Duration) -> String {
 /// cache stats, and checkpoint path.
 fn print_verbose_summary(
     progress: &brigid_core::ProgressTracker,
-    cache: Option<&brigid_llm::DiskCache>,
+    cache: Option<&Arc<SqliteKvStore>>,
     checkpoint_dir: &Path,
 ) {
     let snap = progress.snapshot();
@@ -734,15 +764,8 @@ fn print_verbose_summary(
             &format!("stage {}: {}", timing.stage, fmt_duration(timing.elapsed)),
         );
     }
-    if let Some(cache) = cache {
-        let stats = cache.stats();
-        verbose_msg(
-            Verbosity::Verbose,
-            &format!(
-                "cache: hits={} misses={} evictions={} size={}B",
-                stats.hits, stats.misses, stats.evictions, stats.current_size_bytes
-            ),
-        );
+    if cache.is_some() {
+        verbose_msg(Verbosity::Verbose, "cache: enabled (sqlite kv-store)");
     }
     verbose_msg(
         Verbosity::Verbose,
@@ -2065,7 +2088,7 @@ fn cmd_resume(checkpoint: &Path, current_cfg: &RunConfig, format: OutputFormat) 
 ///
 /// This is a thin CLI wrapper around
 /// `brigid_pipeline::identify_with_cancellation`. The LLM client is a
-/// `brigid_llm::MockClient` with a canned response when no API key is
+/// `brigid_pipeline::MockClient` with a canned response when no API key is
 /// present — this lets the subcommand be exercised in tests without network
 /// access. A real provider client will be wired in M4.
 fn cmd_identify(

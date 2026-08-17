@@ -10,10 +10,9 @@ The `brigid` command-line tool: deconstruct a codebase into an AI-generated tuto
 
 This is the only binary crate in the `brigid` workspace. The business logic
 lives in the companion library crates (`brigid-core`, `brigid-crawl`,
-`brigid-pipeline`). The pipeline uses the [`llm-kernel`](https://crates.io/crates/llm-kernel)
-interface for LLM calls, while the CLI still adapts the deprecated `brigid-llm`
-crate for live provider calls (compatibility bridge) until Phase 4 completes
-the full migration to `llm-kernel`. `brigid-cli` is a thin wrapper that parses
+`brigid-pipeline`). Both the pipeline and the CLI use
+[`llm-kernel`](https://crates.io/crates/llm-kernel) directly for LLM calls
+(`OpenAIClient`, `CacheClient`). `brigid-cli` is a thin wrapper that parses
 arguments, wires the pipeline, and maps errors to exit codes.
 
 ---
