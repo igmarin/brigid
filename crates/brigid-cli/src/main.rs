@@ -2778,48 +2778,7 @@ fn cmd_generate(
                 if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
                     eprintln!("warning: generate: checkpoint save failed: {save_err}");
                 }
-                let code = match &e {
-                    brigid_pipeline::GenerateError::Budget(_)
-                    | brigid_pipeline::GenerateError::Identify(
-                        brigid_pipeline::identify::IdentifyError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Relationships(
-                        brigid_pipeline::relationships::RelationshipsError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Order(
-                        brigid_pipeline::order::OrderError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Chapters(
-                        brigid_pipeline::chapters::ChaptersError::Budget(_),
-                    )
-                    | brigid_pipeline::GenerateError::Review(
-                        brigid_pipeline::review::ReviewError::Budget(_),
-                    ) => EXIT_BUDGET,
-                    brigid_pipeline::GenerateError::Identify(
-                        brigid_pipeline::identify::IdentifyError::Llm(_)
-                        | brigid_pipeline::identify::IdentifyError::LlmBatch { .. },
-                    )
-                    | brigid_pipeline::GenerateError::Relationships(
-                        brigid_pipeline::relationships::RelationshipsError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Order(
-                        brigid_pipeline::order::OrderError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Chapters(
-                        brigid_pipeline::chapters::ChaptersError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Review(
-                        brigid_pipeline::review::ReviewError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Setup(
-                        brigid_pipeline::setup_guide::SetupGuideError::Llm(_),
-                    )
-                    | brigid_pipeline::GenerateError::Overview(
-                        brigid_pipeline::overview::OverviewError::Llm(_),
-                    ) => EXIT_LLM,
-                    brigid_pipeline::GenerateError::Config(_) => EXIT_CONFIG,
-                    _ => EXIT_FAIL,
-                };
+                let code = stage_exit_code(&e);
                 print_error("generate failed", &e);
                 ExitCode::from(code)
             }
@@ -3164,8 +3123,12 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
         | brigid_pipeline::GenerateError::Chapters(
             brigid_pipeline::chapters::ChaptersError::Budget(_),
         )
+        | brigid_pipeline::GenerateError::Review(brigid_pipeline::review::ReviewError::Budget(_))
         | brigid_pipeline::GenerateError::Setup(
             brigid_pipeline::setup_guide::SetupGuideError::Budget(_),
+        )
+        | brigid_pipeline::GenerateError::Overview(
+            brigid_pipeline::overview::OverviewError::Budget(_),
         ) => EXIT_BUDGET,
         brigid_pipeline::GenerateError::Identify(
             brigid_pipeline::identify::IdentifyError::Llm(_)
@@ -3178,6 +3141,7 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
         | brigid_pipeline::GenerateError::Chapters(
             brigid_pipeline::chapters::ChaptersError::Llm(_),
         )
+        | brigid_pipeline::GenerateError::Review(brigid_pipeline::review::ReviewError::Llm(_))
         | brigid_pipeline::GenerateError::Setup(
             brigid_pipeline::setup_guide::SetupGuideError::Llm(_),
         )

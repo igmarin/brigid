@@ -745,10 +745,11 @@ mod tests {
     /// (NotFound is treated as an empty cache, not an error).
     #[tokio::test]
     async fn enforce_size_limit_missing_root_returns_ok_zero() {
-        let root = temp_root();
-        // The directory exists (tempfile creates it) but is empty — treat
-        // the same as a missing root (Ok(0)).
-        let cache = DiskCache::with_size_limit_bytes(root.path(), 10);
+        // Use a non-existent child path so enforce_size_limit hits the
+        // NotFound branch (tempfile::tempdir() creates its own dir).
+        let parent = temp_root();
+        let missing = parent.path().join("does-not-exist");
+        let cache = DiskCache::with_size_limit_bytes(&missing, 10);
 
         let evicted = cache.enforce_size_limit().await.expect("should be Ok");
         assert_eq!(evicted, 0, "missing root should return Ok(0)");

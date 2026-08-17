@@ -19,20 +19,25 @@ pure for easy unit testing.
 graph TD
     CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
     Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
-    LLM["llm-kernel (pipeline)<br/>brigid-llm deprecated"]
+    LLMKernel["llm-kernel<br/>(pipeline LLM interface)"]
+    LegacyLLM["brigid-llm<br/>(DEPRECATED: CLI compat bridge)"]
     Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 
     CLI --> Pipeline
-    CLI --> LLM
+    CLI --> LegacyLLM
     CLI --> Crawl
     CLI --> Core
-    Pipeline --> LLM
+    Pipeline --> LLMKernel
     Pipeline --> Crawl
     Pipeline --> Core
-    LLM --> Core
+    LegacyLLM --> Core
     Crawl --> Core
 ```
+
+The pipeline uses the `llm-kernel` interface directly. The CLI still adapts the
+deprecated `brigid-llm` crate for live provider calls (compatibility bridge)
+until Phase 4 completes the full migration to `llm-kernel`.
 
 The layering rule: **library crates perform no CLI or main-binary logic**.
 `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and

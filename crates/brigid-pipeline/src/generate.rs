@@ -745,6 +745,17 @@ pub async fn run_generate_each_app(
         )
         .await;
 
+        // Handle cancellation first — even if checkpoint persistence fails
+        // below, a cancellation must return Partial, not continue the loop.
+        if let Ok(GenerateOutcome::Cancelled { .. }) = &result {
+            // Best-effort persist before returning.
+            let _ = store.persist_llm_calls(&mut cp, &records, &progress);
+            return Ok(EachAppOutcome::Partial {
+                summaries,
+                cancelled_app: module.as_str().to_string(),
+            });
+        }
+
         if let Err(e) = store.persist_llm_calls(&mut cp, &records, &progress) {
             summaries.push(EachAppSummary {
                 app: module.as_str().to_string(),
@@ -767,10 +778,8 @@ pub async fn run_generate_each_app(
                 });
             }
             Ok(GenerateOutcome::Cancelled { .. }) => {
-                return Ok(EachAppOutcome::Partial {
-                    summaries,
-                    cancelled_app: module.as_str().to_string(),
-                });
+                // Already handled above — unreachable but the compiler needs it.
+                unreachable!("cancelled outcome handled before persistence")
             }
             Err(e) => {
                 summaries.push(EachAppSummary {

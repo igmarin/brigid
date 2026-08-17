@@ -23,11 +23,23 @@
 #![deny(missing_docs)]
 #![allow(deprecated)]
 
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::CacheClient instead")]
 pub mod cache;
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::LLMClient instead")]
 pub mod client;
+#[deprecated(
+    since = "2.0.0",
+    note = "use brigid_pipeline::llm::bounded_complete or llm-kernel client wrappers"
+)]
 pub mod concurrency;
+#[deprecated(since = "2.0.0", note = "use llm_kernel::error::KernelError instead")]
 pub mod error;
+#[deprecated(
+    since = "2.0.0",
+    note = "use brigid_pipeline::llm::MockClient (implements llm_kernel::llm::LLMClient)"
+)]
 pub mod mock;
+#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::OpenAIClient instead")]
 pub mod openai_client;
 
 #[deprecated(

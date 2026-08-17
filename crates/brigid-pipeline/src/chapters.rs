@@ -649,12 +649,12 @@ async fn generate_chapters_internal(
     };
 
     let gen_count = positions_to_generate.len();
+    progress.set_stage("chapters");
     if gen_count > 0 {
         progress
             .reserve_llm_calls(gen_count as u32)
             .map_err(ChaptersError::from)?;
     }
-    progress.set_stage("chapters");
 
     if gen_count == 0 {
         let mut chapters: Vec<Chapter> = existing
