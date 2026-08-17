@@ -58,7 +58,8 @@ A stable JSON object that contains everything needed to resume the pipeline:
   "metadata": {
     "created_at": "2026-07-23T14:00:00Z",
     "updated_at": "2026-07-23T14:05:00Z",
-    "source_revision": "git-sha-or-url"
+    "source_revision": "git-sha-or-url",
+    "llm_calls_used": 0
   }
 }
 ```
@@ -82,6 +83,10 @@ Key rules:
     therefore distinct from explicitly present default-valued fields. Callers
     who want hash stability across omitted defaults must normalize the config
     to include defaults before hashing.
+- `metadata.llm_calls_used` records the total number of LLM calls already
+  consumed by the pipeline. It is written after every stage and used to enforce
+  the configured `max_llm_calls` limit across resume and across per-stage
+  subcommands. Older checkpoints that omit this field are treated as `0`.
 - `manifest` is a pointer object (not a plain string) with `path` (relative to
   the checkpoint directory), `sha256` (hash of the compressed manifest file
   bytes), and `size` (compressed file size in bytes).

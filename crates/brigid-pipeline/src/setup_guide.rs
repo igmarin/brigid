@@ -14,9 +14,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use brigid_core::{
-    CheckpointV1, SetupGuide, StageId, redact_content, sanitize_markdown_mermaid_blocks,
+    CheckpointV1, ProgressTracker, SetupGuide, StageId, redact_content,
+    sanitize_markdown_mermaid_blocks,
 };
-use crate::llm::{complete_text, LlmClient};
+use crate::llm::{LlmClient, bounded_complete_with_budget};
 use serde_json::json;
 
 use crate::checkpoint_store::{CheckpointStore, CheckpointStoreError};
@@ -45,6 +46,9 @@ pub enum SetupGuideError {
     /// A checkpoint save/load failed during the setup stage.
     #[error("checkpoint error during setup: {0}")]
     Checkpoint(#[from] CheckpointStoreError),
+    /// The configured LLM call budget was exceeded.
+    #[error("budget exceeded: {0}")]
+    Budget(#[from] brigid_core::BudgetExceeded),
 }
 
 /// Decide whether the setup guide stage should run.
@@ -102,6 +106,7 @@ pub async fn write_setup_guide(
     client: &dyn LlmClient,
     renderer: &PromptRenderer,
     input: &WriteSetupGuideInput<'_>,
+    progress: &mut ProgressTracker,
 ) -> Result<SetupGuide, SetupGuideError> {
     let redacted_context = redact_content(input.context);
     let gaps_text = input
@@ -120,7 +125,10 @@ pub async fn write_setup_guide(
     });
 
     let prompt = renderer.render(PromptId::WriteSetupGuide, &context)?;
-    let response = complete_text(client, &prompt).await?;
+    let mut results = bounded_complete_with_budget(client, vec![prompt], 1, progress).await?;
+    let response = results
+        .pop()
+        .ok_or(SetupGuideError::EmptyOutput)??;
 
     let trimmed = response.trim();
     if trimmed.is_empty() {
@@ -154,6 +162,7 @@ pub async fn write_setup_guide_and_checkpoint(
     store: &CheckpointStore,
     checkpoint: &mut CheckpointV1,
     input: &WriteSetupGuideInput<'_>,
+    progress: &mut ProgressTracker,
 ) -> Result<SetupGuide, SetupGuideError> {
     if store.is_stage_complete_with_files(checkpoint, StageId::Setup)? {
         if let Some(existing) = store.read_setup_guide(&store.dir, checkpoint)? {
@@ -161,7 +170,7 @@ pub async fn write_setup_guide_and_checkpoint(
         }
     }
 
-    let guide = write_setup_guide(client, renderer, input).await?;
+    let guide = write_setup_guide(client, renderer, input, progress).await?;
 
     let entry = store.write_setup_guide(&store.dir, &guide)?;
     checkpoint.mark_stage_complete(StageId::Setup, now_iso8601_utc());
@@ -201,7 +210,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::checkpoint_store::records_from_files;
-    use brigid_core::{RunConfig, StageId};
+    use brigid_core::{ProgressTracker, RunConfig, StageId};
     use crate::llm::{LlmClient, LlmError, MockClient};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -313,7 +322,7 @@ mod tests {
         let client = MockClient::new(canned_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README content here", &gaps);
-        let guide = write_setup_guide(&client, &renderer, &input)
+        let guide = write_setup_guide(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("happy path should succeed");
         assert!(guide.markdown.contains("# Setup: my-project"));
@@ -329,7 +338,7 @@ mod tests {
         let client = MockClient::new(canned_markdown_with_mermaid());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README", &gaps);
-        let guide = write_setup_guide(&client, &renderer, &input)
+        let guide = write_setup_guide(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert!(!guide.markdown.contains('"'));
@@ -381,7 +390,7 @@ mod tests {
             lang: "English",
             forced: false,
         };
-        let _ = write_setup_guide(&client, &renderer, &input)
+        let _ = write_setup_guide(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         let prompt = captured.lock().unwrap().clone();
@@ -396,7 +405,7 @@ mod tests {
         let client = MockClient::new("   \n  \n");
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README", &gaps);
-        let err = write_setup_guide(&client, &renderer, &input)
+        let err = write_setup_guide(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("empty output should error");
         assert!(matches!(err, SetupGuideError::EmptyOutput), "got: {err:?}");
@@ -408,7 +417,7 @@ mod tests {
         let client = MockClient::new("ignored").fail_on(0, LlmError::Timeout);
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README", &gaps);
-        let err = write_setup_guide(&client, &renderer, &input)
+        let err = write_setup_guide(&client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect_err("llm failure should propagate");
         assert!(
@@ -426,7 +435,7 @@ mod tests {
         let client = MockClient::new(canned_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README content", &gaps);
-        let guide = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input)
+        let guide = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
             .await
             .expect("should succeed");
         assert!(guide.markdown.contains("# Setup: my-project"));
@@ -447,16 +456,23 @@ mod tests {
         let client = MockClient::new(canned_markdown());
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README content", &gaps);
-        let first = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input)
+        let first = write_setup_guide_and_checkpoint(&client, &renderer, &store, &mut cp, &input, &mut ProgressTracker::new(10))
             .await
             .expect("first run should succeed");
         assert_eq!(client.call_count(), 1);
 
         let second_client = MockClient::new("SHOULD NOT BE CALLED");
         let second =
-            write_setup_guide_and_checkpoint(&second_client, &renderer, &store, &mut cp, &input)
-                .await
-                .expect("resume should succeed");
+            write_setup_guide_and_checkpoint(
+                &second_client,
+                &renderer,
+                &store,
+                &mut cp,
+                &input,
+                &mut ProgressTracker::new(10),
+            )
+            .await
+            .expect("resume should succeed");
         assert_eq!(second_client.call_count(), 0);
         assert_eq!(second.markdown, first.markdown);
         let _ = fs::remove_dir_all(&dir);
@@ -468,7 +484,7 @@ mod tests {
         let client: Box<dyn LlmClient> = Box::new(MockClient::new(canned_markdown()));
         let renderer = PromptRenderer::new().unwrap();
         let input = sample_input("README", &gaps);
-        let guide = write_setup_guide(&*client, &renderer, &input)
+        let guide = write_setup_guide(&*client, &renderer, &input, &mut ProgressTracker::new(10))
             .await
             .expect("dyn client should work");
         assert!(guide.markdown.contains("# Setup: my-project"));

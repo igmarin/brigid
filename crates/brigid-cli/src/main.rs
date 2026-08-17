@@ -14,7 +14,8 @@ use std::process::ExitCode;
 
 use brigid_core::{
     ChapterSummary, ChaptersOutput, CombineOutput, DEFAULT_EVAL_PASS_THRESHOLD, ModuleKey,
-    OverviewOutput, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats, StageStatus,
+    OverviewOutput, ProgressTracker, RunConfig, SCHEMA_VERSION, SetupOutput, StageOutput, StageStats,
+    StageStatus,
     TutorialFile, config_from_env_map, current_git_head, custom_host_warning, evaluate_tutorial,
     parse_toml_config, parse_yaml_config, redact_content, resolve_config,
     validate_config_for_check,
@@ -1175,6 +1176,7 @@ fn main() -> ExitCode {
                 &language,
                 &diagram_level,
                 format,
+                cfg.max_llm_calls,
             )
         }
         Commands::Setup {
@@ -2551,7 +2553,7 @@ fn cmd_generate(
 
     let store = CheckpointStore::new(checkpoint_dir);
 
-    let (mut checkpoint, existing_files) = match store.load() {
+    let (mut checkpoint, files) = match store.load() {
         Ok((meta, files)) => {
             // Checkpoint collision detection (issue #266): if the checkpoint
             // was created for a different --dir, discard it and start fresh.
@@ -2619,16 +2621,12 @@ fn cmd_generate(
     if !checkpoint.is_stage_complete(brigid_core::StageId::DryRun) {
         checkpoint.mark_stage_complete(brigid_core::StageId::DryRun, "0Z");
     }
-    if let Err(e) = store.save(checkpoint.clone(), &existing_files) {
+    if let Err(e) = store.save(checkpoint.clone(), &files) {
         eprintln!("error: generate: checkpoint save failed: {e}");
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    let mut progress = brigid_core::ProgressTracker::new(
-        run_config
-            .max_llm_calls
-            .unwrap_or(brigid_core::DEFAULT_MAX_LLM_CALLS),
-    );
+    let mut progress = ProgressTracker::from_config_and_checkpoint(run_config.max_llm_calls, &checkpoint);
 
     let generate_start = std::time::Instant::now();
 
@@ -2703,6 +2701,11 @@ fn cmd_generate(
 
         match outcome {
             Ok(brigid_pipeline::GenerateOutcome::Completed(combined)) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: generate: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
+
                 print_progress(
                     verbosity,
                     &format!(
@@ -2730,7 +2733,7 @@ fn cmd_generate(
                             llm_calls: t.llm_calls,
                         })
                         .collect();
-                    let total_llm_calls = progress.snapshot().llm_calls_used;
+                    let total_llm_calls = checkpoint.metadata.llm_calls_used;
                     let elapsed_ms = generate_start.elapsed().as_millis() as u64;
                     let data = brigid_core::GenerateOutput {
                         stages,
@@ -2758,6 +2761,9 @@ fn cmd_generate(
                 ExitCode::from(EXIT_OK)
             }
             Ok(brigid_pipeline::GenerateOutcome::Cancelled { checkpoint_path }) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: generate: checkpoint save failed: {e}");
+                }
                 print_progress(verbosity, "generate: cancelled");
                 print_progress(
                     verbosity,
@@ -2769,6 +2775,9 @@ fn cmd_generate(
                 ExitCode::from(EXIT_PARTIAL_CHECKPOINT)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: generate: checkpoint save failed: {save_err}");
+                }
                 let code = match &e {
                     brigid_pipeline::GenerateError::Budget(_)
                     | brigid_pipeline::GenerateError::Identify(
@@ -3157,6 +3166,9 @@ fn stage_exit_code(err: &brigid_pipeline::GenerateError) -> u8 {
         | brigid_pipeline::GenerateError::Order(brigid_pipeline::order::OrderError::Budget(_))
         | brigid_pipeline::GenerateError::Chapters(
             brigid_pipeline::chapters::ChaptersError::Budget(_),
+        )
+        | brigid_pipeline::GenerateError::Setup(
+            brigid_pipeline::setup_guide::SetupGuideError::Budget(_),
         ) => EXIT_BUDGET,
         brigid_pipeline::GenerateError::Identify(
             brigid_pipeline::identify::IdentifyError::Llm(_)
@@ -3207,6 +3219,7 @@ fn cmd_relationships(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_rel =
         "```yaml\nsummary: \"Placeholder project summary.\"\nrelationships: []\n```\n";
@@ -3240,10 +3253,15 @@ fn cmd_relationships(
             &file_contents,
             &project_name,
             &language_instruction,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: relationships: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Text => {
                         eprintln!(
@@ -3273,10 +3291,12 @@ fn cmd_relationships(
                         print_json(&out);
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: relationships: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: relationships failed: {e}");
                 ExitCode::from(code)
@@ -3294,6 +3314,7 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_order = "```yaml\n- 0\n```\n";
     let client = make_stage_client(vec![placeholder_order.to_string()], placeholder_order);
@@ -3325,10 +3346,15 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
             &mut checkpoint,
             &project_name,
             &language_instruction,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: order: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Text => {
                         eprintln!(
@@ -3370,10 +3396,12 @@ fn cmd_order(dir: &Path, checkpoint_dir: &Path, cfg: &RunConfig, format: OutputF
                         print_json(&out);
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: order: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: order failed: {e}");
                 ExitCode::from(code)
@@ -3390,6 +3418,7 @@ fn cmd_chapters(
     language: &str,
     diagram_level: &str,
     format: OutputFormat,
+    max_llm_calls: Option<u32>,
 ) -> ExitCode {
     let diagram_level_parsed = match brigid_pipeline::DiagramLevel::parse(diagram_level) {
         Some(dl) => dl,
@@ -3423,6 +3452,7 @@ fn cmd_chapters(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(language);
+    let mut progress = ProgressTracker::from_config_and_checkpoint(max_llm_calls, &checkpoint);
 
     let placeholder_chapter = "# Chapter 1: Placeholder\n\n## Motivation\n- Need placeholder\n\n## Core idea\nPlaceholder is key.\n\n## Summary\nWe learned about placeholder.\n";
     let identify = match brigid_pipeline::identify_checkpoint::load_identify_result(&checkpoint) {
@@ -3469,10 +3499,15 @@ fn cmd_chapters(
             language,
             diagram_level_parsed,
             brigid_pipeline::DEFAULT_CHAPTERS_CONCURRENCY,
+            &mut progress,
         )
         .await
         {
             Ok(result) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: chapters: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let summaries: Vec<ChapterSummary> = result
@@ -3510,10 +3545,12 @@ fn cmd_chapters(
                         eprintln!("output: {}", output_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: chapters: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: chapters failed: {e}");
                 ExitCode::from(code)
@@ -3547,6 +3584,7 @@ fn cmd_setup(
     };
 
     let lang = cfg.language.as_deref().unwrap_or("en");
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -3568,10 +3606,15 @@ fn cmd_setup(
             dir,
             force,
             lang,
+            &mut progress,
         )
         .await
         {
             Ok(guide) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: setup: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let out = StageOutput {
@@ -3592,10 +3635,12 @@ fn cmd_setup(
                         eprintln!("checkpoint: {}", checkpoint_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: setup: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: setup failed: {e}");
                 ExitCode::from(code)
@@ -3631,6 +3676,7 @@ fn cmd_overview(
 
     let project_name = stage_project_name(dir);
     let language_instruction = stage_language_instruction(cfg.language.as_deref().unwrap_or("en"));
+    let mut progress = ProgressTracker::from_config_and_checkpoint(cfg.max_llm_calls, &checkpoint);
 
     let placeholder_overview = "# Architecture Overview\n\nThis project has multiple modules.\n";
     let client = make_stage_client(vec![placeholder_overview.to_string()], placeholder_overview);
@@ -3663,10 +3709,15 @@ fn cmd_overview(
             &project_name,
             &language_instruction,
             &modules,
+            &mut progress,
         )
         .await
         {
             Ok(overview) => {
+                if let Err(e) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("error: overview: checkpoint save failed: {e}");
+                    return ExitCode::from(EXIT_CONFIG);
+                }
                 match format {
                     OutputFormat::Json => {
                         let out = StageOutput {
@@ -3687,10 +3738,12 @@ fn cmd_overview(
                         eprintln!("checkpoint: {}", checkpoint_dir.display());
                     }
                 }
-                let _ = store.save(checkpoint, &files);
                 ExitCode::from(EXIT_OK)
             }
             Err(e) => {
+                if let Err(save_err) = store.persist_llm_calls(&mut checkpoint, &files, &progress) {
+                    eprintln!("warning: overview: checkpoint save failed: {save_err}");
+                }
                 let code = stage_exit_code(&e);
                 eprintln!("error: overview failed: {e}");
                 ExitCode::from(code)
