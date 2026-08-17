@@ -789,18 +789,15 @@ fn truncate_body(body: &str) -> String {
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn temp_root() -> PathBuf {
-        let n = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("brigid-llm-openai-{n}"))
+    /// Create a temp directory for cache tests.
+    ///
+    /// Uses `tempfile::tempdir()` so the directory is auto-cleaned on drop
+    /// (even on panic), preventing leaked directories under parallel test load.
+    fn temp_root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create temp cache dir")
     }
 
     /// Build a client pointed at the given mock server with tiny backoff.
@@ -1046,7 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn cache_hit_returns_without_http() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let input = CacheKeyInput {
             prompt: "cached prompt",
             model: "deepseek-chat",
@@ -1071,13 +1068,12 @@ mod tests {
             .with_cache(cache);
         let out = client.complete("cached prompt").await.unwrap();
         assert_eq!(out, "cached response");
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
     async fn cache_store_on_success() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -1104,7 +1100,6 @@ mod tests {
             cache.get_for(&input).await.unwrap().as_deref(),
             Some("fresh response")
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -1113,7 +1108,7 @@ mod tests {
         // client configured with a different cap — a truncated response
         // cached before a cap increase would otherwise poison retries.
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let poisoned = CacheKeyInput {
             prompt: "same prompt",
             model: "deepseek-chat",
@@ -1138,7 +1133,6 @@ mod tests {
             .with_cache(cache);
         let out = client.complete("same prompt").await.unwrap();
         assert_eq!(out, "full response");
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -1736,7 +1730,7 @@ mod tests {
     #[tokio::test]
     async fn openrouter_cache_key_uses_openrouter_provider() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -1771,7 +1765,6 @@ mod tests {
             extras: Some("mt=8192"),
         };
         assert!(cache.get_for(&wrong).await.unwrap().is_none());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

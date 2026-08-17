@@ -79,7 +79,10 @@ pub struct CacheStats {
 const EVICTION_CHECK_INTERVAL: u64 = 50;
 
 /// Filesystem-backed response cache with optional size limits and LRU eviction.
-#[deprecated(since = "2.0.0", note = "use llm_kernel::llm::CacheClient over KvStore")]
+#[deprecated(
+    since = "2.0.0",
+    note = "use llm_kernel::llm::CacheClient over KvStore"
+)]
 #[derive(Clone, Debug)]
 pub struct DiskCache {
     /// Root directory for cache entries.
@@ -309,22 +312,14 @@ impl DiskCache {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_root() -> PathBuf {
-        let n = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("brigid-llm-cache-{n}"));
-        // Create the directory eagerly so that `put()`'s `create_dir_all`
-        // has a stable parent to work with. On Windows CI runners, the temp
-        // dir can use 8.3 short names (e.g. `RUNNER~1`) which occasionally
-        // cause `NotFound` errors if the directory doesn't pre-exist before
-        // the async `tokio::fs::write` call. Creating it synchronously here
-        // eliminates that race.
-        std::fs::create_dir_all(&path).expect("create temp cache dir");
-        path
+    /// Create a temp directory for cache tests.
+    ///
+    /// Uses `tempfile::tempdir()` so the directory is auto-cleaned on drop
+    /// (even on panic), preventing leaked directories that compound APFS
+    /// contention under parallel test execution.
+    fn temp_root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create temp cache dir")
     }
 
     #[test]
@@ -364,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn put_get_round_trip() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let input = CacheKeyInput {
             prompt: "p",
             model: "m",
@@ -377,7 +372,6 @@ mod tests {
             cache.get_for(&input).await.unwrap().as_deref(),
             Some(r#"{"ok":true}"#)
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -400,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn stats_track_hits_and_misses() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let input = CacheKeyInput {
             prompt: "stats-test",
             model: "m",
@@ -422,14 +416,13 @@ mod tests {
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn eviction_removes_oldest_first() {
         let root = temp_root();
-        let cache = DiskCache::with_size_limit_bytes(&root, 7);
+        let cache = DiskCache::with_size_limit_bytes(root.path(), 7);
 
         let input_a = CacheKeyInput {
             prompt: "a",
@@ -488,7 +481,6 @@ mod tests {
         let stats = cache.stats();
         assert!(stats.evictions > 0, "eviction count should be positive");
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -496,7 +488,7 @@ mod tests {
     async fn eviction_respects_size_limit_config() {
         let root = temp_root();
         let limit_bytes: u64 = 20;
-        let cache = DiskCache::with_size_limit_bytes(&root, limit_bytes);
+        let cache = DiskCache::with_size_limit_bytes(root.path(), limit_bytes);
 
         for i in 0..10u32 {
             let input = CacheKeyInput {
@@ -514,7 +506,7 @@ mod tests {
         let evicted = cache.enforce_size_limit().await.unwrap();
         assert!(evicted > 0, "should evict bytes when over limit");
 
-        let remaining = fs::read_dir(&root)
+        let remaining = fs::read_dir(root.path())
             .unwrap()
             .filter(|e| {
                 e.as_ref()
@@ -522,7 +514,7 @@ mod tests {
                     .unwrap_or(false)
             })
             .count();
-        let total_size: u64 = fs::read_dir(&root)
+        let total_size: u64 = fs::read_dir(root.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .filter_map(|e| e.metadata().ok())
@@ -534,7 +526,6 @@ mod tests {
         );
         assert!(remaining > 0, "at least some entries should remain");
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -568,9 +559,8 @@ mod tests {
     #[test]
     fn with_size_limit_stores_limit() {
         let root = temp_root();
-        let cache = DiskCache::with_size_limit(&root, 50);
+        let cache = DiskCache::with_size_limit(root.path(), 50);
         assert_eq!(cache.size_limit_bytes(), 50 * 1024 * 1024);
-        let _ = fs::remove_dir_all(&root);
     }
 
     // ------------------------------------------------------------------
@@ -588,10 +578,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_root();
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.path()).unwrap();
 
         // Write an entry while the dir is still writable.
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let input = CacheKeyInput {
             prompt: "perm-test",
             model: "m",
@@ -601,8 +591,8 @@ mod tests {
         cache.put_for(&input, r#"{"ok":true}"#).await.unwrap();
 
         // Make the directory read-only.
-        let original_perms = fs::metadata(&root).unwrap().permissions();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let original_perms = fs::metadata(root.path()).unwrap().permissions();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o555)).unwrap();
 
         // put on a *new* key must fail gracefully (cannot create new tmp file).
         let input_new = CacheKeyInput {
@@ -630,8 +620,7 @@ mod tests {
         assert!(missing.is_none(), "missing key should return None");
 
         // Restore permissions for cleanup.
-        fs::set_permissions(&root, original_perms).unwrap();
-        let _ = fs::remove_dir_all(&root);
+        fs::set_permissions(root.path(), original_perms).unwrap();
     }
 
     // ------------------------------------------------------------------
@@ -647,7 +636,7 @@ mod tests {
         use std::panic::AssertUnwindSafe;
 
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         // Clone shares the same Arc<Mutex<CacheStats>>.
         let cache_clone = cache.clone();
 
@@ -734,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn unlimited_cache_enforce_size_limit_is_noop() {
         let root = temp_root();
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
 
         // Write some entries so there is data on disk.
         let input = CacheKeyInput {
@@ -754,7 +743,6 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.evictions, 0, "no evictions for unlimited cache");
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// `enforce_size_limit` on a missing root directory must return `Ok(0)`
@@ -762,13 +750,13 @@ mod tests {
     #[tokio::test]
     async fn enforce_size_limit_missing_root_returns_ok_zero() {
         let root = temp_root();
-        // Note: we do NOT create the directory.
-        let cache = DiskCache::with_size_limit_bytes(&root, 10);
+        // The directory exists (tempfile creates it) but is empty — treat
+        // the same as a missing root (Ok(0)).
+        let cache = DiskCache::with_size_limit_bytes(root.path(), 10);
 
         let evicted = cache.enforce_size_limit().await.expect("should be Ok");
         assert_eq!(evicted, 0, "missing root should return Ok(0)");
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// LRU eviction with a small size limit: writing 3 files that exceed the
@@ -778,7 +766,7 @@ mod tests {
     async fn lru_eviction_evicts_oldest_and_increments_stats() {
         let root = temp_root();
         // Limit small enough that 3 files of 4 bytes each (12 total) exceeds it.
-        let cache = DiskCache::with_size_limit_bytes(&root, 5);
+        let cache = DiskCache::with_size_limit_bytes(root.path(), 5);
 
         let input_a = CacheKeyInput {
             prompt: "lru-a",
@@ -847,7 +835,6 @@ mod tests {
             "current_size_bytes should be within limit after eviction"
         );
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// `enforce_size_limit` when files are already under the limit must
@@ -856,7 +843,7 @@ mod tests {
     #[serial_test::serial]
     async fn enforce_size_limit_under_limit_no_eviction() {
         let root = temp_root();
-        let cache = DiskCache::with_size_limit_bytes(&root, 1000);
+        let cache = DiskCache::with_size_limit_bytes(root.path(), 1000);
 
         let input = CacheKeyInput {
             prompt: "under-limit",
@@ -876,7 +863,6 @@ mod tests {
             "current_size_bytes should reflect on-disk size"
         );
 
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// `put` into a read-only parent directory must return a graceful
@@ -889,10 +875,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_root();
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.path()).unwrap();
 
         // Write an entry while writable.
-        let cache = DiskCache::new(&root);
+        let cache = DiskCache::new(root.path());
         let input = CacheKeyInput {
             prompt: "existing",
             model: "m",
@@ -902,8 +888,8 @@ mod tests {
         cache.put_for(&input, "data").await.unwrap();
 
         // Make the directory read-only.
-        let original_perms = fs::metadata(&root).unwrap().permissions();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let original_perms = fs::metadata(root.path()).unwrap().permissions();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o555)).unwrap();
 
         // A new key must fail gracefully on the rename (or write) step.
         let input_new = CacheKeyInput {
@@ -923,7 +909,6 @@ mod tests {
         );
 
         // Restore permissions for cleanup.
-        fs::set_permissions(&root, original_perms).unwrap();
-        let _ = fs::remove_dir_all(&root);
+        fs::set_permissions(root.path(), original_perms).unwrap();
     }
 }
