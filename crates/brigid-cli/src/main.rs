@@ -154,7 +154,7 @@ fn build_real_llm_client(
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    brigid_pipeline::build_live_client(cache, provider, model)
+    brigid_pipeline::build_live_client(cache, provider, model, custom_hosts)
 }
 
 // ---------------------------------------------------------------------------

@@ -58,10 +58,15 @@ pub fn nonempty_env_or(key: &str, default: impl Into<String>) -> String {
 /// `https://api.openai.com:443@evil.example/v1` are correctly parsed as
 /// targeting `evil.example`, not `api.openai.com`. URLs containing userinfo
 /// are rejected entirely (return `None`) because no legitimate LLM provider
-/// uses userinfo in its base URL.
+/// uses userinfo in its base URL. Only `http` and `https` schemes are
+/// accepted; other schemes (e.g. `ftp`) never reach credential selection.
 #[must_use]
 pub fn host_from_base_url(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
+    // Only HTTP(S) endpoints can serve an LLM API.
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
     // Reject userinfo — no legitimate LLM provider endpoint uses it, and
     // its presence is a strong signal of a credential-exfiltration attempt.
     if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -71,21 +76,59 @@ pub fn host_from_base_url(base_url: &str) -> Option<String> {
     if host.is_empty() { None } else { Some(host) }
 }
 
-/// Reject a base URL whose host is not on the default provider allowlist.
+/// Loopback hosts where cleartext HTTP is permitted (e.g. local LLM servers
+/// like Ollama). Non-loopback hosts require HTTPS.
+const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1"];
+
+/// Reject a base URL whose host is not on the allowed hosts list.
 ///
-/// Also rejects URLs with userinfo (see [`host_from_base_url`]).
+/// Also rejects URLs with userinfo (see [`host_from_base_url`]) and non-HTTP(S)
+/// schemes. HTTPS is required for all non-loopback hosts — the Authorization
+/// header must never be sent over cleartext to a remote provider.
+///
+/// `extra_hosts` extends the default allowlist with user-configured hosts
+/// from `RunConfig.allowed_hosts`.
 ///
 /// # Errors
 ///
 /// Returns [`LlmError::Network`] when the URL cannot be parsed, contains
-/// userinfo, or the host is not allowlisted.
+/// userinfo, uses a non-HTTP(S) scheme, requires HTTPS but uses HTTP, or
+/// the host is not allowlisted.
 pub fn validate_llm_base_url(base_url: &str) -> Result<(), LlmError> {
+    validate_llm_base_url_with(base_url, &[])
+}
+
+/// Like [`validate_llm_base_url`] but with an extra hosts allowlist.
+///
+/// `extra_hosts` are user-configured hosts (from `RunConfig.allowed_hosts`)
+/// that are permitted in addition to the default allowlist.
+pub fn validate_llm_base_url_with(base_url: &str, extra_hosts: &[String]) -> Result<(), LlmError> {
     let host = host_from_base_url(base_url).ok_or_else(|| {
         LlmError::network(format!(
-            "failed to parse base_url host from '{base_url}' (userinfo is rejected)"
+            "failed to parse base_url host from '{base_url}' \
+             (userinfo and non-HTTP(S) schemes are rejected)"
         ))
     })?;
-    if DEFAULT_ALLOWED_LLM_HOSTS.contains(&host.as_str()) {
+
+    // HTTPS enforcement: non-loopback hosts must use HTTPS.
+    let is_https = base_url
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("https://");
+    if !is_https && !LOOPBACK_HOSTS.contains(&host.as_str()) {
+        return Err(LlmError::network(format!(
+            "host '{host}' requires https; \
+             refusing to send Authorization header over cleartext"
+        )));
+    }
+
+    // Host allowlist: default hosts + user-configured extra hosts.
+    let allowed = DEFAULT_ALLOWED_LLM_HOSTS
+        .iter()
+        .copied()
+        .chain(extra_hosts.iter().map(String::as_str))
+        .any(|h| h == host.as_str());
+    if allowed {
         Ok(())
     } else {
         Err(LlmError::network(format!(
@@ -182,12 +225,16 @@ impl ProviderPreset {
 /// hosts (not a known provider), `BRIGID_LLM_API_KEY` is required — a
 /// provider-specific key is never sent to an unrecognized host.
 ///
+/// `extra_hosts` extends the default host allowlist with user-configured hosts
+/// from `RunConfig.allowed_hosts`. HTTPS is required for all non-loopback hosts.
+///
 /// Blank or whitespace-only env values are treated as unset.
 ///
 /// # Errors
 ///
 /// Returns a human-readable error string when:
 /// - The base URL host is not on the allowed hosts list
+/// - The base URL uses a non-HTTP(S) scheme or non-HTTPS for a non-loopback host
 /// - The base URL contains userinfo (credential exfiltration risk)
 /// - A known provider's base URL host doesn't match the expected host
 /// - A custom/localhost endpoint has no `BRIGID_LLM_API_KEY`
@@ -195,6 +242,7 @@ impl ProviderPreset {
 pub fn resolve_llm_config(
     provider_override: Option<&str>,
     model_override: Option<&str>,
+    extra_hosts: &[String],
 ) -> Result<ResolvedLlmConfig, String> {
     let provider_hint = provider_override
         .map(str::trim)
@@ -253,8 +301,9 @@ pub fn resolve_llm_config(
 
     let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", default_base_url);
 
-    // Validate the base URL host (rejects userinfo, checks allowlist).
-    validate_llm_base_url(&base_url).map_err(|e| e.to_string())?;
+    // Validate the base URL (rejects userinfo, non-HTTP(S) schemes,
+    // non-HTTPS for non-loopback, and checks allowlist + extra_hosts).
+    validate_llm_base_url_with(&base_url, extra_hosts).map_err(|e| e.to_string())?;
 
     // Security: when a known provider is selected, verify the base URL host
     // matches the expected provider host. This prevents a provider-scoped key
@@ -337,10 +386,11 @@ pub fn build_live_client(
     cache: Option<Arc<llm_kernel::store::kv::SqliteKvStore>>,
     provider: Option<&str>,
     model: Option<&str>,
+    extra_hosts: &[String],
 ) -> Result<Box<dyn LLMClient>, String> {
     use llm_kernel::llm::{CacheClient, ModelConfig, OpenAIClient, RetryClient, RetryConfig};
 
-    let resolved = resolve_llm_config(provider, model)?;
+    let resolved = resolve_llm_config(provider, model, extra_hosts)?;
 
     let config = ModelConfig {
         provider: resolved.provider.clone(),
@@ -759,7 +809,7 @@ mod resolve_tests {
     fn deepseek_default_uses_deepseek_key() {
         let vars = clear_env();
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.provider, "deepseek");
             assert_eq!(cfg.model, "deepseek-chat");
             assert_eq!(cfg.api_key_env, "DEEPSEEK_API_KEY");
@@ -774,7 +824,7 @@ mod resolve_tests {
         vars.push(("BRIGID_PROVIDER", Some("openai")));
         vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.provider, "openai");
             assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
             assert_eq!(cfg.base_url, "https://api.openai.com/v1");
@@ -788,7 +838,7 @@ mod resolve_tests {
         vars.push(("BRIGID_PROVIDER", Some("openrouter")));
         vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.provider, "openrouter");
             assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
             assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
@@ -808,7 +858,7 @@ mod resolve_tests {
         vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek-only")));
         // No OPENAI_API_KEY, no BRIGID_LLM_API_KEY
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
             // The resolved env var is OPENAI_API_KEY, NOT DEEPSEEK_API_KEY.
             // OpenAIClient::new will fail because OPENAI_API_KEY is unset,
@@ -824,7 +874,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
         vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek-only")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
         });
     }
@@ -840,7 +890,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_API_KEY", Some("sk-universal")));
         vars.push(("OPENAI_API_KEY", Some("sk-openai-specific")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
         });
     }
@@ -852,7 +902,7 @@ mod resolve_tests {
         let mut vars = clear_env();
         vars.push(("BRIGID_PROVIDER", Some("  ")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             // Blank provider → inferred as deepseek from default base URL.
             assert_eq!(cfg.provider, "deepseek");
         });
@@ -865,7 +915,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_API_KEY", Some("  ")));
         vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             // Blank BRIGID_LLM_API_KEY → falls back to DEEPSEEK_API_KEY.
             assert_eq!(cfg.api_key_env, "DEEPSEEK_API_KEY");
         });
@@ -878,7 +928,7 @@ mod resolve_tests {
         let mut vars = clear_env();
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://evil.example/v1")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(err.contains("not in the allowed"), "got: {err}");
         });
     }
@@ -892,7 +942,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://openrouter.ai/api/v1")));
         vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.provider, "openrouter");
             assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
         });
@@ -905,7 +955,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
         vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.provider, "openai");
             assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
         });
@@ -918,7 +968,7 @@ mod resolve_tests {
         let mut vars = clear_env();
         vars.push(("BRIGID_PROVIDER", Some("openai")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(err.contains("requires an explicit model"), "got: {err}");
         });
     }
@@ -930,7 +980,7 @@ mod resolve_tests {
         let mut vars = clear_env();
         vars.push(("BRIGID_LLM_MODEL", Some("env-model")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, Some("override-model")).unwrap();
+            let cfg = resolve_llm_config(None, Some("override-model"), &[]).unwrap();
             assert_eq!(cfg.model, "override-model");
         });
     }
@@ -943,7 +993,7 @@ mod resolve_tests {
         vars.push(("BRIGID_PROVIDER", Some("deepseek")));
         vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(Some("openai"), None).unwrap();
+            let cfg = resolve_llm_config(Some("openai"), None, &[]).unwrap();
             assert_eq!(cfg.provider, "openai");
             assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
         });
@@ -960,7 +1010,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("llama3")));
         vars.push(("BRIGID_LLM_API_KEY", Some("sk-local")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.base_url, "http://localhost:11434/v1");
             assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
         });
@@ -976,7 +1026,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("llama3")));
         vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(
                 err.contains("BRIGID_LLM_API_KEY"),
                 "should require BRIGID_LLM_API_KEY for localhost, got: {err}"
@@ -1010,7 +1060,7 @@ mod resolve_tests {
             Some("https://api.openai.com:443@evil.example/v1"),
         ));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(
                 err.contains("userinfo") || err.contains("failed to parse"),
                 "should reject userinfo URL, got: {err}"
@@ -1041,7 +1091,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://openrouter.ai/api/v1")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(
                 err.contains("refusing to send"),
                 "should reject provider-to-host mismatch, got: {err}"
@@ -1058,7 +1108,7 @@ mod resolve_tests {
         vars.push(("BRIGID_PROVIDER", Some("deepseek")));
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(
                 err.contains("refusing to send"),
                 "should reject provider-to-host mismatch, got: {err}"
@@ -1076,7 +1126,7 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
         vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
         with_env(&vars, || {
-            let err = resolve_llm_config(None, None).unwrap_err();
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
             assert!(
                 err.contains("refusing to send"),
                 "should reject provider-to-host mismatch, got: {err}"
@@ -1094,8 +1144,102 @@ mod resolve_tests {
         vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
         vars.push(("BRIGID_LLM_API_KEY", Some("sk-universal")));
         with_env(&vars, || {
-            let cfg = resolve_llm_config(None, None).unwrap();
+            let cfg = resolve_llm_config(None, None, &[]).unwrap();
             assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
         });
+    }
+
+    // --- Security: HTTPS enforcement ---
+
+    /// `http://api.deepseek.com/v1` must be rejected — cleartext to a
+    /// non-loopback host would expose the API key.
+    #[test]
+    #[serial]
+    fn http_rejected_for_non_loopback_host() {
+        let err = validate_llm_base_url("http://api.deepseek.com/v1").unwrap_err();
+        assert!(
+            err.to_string().contains("requires https"),
+            "should reject HTTP for non-loopback, got: {err}"
+        );
+    }
+
+    /// `http://localhost:11434/v1` is allowed — loopback can use cleartext.
+    #[test]
+    #[serial]
+    fn http_allowed_for_loopback() {
+        assert!(validate_llm_base_url("http://localhost:11434/v1").is_ok());
+        assert!(validate_llm_base_url("http://127.0.0.1:11434/v1").is_ok());
+    }
+
+    /// `https://api.deepseek.com/v1` is allowed.
+    #[test]
+    #[serial]
+    fn https_allowed_for_non_loopback() {
+        assert!(validate_llm_base_url("https://api.deepseek.com/v1").is_ok());
+    }
+
+    /// `ftp://api.deepseek.com/v1` must be rejected — non-HTTP(S) scheme.
+    #[test]
+    #[serial]
+    fn ftp_scheme_rejected() {
+        assert!(validate_llm_base_url("ftp://api.deepseek.com/v1").is_err());
+    }
+
+    /// HTTP to a non-loopback host is rejected in resolve_llm_config too.
+    #[test]
+    #[serial]
+    fn resolve_rejects_http_for_known_provider() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("http://api.deepseek.com/v1")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None, &[]).unwrap_err();
+            assert!(
+                err.contains("requires https"),
+                "should reject HTTP for non-loopback, got: {err}"
+            );
+        });
+    }
+
+    // --- Custom host allowlist ---
+
+    /// A custom host not in the default allowlist is rejected by default.
+    #[test]
+    #[serial]
+    fn custom_host_rejected_without_extra_hosts() {
+        let err = validate_llm_base_url("https://my-proxy.internal/v1").unwrap_err();
+        assert!(err.to_string().contains("not in the allowed"), "got: {err}");
+    }
+
+    /// A custom host passes when included in `extra_hosts`.
+    #[test]
+    #[serial]
+    fn custom_host_allowed_with_extra_hosts() {
+        let extra = vec!["my-proxy.internal".to_string()];
+        assert!(validate_llm_base_url_with("https://my-proxy.internal/v1", &extra).is_ok());
+    }
+
+    /// A custom host in `extra_hosts` works end-to-end via `resolve_llm_config`.
+    #[test]
+    #[serial]
+    fn resolve_allows_custom_host_with_extra_hosts() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://my-proxy.internal/v1")));
+        vars.push(("BRIGID_LLM_MODEL", Some("custom-model")));
+        vars.push(("BRIGID_LLM_API_KEY", Some("sk-custom")));
+        let extra = vec!["my-proxy.internal".to_string()];
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None, &extra).unwrap();
+            assert_eq!(cfg.base_url, "https://my-proxy.internal/v1");
+            assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
+        });
+    }
+
+    /// `extra_hosts` does not bypass HTTPS enforcement.
+    #[test]
+    #[serial]
+    fn extra_hosts_does_not_bypass_https() {
+        let extra = vec!["my-proxy.internal".to_string()];
+        let err = validate_llm_base_url_with("http://my-proxy.internal/v1", &extra).unwrap_err();
+        assert!(err.to_string().contains("requires https"), "got: {err}");
     }
 }
