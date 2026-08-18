@@ -221,6 +221,7 @@ dependencies = [
  "dirs",
  "llm-kernel",
  "predicates",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

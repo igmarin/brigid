@@ -254,6 +254,15 @@ struct Cli {
     command: Commands,
 }
 
+/// Subcommand for `brigid cache`.
+#[derive(Subcommand, Debug)]
+enum CacheAction {
+    /// Delete all cached LLM responses.
+    Prune,
+    /// Print cache entry count and on-disk size.
+    Stats,
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Write a starter `brigid.toml` in the current or given directory.
@@ -528,6 +537,17 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Manage the LLM response cache (prune or show stats).
+    ///
+    /// The cache is a SQLite database at `<cache-dir>/cache.sqlite`. Use
+    /// `brigid cache prune` to delete all cached responses, or `brigid cache
+    /// stats` to show the entry count and on-disk size.
+    Cache {
+        /// Action: `prune` deletes all cached entries; `stats` prints the
+        /// entry count and on-disk size.
+        #[command(subcommand)]
+        action: CacheAction,
+    },
     /// Generate a troff-formatted man page for `brigid` to stdout.
     ///
     /// The man page documents every subcommand and flag. Use `--output PATH`
@@ -789,7 +809,8 @@ BRIGID_LLM_ALLOWED_HOSTS
 BRIGID_LLM_CACHE_DIR
   Disk cache root directory for LLM responses.
 BRIGID_NO_CACHE
-  Set to 1 or true to disable the disk cache.
+  Set to 1 or true to disable the disk cache. Use 'brigid cache prune' to
+  delete all cached responses, or 'brigid cache stats' to inspect the cache.
 BRIGID_FORCE_MOCK
   Set to force the mock LLM client (offline). Falsy values (0, false, no,
   off, blank; case-insensitive) do NOT enable mock mode.
@@ -1147,6 +1168,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("output"));
             cmd_combine(&dir, &checkpoint_dir, &output_dir, &language, &cfg, format)
         }
+        Commands::Cache { action } => cmd_cache(action, &cfg),
         // `Manpage` is handled before config loading (see top of `main`),
         // so this arm is unreachable.
         Commands::Manpage { .. } => unreachable!("manpage handled before config load"),
@@ -3649,6 +3671,106 @@ fn cmd_overview(
     })
 }
 
+/// Handle `brigid cache <action>` — prune or stats.
+fn cmd_cache(action: CacheAction, cfg: &RunConfig) -> ExitCode {
+    let env_map: BTreeMap<String, String> = env::vars().collect();
+    let Some(root) = resolve_cache_root(&env_map, cfg.cache_dir.as_deref()) else {
+        eprintln!("cache: no cache directory configured");
+        return ExitCode::from(EXIT_FAIL);
+    };
+    let db_path = root.join("cache.sqlite");
+
+    match action {
+        CacheAction::Prune => cmd_cache_prune(&db_path),
+        CacheAction::Stats => cmd_cache_stats(&db_path),
+    }
+}
+
+/// Delete the cache database file and its WAL/SHM sidecars.
+fn cmd_cache_prune(db_path: &Path) -> ExitCode {
+    let mut removed = 0u64;
+    for suffix in &["", "-wal", "-shm"] {
+        let path = if suffix.is_empty() {
+            db_path.to_path_buf()
+        } else {
+            PathBuf::from(format!("{}{suffix}", db_path.display()))
+        };
+        if path.exists() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    removed += 1;
+                }
+                Err(e) => {
+                    eprintln!("cache: failed to remove {}: {e}", path.display());
+                    return ExitCode::from(EXIT_FAIL);
+                }
+            }
+        }
+    }
+    if removed > 0 {
+        eprintln!("cache: pruned ({removed} file(s) removed)");
+    } else {
+        eprintln!("cache: no cache file found at {}", db_path.display());
+    }
+    ExitCode::from(EXIT_OK)
+}
+
+/// Print cache entry count and on-disk size.
+fn cmd_cache_stats(db_path: &Path) -> ExitCode {
+    if !db_path.exists() {
+        eprintln!("cache: no cache file found at {}", db_path.display());
+        return ExitCode::from(EXIT_OK);
+    }
+
+    let db_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+
+    // Count entries by opening the SQLite DB read-only and querying the kv
+    // table. If the table doesn't exist or the DB is corrupt, report 0.
+    let entry_count = count_cache_entries(db_path).unwrap_or(0);
+
+    eprintln!("cache: {}", db_path.display());
+    eprintln!("  entries: {entry_count}");
+    eprintln!("  size:    {}", fmt_file_size(db_size));
+    // Also account for WAL/SHM sidecars.
+    let mut total = db_size;
+    for suffix in &["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", db_path.display()));
+        if let Ok(meta) = std::fs::metadata(&sidecar) {
+            total += meta.len();
+        }
+    }
+    if total != db_size {
+        eprintln!("  total:   {} (incl. WAL/SHM)", fmt_file_size(total));
+    }
+    ExitCode::from(EXIT_OK)
+}
+
+/// Count rows in the `kv` table of a SQLite database.
+fn count_cache_entries(db_path: &Path) -> Option<u64> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path).ok()?;
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
+        .ok()?;
+    Some(count as u64)
+}
+
+/// Format a byte count as a human-readable string (e.g. "1.2 MB").
+fn fmt_file_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 fn cmd_combine(
     dir: &Path,
     checkpoint_dir: &Path,
@@ -4492,5 +4614,87 @@ mod tests {
         let client = mock_client(vec!["first".to_string(), "second".to_string()]);
         assert_eq!(complete_text(client.as_ref(), "a").await.unwrap(), "first");
         assert_eq!(complete_text(client.as_ref(), "b").await.unwrap(), "second");
+    }
+
+    // --- cache prune / stats ---
+
+    #[test]
+    fn cache_prune_deletes_existing_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "brigid-test-prune-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("cache.sqlite");
+
+        // Create a valid SQLite kv store and add an entry.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        use llm_kernel::store::KvStore;
+        store.put("key1", b"value1").unwrap();
+        drop(store);
+        assert!(db_path.exists());
+
+        // Prune should delete the file.
+        let code = cmd_cache_prune(&db_path);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        assert!(!db_path.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_prune_no_file_is_ok() {
+        let dir = std::env::temp_dir().join("brigid-test-prune-nonexistent");
+        let db_path = dir.join("cache.sqlite");
+        assert!(!db_path.exists());
+        let code = cmd_cache_prune(&db_path);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+    }
+
+    #[test]
+    fn cache_stats_reports_entry_count() {
+        let dir = std::env::temp_dir().join(format!(
+            "brigid-test-stats-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("cache.sqlite");
+
+        // Create a store with 3 entries.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        use llm_kernel::store::KvStore;
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        store.put("k3", b"v3").unwrap();
+        drop(store);
+
+        // Stats should report 3 entries.
+        let count = count_cache_entries(&db_path);
+        assert_eq!(count, Some(3));
+
+        let code = cmd_cache_stats(&db_path);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cache_stats_no_file_is_ok() {
+        let dir = std::env::temp_dir().join("brigid-test-stats-nonexistent");
+        let db_path = dir.join("cache.sqlite");
+        let code = cmd_cache_stats(&db_path);
+        assert_eq!(code, ExitCode::from(EXIT_OK));
+    }
+
+    #[test]
+    fn fmt_file_size_human_readable() {
+        assert_eq!(fmt_file_size(512), "512 B");
+        assert_eq!(fmt_file_size(1024), "1.0 KB");
+        assert_eq!(fmt_file_size(1024 * 1024), "1.0 MB");
+        assert_eq!(fmt_file_size(1024 * 1024 * 1024), "1.0 GB");
     }
 }
