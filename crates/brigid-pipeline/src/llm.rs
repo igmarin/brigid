@@ -53,23 +53,37 @@ pub fn nonempty_env_or(key: &str, default: impl Into<String>) -> String {
 }
 
 /// Extract the hostname from an HTTP(S) base URL (port stripped).
+///
+/// Uses the standards-compliant `url::Url` parser so userinfo tricks like
+/// `https://api.openai.com:443@evil.example/v1` are correctly parsed as
+/// targeting `evil.example`, not `api.openai.com`. URLs containing userinfo
+/// are rejected entirely (return `None`) because no legitimate LLM provider
+/// uses userinfo in its base URL.
 #[must_use]
 pub fn host_from_base_url(base_url: &str) -> Option<String> {
-    let rest = base_url.split_once("://")?.1;
-    let hostport = rest.split('/').next()?;
-    let host = hostport.split(':').next()?.to_ascii_lowercase();
+    let parsed = url::Url::parse(base_url).ok()?;
+    // Reject userinfo — no legitimate LLM provider endpoint uses it, and
+    // its presence is a strong signal of a credential-exfiltration attempt.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
     if host.is_empty() { None } else { Some(host) }
 }
 
 /// Reject a base URL whose host is not on the default provider allowlist.
 ///
+/// Also rejects URLs with userinfo (see [`host_from_base_url`]).
+///
 /// # Errors
 ///
-/// Returns [`LlmError::Network`] when the URL cannot be parsed or the host
-/// is not allowlisted.
+/// Returns [`LlmError::Network`] when the URL cannot be parsed, contains
+/// userinfo, or the host is not allowlisted.
 pub fn validate_llm_base_url(base_url: &str) -> Result<(), LlmError> {
     let host = host_from_base_url(base_url).ok_or_else(|| {
-        LlmError::network(format!("failed to parse base_url host from '{base_url}'"))
+        LlmError::network(format!(
+            "failed to parse base_url host from '{base_url}' (userinfo is rejected)"
+        ))
     })?;
     if DEFAULT_ALLOWED_LLM_HOSTS.contains(&host.as_str()) {
         Ok(())
@@ -125,15 +139,28 @@ impl ProviderPreset {
     }
 }
 
-/// Infer a provider name from a base URL (case-insensitive substring match).
-fn infer_provider_from_base_url(base_url: &str) -> &'static str {
-    let lower = base_url.to_ascii_lowercase();
-    if lower.contains("openrouter") {
-        "openrouter"
-    } else if lower.contains("openai") {
-        "openai"
-    } else {
-        "deepseek"
+/// Infer a provider name from a base URL by matching the actual host
+/// against known provider hosts. Returns `None` for unrecognized hosts
+/// (including localhost), which are treated as custom.
+fn infer_provider_from_base_url(base_url: &str) -> Option<&'static str> {
+    let host = host_from_base_url(base_url)?;
+    match host.as_str() {
+        "api.deepseek.com" => Some("deepseek"),
+        "api.openai.com" => Some("openai"),
+        "openrouter.ai" => Some("openrouter"),
+        _ => None,
+    }
+}
+
+/// Expected host for each known provider preset.
+impl ProviderPreset {
+    fn expected_host(&self) -> &'static str {
+        match self.api_key_env {
+            "DEEPSEEK_API_KEY" => "api.deepseek.com",
+            "OPENAI_API_KEY" => "api.openai.com",
+            "OPENROUTER_API_KEY" => "openrouter.ai",
+            _ => "",
+        }
     }
 }
 
@@ -148,12 +175,22 @@ fn infer_provider_from_base_url(base_url: &str) -> &'static str {
 /// (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY`).
 /// A DeepSeek-scoped key is never sent to OpenRouter/OpenAI.
 ///
+/// **Security**: when a known provider is selected (deepseek/openai/openrouter),
+/// the base URL host must match that provider's expected host. This prevents
+/// `BRIGID_PROVIDER=openai` + `BRIGID_LLM_BASE_URL=https://openrouter.ai/...`
+/// from sending `OPENAI_API_KEY` to `openrouter.ai`. For localhost or custom
+/// hosts (not a known provider), `BRIGID_LLM_API_KEY` is required — a
+/// provider-specific key is never sent to an unrecognized host.
+///
 /// Blank or whitespace-only env values are treated as unset.
 ///
 /// # Errors
 ///
 /// Returns a human-readable error string when:
 /// - The base URL host is not on the allowed hosts list
+/// - The base URL contains userinfo (credential exfiltration risk)
+/// - A known provider's base URL host doesn't match the expected host
+/// - A custom/localhost endpoint has no `BRIGID_LLM_API_KEY`
 /// - No model is configured for a provider that requires one
 pub fn resolve_llm_config(
     provider_override: Option<&str>,
@@ -165,7 +202,7 @@ pub fn resolve_llm_config(
         .map(|s| s.to_string())
         .or_else(|| nonempty_env("BRIGID_PROVIDER"));
 
-    let preset = provider_hint.as_deref().and_then(ProviderPreset::for_name);
+    let mut preset = provider_hint.as_deref().and_then(ProviderPreset::for_name);
 
     let (provider_name, default_base_url, default_model, api_key_env) = match &preset {
         Some(p) => (
@@ -179,26 +216,62 @@ pub fn resolve_llm_config(
             let base_url_env = nonempty_env("BRIGID_LLM_BASE_URL");
             let inferred = base_url_env
                 .as_deref()
-                .map(infer_provider_from_base_url)
-                .unwrap_or("deepseek");
-            let p = ProviderPreset::for_name(inferred).unwrap_or(ProviderPreset {
-                base_url: "https://api.deepseek.com/v1",
-                default_model: Some("deepseek-chat"),
-                api_key_env: "DEEPSEEK_API_KEY",
-            });
-            (
-                inferred.to_string(),
-                p.base_url,
-                p.default_model,
-                p.api_key_env,
-            )
+                .and_then(infer_provider_from_base_url);
+            match inferred.and_then(ProviderPreset::for_name) {
+                Some(p) => {
+                    // Inferred a known provider from the base URL host.
+                    let name = inferred.unwrap().to_string();
+                    let base = p.base_url;
+                    let model = p.default_model;
+                    let key = p.api_key_env;
+                    preset = Some(p);
+                    (name, base, model, key)
+                }
+                None if base_url_env.is_some() => {
+                    // Custom or localhost — no preset, no provider-specific
+                    // key. BRIGID_LLM_API_KEY will be required.
+                    preset = None;
+                    (
+                        "custom".to_string(),
+                        "https://api.deepseek.com/v1",
+                        None,
+                        "",
+                    )
+                }
+                None => {
+                    // No provider, no base URL env — default to DeepSeek.
+                    let p = ProviderPreset::for_name("deepseek").unwrap();
+                    let base = p.base_url;
+                    let model = p.default_model;
+                    let key = p.api_key_env;
+                    preset = Some(p);
+                    ("deepseek".to_string(), base, model, key)
+                }
+            }
         }
     };
 
     let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", default_base_url);
 
-    // Validate the base URL host before returning.
+    // Validate the base URL host (rejects userinfo, checks allowlist).
     validate_llm_base_url(&base_url).map_err(|e| e.to_string())?;
+
+    // Security: when a known provider is selected, verify the base URL host
+    // matches the expected provider host. This prevents a provider-scoped key
+    // (e.g. OPENAI_API_KEY) from being sent to a different provider's host
+    // (e.g. openrouter.ai) via a BRIGID_LLM_BASE_URL override.
+    if let Some(p) = &preset {
+        let actual_host = host_from_base_url(&base_url)
+            .ok_or_else(|| format!("failed to parse host from base_url '{base_url}'"))?;
+        let expected = p.expected_host();
+        if !expected.is_empty() && actual_host != expected {
+            return Err(format!(
+                "provider '{provider_name}' expects host '{expected}' but \
+                 BRIGID_LLM_BASE_URL points to '{actual_host}'; refusing to send \
+                 {api_key_env} to a different provider's host"
+            ));
+        }
+    }
 
     // Model resolution: override → BRIGID_LLM_MODEL → preset default.
     let model = model_override
@@ -221,6 +294,25 @@ pub fn resolve_llm_config(
     } else {
         api_key_env
     };
+
+    // Security: for localhost or custom hosts (not a known provider preset),
+    // require BRIGID_LLM_API_KEY. A provider-specific key (e.g. DEEPSEEK_API_KEY)
+    // must never be sent to an unrecognized host — a local proxy or custom
+    // endpoint could forward it anywhere.
+    let actual_host = host_from_base_url(&base_url)
+        .ok_or_else(|| format!("failed to parse host from base_url '{base_url}'"))?;
+    let is_known_provider_host = preset.is_some_and(|p| {
+        let expected = p.expected_host();
+        !expected.is_empty() && actual_host == expected
+    });
+    if !is_known_provider_host && api_key_env != "BRIGID_LLM_API_KEY" {
+        return Err(format!(
+            "host '{actual_host}' is not a known provider endpoint; \
+             set BRIGID_LLM_API_KEY explicitly to send credentials to this host \
+             (provider-specific keys like {api_key_env} are not sent to \
+             unrecognized hosts)"
+        ));
+    }
 
     Ok(ResolvedLlmConfig {
         provider: provider_name,
@@ -857,16 +949,153 @@ mod resolve_tests {
         });
     }
 
-    /// localhost is allowed for local LLM servers (e.g. Ollama).
+    /// localhost is allowed for local LLM servers (e.g. Ollama), but
+    /// requires BRIGID_LLM_API_KEY — a provider-specific key must never
+    /// be sent to a local endpoint that could forward it anywhere.
     #[test]
     #[serial]
-    fn localhost_base_url_allowed() {
+    fn localhost_requires_brigid_llm_api_key() {
         let mut vars = clear_env();
         vars.push(("BRIGID_LLM_BASE_URL", Some("http://localhost:11434/v1")));
         vars.push(("BRIGID_LLM_MODEL", Some("llama3")));
+        vars.push(("BRIGID_LLM_API_KEY", Some("sk-local")));
         with_env(&vars, || {
             let cfg = resolve_llm_config(None, None).unwrap();
             assert_eq!(cfg.base_url, "http://localhost:11434/v1");
+            assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
+        });
+    }
+
+    /// localhost without BRIGID_LLM_API_KEY is rejected — DEEPSEEK_API_KEY
+    /// must not be sent to a local endpoint.
+    #[test]
+    #[serial]
+    fn localhost_rejects_provider_specific_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("http://localhost:11434/v1")));
+        vars.push(("BRIGID_LLM_MODEL", Some("llama3")));
+        vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(
+                err.contains("BRIGID_LLM_API_KEY"),
+                "should require BRIGID_LLM_API_KEY for localhost, got: {err}"
+            );
+        });
+    }
+
+    // --- Security: userinfo URL rejection ---
+
+    /// `https://api.openai.com:443@evil.example/v1` must be rejected.
+    /// The naive parser would extract `api.openai.com` (passes allowlist),
+    /// but the actual host is `evil.example` (receives the API key).
+    #[test]
+    #[serial]
+    fn userinfo_url_rejected_in_validate() {
+        let err = validate_llm_base_url("https://api.openai.com:443@evil.example/v1").unwrap_err();
+        assert!(
+            err.to_string().contains("userinfo"),
+            "should reject userinfo URL, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn userinfo_url_rejected_in_resolve() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        vars.push((
+            "BRIGID_LLM_BASE_URL",
+            Some("https://api.openai.com:443@evil.example/v1"),
+        ));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(
+                err.contains("userinfo") || err.contains("failed to parse"),
+                "should reject userinfo URL, got: {err}"
+            );
+        });
+    }
+
+    /// `https://api.openai.com@evil.example/v1` must also be rejected.
+    #[test]
+    #[serial]
+    fn userinfo_url_without_port_rejected() {
+        let err = validate_llm_base_url("https://api.openai.com@evil.example/v1").unwrap_err();
+        assert!(
+            err.to_string().contains("userinfo"),
+            "should reject userinfo URL, got: {err}"
+        );
+    }
+
+    // --- Security: provider-to-host mismatch ---
+
+    /// `BRIGID_PROVIDER=openai` + `BRIGID_LLM_BASE_URL=https://openrouter.ai/...`
+    /// must be rejected — OPENAI_API_KEY must not be sent to openrouter.ai.
+    #[test]
+    #[serial]
+    fn openai_provider_rejects_openrouter_base_url() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://openrouter.ai/api/v1")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(
+                err.contains("refusing to send"),
+                "should reject provider-to-host mismatch, got: {err}"
+            );
+        });
+    }
+
+    /// `BRIGID_PROVIDER=deepseek` + `BRIGID_LLM_BASE_URL=https://api.openai.com/...`
+    /// must be rejected — DEEPSEEK_API_KEY must not be sent to api.openai.com.
+    #[test]
+    #[serial]
+    fn deepseek_provider_rejects_openai_base_url() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("deepseek")));
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(
+                err.contains("refusing to send"),
+                "should reject provider-to-host mismatch, got: {err}"
+            );
+        });
+    }
+
+    /// `BRIGID_PROVIDER=openrouter` + `BRIGID_LLM_BASE_URL=https://api.openai.com/...`
+    /// must be rejected — OPENROUTER_API_KEY must not be sent to api.openai.com.
+    #[test]
+    #[serial]
+    fn openrouter_provider_rejects_openai_base_url() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openrouter")));
+        vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(
+                err.contains("refusing to send"),
+                "should reject provider-to-host mismatch, got: {err}"
+            );
+        });
+    }
+
+    /// When BRIGID_LLM_API_KEY is set, a known provider with matching host
+    /// still works (BRIGID_LLM_API_KEY takes precedence).
+    #[test]
+    #[serial]
+    fn known_provider_with_brigid_llm_api_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        vars.push(("BRIGID_LLM_API_KEY", Some("sk-universal")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
         });
     }
 }
