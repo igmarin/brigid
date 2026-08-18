@@ -660,22 +660,27 @@ impl CacheAdmin {
         // checkpoint while a transaction is active, so the checkpoint
         // must run outside the transaction.
         {
-            use rusqlite::{Connection, OpenFlags};
+            use rusqlite::{Connection, OpenFlags, TransactionBehavior};
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            let conn = Connection::open_with_flags(db_path, flags)
+            let mut conn = Connection::open_with_flags(db_path, flags)
                 .map_err(|e| format!("cannot open database for pruning: {e}"))?;
             conn.busy_timeout(std::time::Duration::from_millis(500))
                 .map_err(|e| format!("could not set busy timeout: {e}"))?;
-            conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| {
-                format!(
-                    "cannot acquire write lock: {e} \
-                     — the cache is in use by another brigid process"
-                )
-            })?;
+            // BEGIN IMMEDIATE acquires a RESERVED lock, blocking other
+            // writers. The transaction rolls back automatically on drop
+            // if commit() is not called.
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|e| {
+                    format!(
+                        "cannot acquire write lock: {e} \
+                         — the cache is in use by another brigid process"
+                    )
+                })?;
             // Delete all rows inside the transaction.
-            conn.execute_batch("DELETE FROM kv")
+            tx.execute_batch("DELETE FROM kv")
                 .map_err(|e| format!("failed to clear kv table: {e}"))?;
-            conn.execute_batch("COMMIT")
+            tx.commit()
                 .map_err(|e| format!("failed to commit prune transaction: {e}"))?;
             // Checkpoint and truncate the WAL *after* committing so the
             // main DB file reflects the deletion and the WAL file is

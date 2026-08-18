@@ -17,8 +17,9 @@ tracks the latest.
 - **Added `brigid cache prune` subcommand**: clears all cache entries and
   removes the SQLite database file and its WAL/SHM sidecars. Uses a
   two-phase approach for safety under concurrency: (1) `DELETE FROM kv`
-  and `PRAGMA wal_checkpoint(TRUNCATE)` inside a `BEGIN IMMEDIATE`
-  transaction, then (2) file removal after commit. If a concurrent
+  inside a `BEGIN IMMEDIATE` transaction, then `COMMIT`; (2)
+  `PRAGMA wal_checkpoint(TRUNCATE)` after commit to flush the WAL into
+  the main DB; (3) file removal after checkpoint. If a concurrent
   process reopens the database between phases, it finds an empty cache
   (0 entries) — not a corrupted one. Replaces the previous manual
   `rm -rf` workaround.
@@ -71,10 +72,10 @@ tracks the latest.
   - Cache keys include the model name and full request JSON (via
     `llm_kernel::CacheClient`), so switching models or providers does not
     produce incorrect cache hits.
-  - Cache hit/miss stats are available via `brigid_pipeline::StatsClient`,
-    which probes the `KvStore` to track hits and misses. The CLI's verbose
-    output reports cache status; use `brigid cache stats` for entry count
-    and on-disk size.
+  - Cache hit/miss stats are available via
+    `brigid_pipeline::CountingKvStore`, which counts `KvStore` lookups.
+    The CLI's verbose output reports cache status; use `brigid cache stats`
+    for entry count and on-disk size.
   - The cache stores full prompt and response bodies on disk. Crawled
     repositories may contain secrets in source files; these are truncated and
     batched before being sent to the LLM, but the cache persists the full

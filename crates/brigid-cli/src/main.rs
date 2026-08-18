@@ -3733,9 +3733,10 @@ fn cmd_cache(action: CacheAction, cfg: &RunConfig) -> ExitCode {
 
 /// Delete the cache database file and its WAL/SHM sidecars.
 ///
-/// Delegates to [`brigid_pipeline::CacheAdmin::prune`] which acquires an
-/// exclusive SQLite lock before deleting to prevent corrupting a cache
-/// that is actively in use by another `brigid` process.
+/// Delegates to [`brigid_pipeline::CacheAdmin::prune`] which clears all
+/// entries inside a `BEGIN IMMEDIATE` transaction, checkpoints the WAL
+/// after commit, then removes the files. See `CacheAdmin::prune` docs
+/// for the full concurrency-safety rationale.
 fn cmd_cache_prune(db_path: &Path) -> ExitCode {
     match brigid_pipeline::CacheAdmin::prune(db_path) {
         Ok(0) => {
