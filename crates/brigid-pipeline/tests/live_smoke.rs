@@ -92,17 +92,19 @@ fn python_lib_fixture() -> PathBuf {
 fn client_from_env(with_cache: bool) -> Box<dyn LLMClient> {
     use brigid_pipeline::llm::{nonempty_env, nonempty_env_or, validate_llm_base_url};
 
-    let mut config = ModelConfig::default();
-    config.provider = "deepseek".into();
-    config.model = nonempty_env_or("BRIGID_MODEL", "deepseek-chat");
-    config.api_key_env = if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
-        "BRIGID_LLM_API_KEY".into()
-    } else {
-        "DEEPSEEK_API_KEY".into()
-    };
     let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", "https://api.deepseek.com/v1");
     validate_llm_base_url(&base_url).expect("BRIGID_LLM_BASE_URL host is not allowlisted");
-    config.base_url = Some(base_url);
+    let config = ModelConfig {
+        provider: "deepseek".into(),
+        model: nonempty_env_or("BRIGID_MODEL", "deepseek-chat"),
+        api_key_env: if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
+            "BRIGID_LLM_API_KEY".into()
+        } else {
+            "DEEPSEEK_API_KEY".into()
+        },
+        base_url: Some(base_url),
+        ..Default::default()
+    };
     let client = OpenAIClient::new(&config).expect("HTTP client build failed");
     if with_cache {
         let cache_root =
@@ -160,7 +162,7 @@ async fn smoke_identify_single_shot() {
         max_abstraction_num: 5,
     };
 
-    let result = match identify_single_shot(&client, &renderer, &input, &mut progress).await {
+    let result = match identify_single_shot(client.as_ref(), &renderer, &input, &mut progress).await {
         Ok(r) => r,
         Err(e) => {
             // Network/API issues are tolerated for a smoke test — document and
