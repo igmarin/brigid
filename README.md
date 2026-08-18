@@ -11,8 +11,9 @@
 
 `brigid` crawls a codebase, identifies its core abstractions, and produces a
 multi-chapter Markdown + Mermaid tutorial that explains how the system works:
-setup, architecture, and inter-concept relationships. Built in Rust and available through the `brigid-core` crate (**169 downloads** on crates.io) and the `brigid-cli` binary. Built for monorepos and
-large codebases where "read the source" is not a realistic onboarding path.
+setup, architecture, and inter-concept relationships. It is built in Rust and
+designed for monorepos and large codebases where "read the source" is not a
+realistic onboarding path.
 
 **Who this is for:** teams, educators, and open-source maintainers who need onboarding tutorials generated from real code.
 
@@ -113,7 +114,8 @@ together for monorepos and multi-app systems.
 - **Lenient app validation** — unknown apps warn by default;
   `--strict-app-validation` to fail hard
 - **Checkpoint + resume** — interrupt and resume without losing work
-- **Disk cache** — LLM responses cached by default; re-runs are free
+- **Disk cache** — LLM responses cached on disk; re-runs are free. Inspect
+  with `brigid cache stats`, clear with `brigid cache prune`
 - **Plugins** — custom kind detectors via `KindDetector` trait (ADR 0014)
 
 ---
@@ -135,6 +137,8 @@ together for monorepos and multi-app systems.
 | `brigid combine` | Single stage: index assembly |
 | `brigid init` | Write a starter `brigid.toml` |
 | `brigid resume` | Checkpoint status report |
+| `brigid cache stats` | Show cache entry count and on-disk size |
+| `brigid cache prune` | Delete the cache file and free disk space |
 | `brigid completions` | Generate shell completions |
 | `brigid manpage` | Generate a man page |
 

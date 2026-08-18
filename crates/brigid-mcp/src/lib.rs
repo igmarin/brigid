@@ -11,7 +11,7 @@
 //!
 //! - Depends on [`brigid_core`] (pure domain models) and [`brigid_pipeline`]
 //!   (checkpoint loading via [`CheckpointStore`][brigid_pipeline::CheckpointStore]).
-//!   It does **not** depend on `brigid-cli` or `brigid-llm` — the server is
+//!   It does **not** depend on `brigid-cli` — the server is
 //!   read-only and never runs pipeline stages or makes LLM calls.
 //! - [`CheckpointLoader`] reads `checkpoint.json` plus all completed stage
 //!   outputs into a [`CheckpointData`] struct held in memory for the lifetime

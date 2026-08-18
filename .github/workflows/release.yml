@@ -125,7 +125,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # Publish to crates.io.
   # Workspace crates are published in dependency order:
-  #   brigid-core → brigid-crawl → brigid-llm → brigid-pipeline → brigid-cli
+  #   brigid-core → brigid-crawl → brigid-pipeline → brigid-mcp → brigid-cli
   # Each `cargo publish -p <crate>` waits for the previous to be available
   # on the registry before proceeding. Skipped in dry-run mode.
   # Requires the CRATES_TOKEN secret to be set in the repository.
@@ -145,7 +145,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in brigid-core brigid-crawl brigid-llm brigid-pipeline brigid-cli; do
+          for crate in brigid-core brigid-crawl brigid-pipeline brigid-mcp brigid-cli; do
             echo "Publishing ${crate}..."
             set +e
             cargo publish -p "${crate}" > "/tmp/publish-${crate}.log" 2>&1

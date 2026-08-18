@@ -259,6 +259,8 @@ All accept `--dir`, `--checkpoint-dir`, `--format`, and `--config`.
 | `brigid eval --out PATH` | Structural tutorial quality gate (zero LLM) |
 | `brigid init [--check]` | Write or validate a starter `brigid.toml` |
 | `brigid resume --checkpoint PATH` | Report next/pending stages from a checkpoint |
+| `brigid cache stats` | Show cache entry count and on-disk size |
+| `brigid cache prune` | Delete the cache file and free disk space |
 | `brigid completions --shell SHELL` | Generate shell completion scripts |
 | `brigid manpage` | Generate a troff-formatted man page |
 
@@ -314,10 +316,12 @@ brigid relationships --dir tests/fixtures/umbrella \
 Large monorepo runs can take dozens of LLM calls. These knobs keep runs fast
 and cheap:
 
-- **Disk cache (enabled by default)** — LLM responses are cached on disk
+- **Disk cache** — LLM responses are cached on disk
   keyed by `hash(prompt)+model+provider`, so re-runs with an unchanged prompt
   are free. To bypass the cache for a single run (e.g. after changing a
-  prompt template), set `BRIGID_NO_CACHE=1`. See
+  prompt template), set `BRIGID_NO_CACHE=1`. Use `brigid cache stats` to
+  check the entry count and on-disk size, and `brigid cache prune` to clear
+  the cache. See
   [ADR 0009](adr/0009-disk-cache-default-lru-eviction.md).
 - **Concurrency tuning (`--concurrency`)** — Controls how many LLM calls run
   in parallel during the map/reduce stages.

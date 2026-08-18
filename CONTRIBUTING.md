@@ -1,7 +1,6 @@
 # Contributing to `brigid`
 
-Thanks for helping make `brigid` a fast, reliable tool for turning code monoliths
-into structured tutorials. This guide covers how to build, test, and land
+Thanks for helping with `brigid`. This guide covers how to build, test, and land
 changes in the workspace.
 
 ## Quick start
@@ -196,9 +195,9 @@ on regression.
 | Chapter domain types | `brigid-core::chapter` | `Chapter`, `ChapterOrder`, `ChapterResult` |
 | M4 domain types | `brigid-core::generate` | `SetupGuide`, `ArchitectureOverview`, `CombinedTutorial` |
 | M4 domain types | `brigid-core::abstraction` | `RelationshipsResult`, `Relationship` |
-| LLM disk cache | `brigid-llm::cache` | Hash-keyed response cache; enabled by default with LRU eviction (ADR 0009) |
-| LLM provider client | `brigid-llm::openai_client` | OpenAI-compatible HTTP + retry/backoff + host allowlist |
-| Bounded concurrency | `brigid-llm::concurrency` | Semaphore-gated map batches |
+| LLM provider client | `brigid-pipeline::llm` | OpenAI-compatible HTTP + retry/backoff + host allowlist (via `llm-kernel`) |
+| LLM response cache | `brigid-pipeline::llm` | SQLite-backed cache with hit/miss tracking (`CountingKvStore`); `brigid cache stats` / `brigid cache prune` |
+| Bounded concurrency | `brigid-pipeline::llm` | Semaphore-gated map batches |
 | Checkpoint store | `brigid-pipeline::checkpoint_store` | save/load bundle; file-based stage outputs (ADR 0006) |
 | Resume helpers | `brigid-pipeline::resume` | stage-skip / invalidate |
 | Local crawl | `brigid-crawl::local` | FS I/O; symlink cycle detection |
@@ -246,8 +245,8 @@ Milestone 2 and runs on every PR via `cargo llvm-cov --workspace
 
 ## Code conventions
 
-- **Library crates** (`brigid-core`, `brigid-crawl`, `brigid-llm`,
-  `brigid-pipeline`) perform no CLI or main-binary logic and stay easy to unit
+- **Library crates** (`brigid-core`, `brigid-crawl`, `brigid-pipeline`,
+  `brigid-mcp`) perform no CLI or main-binary logic and stay easy to unit
   test.
 - **Public APIs must have rustdoc.** Each library crate declares
   `#![deny(missing_docs)]`.
@@ -263,8 +262,8 @@ Milestone 2 and runs on every PR via `cargo llvm-cov --workspace
 crates/
   brigid-core/      pure domain: models, traits, mermaid, budgeting
   brigid-crawl/     local + GitHub fetching
-  brigid-llm/       provider clients, retries, caching
-  brigid-pipeline/  stage orchestration, checkpoint/resume
+  brigid-pipeline/  stage orchestration, checkpoint/resume, LLM client wiring
+  brigid-mcp/       MCP server for codebase knowledge querying (ADR 0015)
   brigid-cli/       clap binary and exit codes
 ```
 

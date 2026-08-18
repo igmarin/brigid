@@ -71,7 +71,7 @@ Evaluate every change across all five.
 
 ### 4. Readability & Simplicity
 - Do public items in library crates have rustdoc? (`#![deny(missing_docs)]` or an equivalent
-  warn→deny lint is expected on `brigid-core` / `brigid-pipeline` / `brigid-crawl` / `brigid-llm`.)
+  warn→deny lint is expected on `brigid-core` / `brigid-pipeline` / `brigid-crawl` / `brigid-mcp`.)
 - Names are descriptive and consistent (snake_case, `?` for queries/predicates).
 - Control flow is straightforward; avoid deep nesting. Prefer `?` with contextual errors.
 - Dead code, stray `dbg!` / `println!` left over from debugging, or commented-out logic must not
@@ -92,8 +92,8 @@ Evaluate every change across all five.
 
 **Blocking (Critical or Security):**
 
-- `unwrap()`, `expect()`, or `panic!` in library code (`brigid-core`, `brigid-crawl`, `brigid-llm`,
-  `brigid-pipeline` — excluding `#[cfg(test)]`). Only `brigid-cli`'s `main` may terminate the
+- `unwrap()`, `expect()`, or `panic!` in library code (`brigid-core`, `brigid-crawl`,
+  `brigid-pipeline`, `brigid-mcp` — excluding `#[cfg(test)]`). Only `brigid-cli`'s `main` may terminate the
   process directly, and should do so via a documented exit code, not a panic.
 - Treating a blank/empty environment variable as if it were set (must be treated as unset).
 - Storing full file bodies (not paths/hashes) inline in the top-level checkpoint JSON.

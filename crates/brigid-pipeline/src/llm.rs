@@ -168,9 +168,8 @@ impl KvStore for CountingKvStore {
 
 /// Hosts allowed to receive an `Authorization` header.
 ///
-/// Mirrors the `brigid-llm` default allowlist so kernel-constructed clients
-/// (live smoke tests, and later Phase 4 CLI construction) refuse to send
-/// credentials to an unexpected host.
+/// Ensures kernel-constructed clients refuse to send credentials to an
+/// unexpected host. Add a host here when adding a new provider preset.
 const DEFAULT_ALLOWED_LLM_HOSTS: &[&str] = &[
     "api.deepseek.com",
     "api.openai.com",
@@ -728,8 +727,8 @@ fn append_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(buf)
 }
 
-/// Prompt-shaped errors matching the historical `brigid-llm` surface so
-/// existing match arms and `#[from]` conversions stay readable.
+/// LLM errors grouped by cause so callers can match on network, timeout,
+/// HTTP status, or body-parsing failures.
 #[derive(Clone, Debug, Error)]
 pub enum LlmError {
     /// Network or transport failure.

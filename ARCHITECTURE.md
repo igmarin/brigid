@@ -10,10 +10,11 @@ recorded in [`docs/adr/`](docs/adr/) and referenced where relevant below.
 
 ## Crate dependency hierarchy
 
-`brigid` is a Cargo workspace of four crates. Dependencies flow strictly
+`brigid` is a Cargo workspace of five crates. Dependencies flow strictly
 downward: the CLI binary depends on the pipeline; the pipeline depends on
-`llm-kernel`, the crawler, and core; core has no workspace dependencies and
-stays pure for easy unit testing.
+`llm-kernel`, the crawler, and core; the MCP server depends on the pipeline
+and core; core has no workspace dependencies and stays pure for easy unit
+testing.
 
 ```mermaid
 graph TD
@@ -22,6 +23,7 @@ graph TD
     LLMKernel["llm-kernel<br/>(LLM provider interface)"]
     Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
+    MCP["brigid-mcp<br/>(MCP server: read-only checkpoint queries)"]
 
     CLI --> Pipeline
     CLI --> LLMKernel
@@ -30,16 +32,19 @@ graph TD
     Pipeline --> LLMKernel
     Pipeline --> Crawl
     Pipeline --> Core
+    MCP --> Pipeline
+    MCP --> Core
     Crawl --> Core
 ```
 
-Both the pipeline and the CLI use `llm-kernel` directly for LLM calls. The
-`brigid-llm` crate has been removed (issue #297 Phase 4). Provider resolution
-(DeepSeek/OpenAI/OpenRouter presets, API key chain) lives in
-`brigid_pipeline::llm::resolve_llm_config`. The live client is constructed by
-`brigid_pipeline::llm::build_live_client`, which wraps `OpenAIClient` in
+Both the pipeline and the CLI use `llm-kernel` directly for LLM calls.
+Provider resolution (DeepSeek/OpenAI/OpenRouter presets, API key chain) lives
+in `brigid_pipeline::llm::resolve_llm_config`. The live client is constructed
+by `brigid_pipeline::llm::build_live_client`, which wraps `OpenAIClient` in
 `RetryClient` (bounded exponential backoff) and optionally `CacheClient`
-(SQLite-backed, no size limit — see CHANGELOG for trade-offs).
+(SQLite-backed, no size limit). `CountingKvStore` wraps the cache to track
+hit/miss counts, and `CacheAdmin` provides `entry_count`, `on_disk_size`, and
+`prune` for the `brigid cache stats` and `brigid cache prune` subcommands.
 
 The layering rule: **library crates perform no CLI or main-binary logic**.
 `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and
@@ -56,7 +61,7 @@ brigid/
 │   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
 │   │   └── prompts/        # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 │   ├── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes
-│   └── (brigid-mcp/)      # MCP server — proposed (ADR 0015), post-v1.0.0
+│   └── brigid-mcp/        # MCP server — read-only checkpoint queries (ADR 0015)
 ├── tests/fixtures/       # Minimal repos + frozen baseline.json + Rust regenerator
 ├── docs/
 │   ├── move-to-rust.md   # Migration design: pipeline model, domain objects, phase plan
@@ -204,6 +209,7 @@ done, enabling resume from any point without re-running expensive LLM calls.
 | `brigid-pipeline` | `resume` | Stage-skip / invalidate helpers |
 | `brigid-pipeline` | `prompts` | `minijinja` prompt rendering |
 | `brigid-pipeline` | `cancellation` | Ctrl+C / SIGTERM graceful shutdown (exit 5) |
+| `brigid-mcp` | `lib` | MCP server: read-only checkpoint queries via Model Context Protocol (ADR 0015) |
 | `brigid-cli` | `main` | Clap argument parsing, pipeline wiring, exit codes |
 
 ---
@@ -350,7 +356,7 @@ Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/).
 | [0012](docs/adr/0012-json-output-schema.md) | JSON output schema for pipeline stages (`StageOutput<T>` envelope) |
 | [0013](docs/adr/0013-git-diff-incremental.md) | Git-diff incremental file detection (`--since`) |
 | [0014](docs/adr/0014-plugin-architecture.md) | Plugin trait and registry for custom kind detectors |
-| [0015](docs/adr/0015-mcp-server.md) | MCP server for codebase knowledge querying (proposed, post-v1.0.0) |
+| [0015](docs/adr/0015-mcp-server.md) | MCP server for codebase knowledge querying |
 | [0016](docs/adr/0016-graph-provider.md) | Graph provider trait for structural ground truth from codegraph/Graphify (proposed, post-v1.0.0) |
 | [0017](docs/adr/0017-openrouter-provider.md) | OpenRouter as a first-class LLM provider |
 

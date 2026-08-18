@@ -37,8 +37,8 @@ See [docs.rs/brigid-core](https://docs.rs/brigid-core) for the full API.
 
 - `brigid-core` — this crate: pure domain types and logic
 - `brigid-crawl` — filesystem and GitHub repository crawling
-- `brigid-llm` — LLM provider clients and caching
-- `brigid-pipeline` — stage orchestration, checkpoint/resume, dry-run planning
+- `brigid-pipeline` — stage orchestration, checkpoint/resume, LLM client wiring
+- `brigid-mcp` — MCP server for codebase knowledge querying
 - `brigid-cli` — the `brigid` binary
 
 All crates are developed together in a single repository: <https://github.com/igmarin/brigid>.

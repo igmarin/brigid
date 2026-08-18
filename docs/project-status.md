@@ -49,7 +49,8 @@ Release history with per-change details lives in
   different source directories.
 - **LLM provider client** — OpenAI-compatible HTTP with retry/backoff/timeout,
   host allowlist (including `openrouter.ai`), provider presets (DeepSeek,
-  OpenAI, OpenRouter), disk cache with LRU eviction, bounded concurrency.
+  OpenAI, OpenRouter), SQLite response cache with hit/miss tracking and
+  `brigid cache stats` / `brigid cache prune`, bounded concurrency.
 - **Distribution** — Homebrew and `cargo install` source builds on macOS and
   Windows; GitHub Releases and `cargo-binstall` pre-built Linux x86_64 archive;
   shell completions and man page.

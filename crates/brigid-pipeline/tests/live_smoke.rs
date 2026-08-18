@@ -86,7 +86,7 @@ fn python_lib_fixture() -> PathBuf {
 /// [`CacheClient`] so re-runs are free.
 ///
 /// Blank env values are treated as unset. The resolved `base_url` host is
-/// checked against the same default allowlist as `brigid-llm` before the
+/// checked against the project allowlist before the
 /// client is constructed, so a blank or attacker-controlled
 /// `BRIGID_LLM_BASE_URL` cannot send the API key to an unexpected host.
 fn client_from_env(with_cache: bool) -> Box<dyn LLMClient> {
@@ -162,7 +162,8 @@ async fn smoke_identify_single_shot() {
         max_abstraction_num: 5,
     };
 
-    let result = match identify_single_shot(client.as_ref(), &renderer, &input, &mut progress).await {
+    let result = match identify_single_shot(client.as_ref(), &renderer, &input, &mut progress).await
+    {
         Ok(r) => r,
         Err(e) => {
             // Network/API issues are tolerated for a smoke test — document and

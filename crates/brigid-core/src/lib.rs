@@ -1,8 +1,9 @@
 //! Pure domain models and pipeline traits for `brigid`.
 //!
 //! This crate intentionally performs no network or filesystem I/O so it stays
-//! trivially unit-testable. Crawling lives in `brigid-crawl`, provider clients
-//! in `brigid-llm`, and stage orchestration in `brigid-pipeline`.
+//! trivially unit-testable. Crawling lives in `brigid-crawl`, LLM provider
+//! calls in `llm-kernel` (wired by `brigid-pipeline`), and stage orchestration
+//! in `brigid-pipeline`.
 //!
 //! Domain types (`FileBlob`, `ModuleKey`, `Abstraction`, `Relationship`,
 //! `Chapter`, `RunConfig`, `Checkpoint`, ...) and pure helpers (context

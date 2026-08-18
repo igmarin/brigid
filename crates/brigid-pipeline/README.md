@@ -45,8 +45,8 @@ The Jinja2 prompt templates used by the LLM stages live in [`crates/brigid-pipel
 
 - `brigid-core` — pure domain types and logic
 - `brigid-crawl` — filesystem and GitHub repository crawling
-- `brigid-llm` — deprecated LLM clients (use `llm-kernel` via this crate)
-- `brigid-pipeline` — this crate: stage orchestration, checkpoint/resume, dry-run planning
+- `brigid-pipeline` — this crate: stage orchestration, checkpoint/resume, LLM client wiring
+- `brigid-mcp` — MCP server for codebase knowledge querying
 - `brigid-cli` — the `brigid` binary
 
 All crates are developed together in a single repository: <https://github.com/igmarin/brigid>.

@@ -30,10 +30,8 @@ variables listed in the **Inputs** column.
 
 - The `brigid-pipeline` crate must supply the exact variable names listed in the
   **Inputs** column. Any mismatch will cause a minijinja/Tera render error.
-- At runtime the templates should be embedded with `include_str!` so the binary
-  does not depend on the `prompts/` directory layout at execution time. Full
-  production embedding in `brigid-pipeline` / `brigid-llm` is left to the
-  integration PR.
+- At runtime the templates are embedded with `include_str!` so the binary
+  does not depend on the `prompts/` directory layout at execution time.
 - Treat all string variables as untrusted user input: pre-validate or escape
   them before rendering. `language_instruction`, `lang_note`, and similar
   free-text variables must never contain raw `{{ }}` Jinja syntax, or they may
