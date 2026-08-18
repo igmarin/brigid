@@ -14,12 +14,157 @@ use brigid_core::progress::BudgetExceeded;
 use futures::future::join_all;
 use llm_kernel::error::KernelError;
 use llm_kernel::llm::{ChatMessage, LLMClient, LLMRequest, LLMResponse, LLMStream};
+use llm_kernel::store::KvStore;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
 /// Alias for the kernel client trait used throughout the pipeline.
 pub use llm_kernel::llm::LLMClient as LlmClient;
+
+/// Cache hit/miss statistics, queryable after a run.
+#[derive(Debug, Default, Clone)]
+pub struct CacheStats {
+    /// Number of cache hits (responses served from cache).
+    pub hits: u64,
+    /// Number of cache misses (responses fetched from the upstream client).
+    pub misses: u64,
+}
+
+impl CacheStats {
+    /// Total number of cache lookups (hits + misses).
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.hits + self.misses
+    }
+
+    /// Hit rate as a percentage (0–100). Returns 0 when there are no lookups.
+    #[must_use]
+    pub fn hit_rate_percent(&self) -> f64 {
+        if self.total() == 0 {
+            0.0
+        } else {
+            (self.hits as f64 / self.total() as f64) * 100.0
+        }
+    }
+}
+
+/// Shared atomic counters for cache hit/miss tracking.
+///
+/// Uses `AtomicU64` so increments are atomic and never panic (unlike
+/// `Mutex::lock().unwrap()` which would violate the library-code
+/// no-panic rule).
+#[derive(Debug, Default)]
+struct AtomicCacheStats {
+    hits: std::sync::atomic::AtomicU64,
+    misses: std::sync::atomic::AtomicU64,
+}
+
+impl AtomicCacheStats {
+    fn snapshot(&self) -> CacheStats {
+        use std::sync::atomic::Ordering::Relaxed;
+        CacheStats {
+            hits: self.hits.load(Relaxed),
+            misses: self.misses.load(Relaxed),
+        }
+    }
+}
+
+/// A shared handle to cache statistics that can be queried after the client
+/// has been moved or consumed.
+///
+/// Cloning the handle is cheap (it shares the underlying atomics). Call
+/// [`CacheStatsHandle::snapshot`] to read the current hit/miss counts.
+#[derive(Debug, Clone)]
+pub struct CacheStatsHandle {
+    inner: Arc<AtomicCacheStats>,
+}
+
+impl CacheStatsHandle {
+    /// Create a handle with zero stats — useful as a placeholder when
+    /// the client is a mock (no cache to track).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(AtomicCacheStats::default()),
+        }
+    }
+
+    /// Read the current hit/miss statistics.
+    #[must_use]
+    pub fn snapshot(&self) -> CacheStats {
+        self.inner.snapshot()
+    }
+}
+
+/// A [`KvStore`] wrapper that counts cache hit/miss statistics.
+///
+/// Wraps the inner `KvStore` and counts `get()` calls returning `Some`
+/// as hits and `None` as misses. This is the correct layer for cache
+/// statistics: `llm_kernel::llm::CacheClient` calls `store.get(key)` on
+/// every `complete()` call, so counting at the store level gives exact
+/// hit/miss counts without duplicating `CacheClient`'s private cache-key
+/// derivation.
+///
+/// Unlike a probe-based approach, this is race-free: the count reflects
+/// the actual lookups performed by `CacheClient`, not a separate probe
+/// that may race with concurrent calls. It also avoids a second KV
+/// lookup per LLM call.
+///
+/// `put` and `delete` are pass-through and do not affect stats.
+pub struct CountingKvStore {
+    inner: Arc<dyn KvStore>,
+    stats: Arc<AtomicCacheStats>,
+}
+
+impl CountingKvStore {
+    /// Wrap `inner` with hit/miss counting.
+    #[must_use]
+    pub fn new(inner: Arc<dyn KvStore>) -> Self {
+        Self {
+            inner,
+            stats: Arc::new(AtomicCacheStats::default()),
+        }
+    }
+
+    /// Get a clone of the shared stats handle, useful for collecting stats
+    /// after a run when the store has been moved into a `CacheClient`.
+    #[must_use]
+    pub fn stats_handle(&self) -> CacheStatsHandle {
+        CacheStatsHandle {
+            inner: Arc::clone(&self.stats),
+        }
+    }
+}
+
+impl KvStore for CountingKvStore {
+    fn get(&self, key: &str) -> llm_kernel::error::Result<Option<Vec<u8>>> {
+        let result = self.inner.get(key);
+        // Only count hits/misses on successful lookups. An SQLite error is
+        // neither a hit nor a miss — counting it would make the hit rate
+        // misleadingly low and confuse users into thinking an LLM call was
+        // made when the run actually failed.
+        use std::sync::atomic::Ordering::Relaxed;
+        match &result {
+            Ok(Some(_)) => {
+                self.stats.hits.fetch_add(1, Relaxed);
+            }
+            Ok(None) => {
+                self.stats.misses.fetch_add(1, Relaxed);
+            }
+            Err(_) => {}
+        }
+        result
+    }
+
+    fn put(&self, key: &str, value: &[u8]) -> llm_kernel::error::Result<()> {
+        self.inner.put(key, value)
+    }
+
+    fn delete(&self, key: &str) -> llm_kernel::error::Result<bool> {
+        self.inner.delete(key)
+    }
+}
 
 /// Hosts allowed to receive an `Authorization` header.
 ///
@@ -376,6 +521,10 @@ pub fn resolve_llm_config(
 /// errors, optionally wrapped in `llm_kernel::llm::CacheClient` for response
 /// caching.
 ///
+/// When a cache store is provided, it is wrapped in [`CountingKvStore`] so
+/// cache hit/miss statistics can be reported after the run. The returned
+/// [`CacheStatsHandle`] is a placeholder (always zero) when no cache is used.
+///
 /// Uses [`resolve_llm_config`] for provider/model/key resolution.
 ///
 /// # Errors
@@ -387,7 +536,7 @@ pub fn build_live_client(
     provider: Option<&str>,
     model: Option<&str>,
     extra_hosts: &[String],
-) -> Result<Box<dyn LLMClient>, String> {
+) -> Result<(Box<dyn LLMClient>, CacheStatsHandle), String> {
     use llm_kernel::llm::{CacheClient, ModelConfig, OpenAIClient, RetryClient, RetryConfig};
 
     let resolved = resolve_llm_config(provider, model, extra_hosts)?;
@@ -405,10 +554,178 @@ pub fn build_live_client(
     let client = RetryClient::new(client, RetryConfig::default());
 
     if let Some(store) = cache {
-        Ok(Box::new(CacheClient::new(client, store)))
+        let counting = CountingKvStore::new(store as Arc<dyn KvStore>);
+        let handle = counting.stats_handle();
+        Ok((
+            Box::new(CacheClient::new(client, Arc::new(counting))),
+            handle,
+        ))
     } else {
-        Ok(Box::new(client))
+        Ok((Box::new(client), CacheStatsHandle::empty()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cache admin — entry count, prune, on-disk size for `brigid cache` CLI.
+// ---------------------------------------------------------------------------
+
+/// Admin operations on a `SqliteKvStore` cache database.
+///
+/// Encapsulates the SQLite-specific details (table name, WAL/SHM sidecars,
+/// locking) so the CLI layer doesn't need a direct `rusqlite` dependency.
+/// The CLI's `brigid cache prune` and `brigid cache stats` subcommands
+/// delegate to these methods.
+pub struct CacheAdmin;
+
+impl CacheAdmin {
+    /// Count rows in the `kv` table of a SQLite cache database.
+    ///
+    /// Opens the database read-only so a stats query never creates or
+    /// modifies the cache file (or its WAL/SHM sidecars).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the database cannot be opened (missing,
+    /// corrupt, locked) or the `kv` table doesn't exist. The CLI can
+    /// distinguish "file not found" from "cannot read" by checking
+    /// `db_path.exists()` before calling this method.
+    pub fn entry_count(db_path: &std::path::Path) -> Result<u64, String> {
+        use rusqlite::{Connection, OpenFlags};
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(db_path, flags)
+            .map_err(|e| format!("cannot open database read-only: {e}"))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
+            .map_err(|e| format!("cannot query kv table: {e}"))?;
+        Ok(count as u64)
+    }
+
+    /// On-disk size of the cache database in bytes, including WAL/SHM sidecars.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the main database file's metadata cannot
+    /// be read. Sidecar files (WAL/SHM) that are missing or unreadable
+    /// contribute 0 to the total — they may not exist if the WAL was
+    /// checkpointed.
+    pub fn on_disk_size(db_path: &std::path::Path) -> Result<u64, String> {
+        let main_size = std::fs::metadata(db_path)
+            .map_err(|e| format!("cannot read metadata for {}: {e}", db_path.display()))?
+            .len();
+        let mut total = main_size;
+        for suffix in &["-wal", "-shm"] {
+            let sidecar = append_suffix(db_path, suffix);
+            if let Ok(meta) = std::fs::metadata(&sidecar) {
+                total += meta.len();
+            }
+        }
+        Ok(total)
+    }
+
+    /// Delete all cache entries and remove the database files.
+    ///
+    /// This is a two-phase operation to be safe under concurrency:
+    ///
+    /// 1. **Inside the transaction** (holding a `RESERVED` write lock):
+    ///    `DELETE FROM kv` clears all entries, then `COMMIT` finalizes
+    ///    the deletion. After committing, `PRAGMA wal_checkpoint(TRUNCATE)`
+    ///    flushes the WAL into the main DB file and truncates the WAL.
+    ///    The checkpoint runs *after* the commit because SQLite will not
+    ///    checkpoint while a transaction is active. If the checkpoint is
+    ///    busy (another process is reading), the method returns an error
+    ///    instructing the user to re-run prune.
+    ///
+    /// 2. **After checkpointing**: the database, WAL, and SHM files are
+    ///    unlinked. The data is already gone and checkpointed, so even if
+    ///    a concurrent process reopens the database in this window, it
+    ///    will find an empty cache (0 entries) — not a corrupted one.
+    ///
+    /// `BEGIN IMMEDIATE` acquires a `RESERVED` lock, which blocks other
+    /// writers but not readers. A concurrent `brigid generate` that is
+    /// actively reading cached responses will continue to work; after
+    /// prune commits, new cache misses will fetch fresh responses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the database cannot be opened, the
+    /// write lock cannot be acquired (another process is mid-transaction),
+    /// or a file cannot be removed.
+    pub fn prune(db_path: &std::path::Path) -> Result<u64, String> {
+        if !db_path.exists() {
+            return Ok(0);
+        }
+
+        // Phase 1: clear all data inside a transaction, then checkpoint
+        // the WAL *after* committing. SQLite will not perform a WAL
+        // checkpoint while a transaction is active, so the checkpoint
+        // must run outside the transaction.
+        {
+            use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let mut conn = Connection::open_with_flags(db_path, flags)
+                .map_err(|e| format!("cannot open database for pruning: {e}"))?;
+            conn.busy_timeout(std::time::Duration::from_millis(500))
+                .map_err(|e| format!("could not set busy timeout: {e}"))?;
+            // BEGIN IMMEDIATE acquires a RESERVED lock, blocking other
+            // writers. The transaction rolls back automatically on drop
+            // if commit() is not called.
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|e| {
+                    format!(
+                        "cannot acquire write lock: {e} \
+                         — the cache is in use by another brigid process"
+                    )
+                })?;
+            // Delete all rows inside the transaction.
+            tx.execute_batch("DELETE FROM kv")
+                .map_err(|e| format!("failed to clear kv table: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("failed to commit prune transaction: {e}"))?;
+            // Checkpoint and truncate the WAL *after* committing so the
+            // main DB file reflects the deletion and the WAL file is
+            // safe to remove. PRAGMA wal_checkpoint(TRUNCATE) returns a
+            // row: (busy, log_frames, checkpointed_frames). We check
+            // that it's not busy (0 = success).
+            let checkpoint_result: (i64, i64, i64) = conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(|e| format!("WAL checkpoint failed: {e}"))?;
+            if checkpoint_result.0 != 0 {
+                return Err(
+                    "WAL checkpoint was busy — another process is using the cache; \
+                     the data has been deleted but the WAL may still contain stale pages. \
+                     Re-run `brigid cache prune` to remove the files."
+                        .to_string(),
+                );
+            }
+            // Drop the connection to release the lock before unlinking.
+            drop(conn);
+        }
+
+        // Phase 2: remove the files. The data is already gone (DELETE FROM
+        // kv committed and checkpointed), so even if a concurrent process
+        // reopens the database in this window, it will find an empty cache
+        // — not a corrupted one.
+        let mut removed = 0u64;
+        for suffix in &["", "-wal", "-shm"] {
+            let path = append_suffix(db_path, suffix);
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+/// Append a suffix to a path's file name, preserving the parent directory.
+fn append_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut buf = path.as_os_str().to_owned();
+    buf.push(suffix);
+    std::path::PathBuf::from(buf)
 }
 
 /// Prompt-shaped errors matching the historical `brigid-llm` surface so
@@ -1241,5 +1558,253 @@ mod resolve_tests {
         let extra = vec!["my-proxy.internal".to_string()];
         let err = validate_llm_base_url_with("http://my-proxy.internal/v1", &extra).unwrap_err();
         assert!(err.to_string().contains("requires https"), "got: {err}");
+    }
+
+    // --- CacheStats ---
+
+    #[test]
+    fn cache_stats_default_is_zero() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.total(), 0);
+        assert_eq!(stats.hit_rate_percent(), 0.0);
+    }
+
+    #[test]
+    fn cache_stats_hit_rate() {
+        let stats = CacheStats { hits: 3, misses: 1 };
+        assert_eq!(stats.total(), 4);
+        assert_eq!(stats.hit_rate_percent(), 75.0);
+    }
+
+    #[test]
+    fn cache_stats_all_misses() {
+        let stats = CacheStats { hits: 0, misses: 5 };
+        assert_eq!(stats.total(), 5);
+        assert_eq!(stats.hit_rate_percent(), 0.0);
+    }
+
+    #[test]
+    fn cache_stats_all_hits() {
+        let stats = CacheStats { hits: 5, misses: 0 };
+        assert_eq!(stats.total(), 5);
+        assert_eq!(stats.hit_rate_percent(), 100.0);
+    }
+
+    // --- CountingKvStore ---
+
+    #[tokio::test]
+    async fn counting_kv_store_tracks_miss_then_hit() {
+        use llm_kernel::llm::CacheClient;
+        use llm_kernel::store::kv::SqliteKvStore;
+
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let counting = CountingKvStore::new(store as Arc<dyn KvStore>);
+        let handle = counting.stats_handle();
+
+        // Build a CacheClient<MockClient> backed by the CountingKvStore.
+        let mock = MockClient::new("cached response");
+        let cached = CacheClient::new(mock, Arc::new(counting));
+        let req = LLMRequest::builder().user_message("hello").build();
+
+        // First call: miss (entry not in store yet, CacheClient fetches and stores).
+        let _r1 = cached.complete(req.clone()).await.unwrap();
+        let stats_after_first = handle.snapshot();
+        assert_eq!(stats_after_first.misses, 1);
+        assert_eq!(stats_after_first.hits, 0);
+
+        // Second call: hit (entry now in store, CacheClient serves from cache).
+        let _r2 = cached.complete(req).await.unwrap();
+        let stats_after_second = handle.snapshot();
+        assert_eq!(stats_after_second.misses, 1);
+        assert_eq!(stats_after_second.hits, 1);
+        assert_eq!(stats_after_second.hit_rate_percent(), 50.0);
+    }
+
+    #[test]
+    fn cache_stats_handle_empty_is_zero() {
+        let handle = CacheStatsHandle::empty();
+        let stats = handle.snapshot();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.total(), 0);
+    }
+
+    #[test]
+    fn counting_kv_store_put_does_not_affect_stats() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let counting = CountingKvStore::new(store as Arc<dyn KvStore>);
+        let handle = counting.stats_handle();
+
+        // put and delete should not affect hit/miss stats.
+        counting.put("key1", b"value1").unwrap();
+        counting.delete("key1").unwrap();
+        let stats = handle.snapshot();
+        assert_eq!(stats.total(), 0);
+    }
+
+    #[test]
+    fn counting_kv_store_get_counts_hits_and_misses() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let counting = CountingKvStore::new(store as Arc<dyn KvStore>);
+        let handle = counting.stats_handle();
+
+        // Miss: key doesn't exist.
+        let _ = counting.get("missing");
+        // Put a key, then hit.
+        counting.put("key1", b"value1").unwrap();
+        let _ = counting.get("key1");
+        // Hit again.
+        let _ = counting.get("key1");
+        // Another miss.
+        let _ = counting.get("missing2");
+
+        let stats = handle.snapshot();
+        assert_eq!(stats.hits, 2);
+        assert_eq!(stats.misses, 2);
+        assert_eq!(stats.total(), 4);
+        assert_eq!(stats.hit_rate_percent(), 50.0);
+    }
+
+    // --- CacheAdmin ---
+
+    #[test]
+    fn cache_admin_entry_count_reads_existing_db() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        store.put("k3", b"v3").unwrap();
+        drop(store);
+
+        assert_eq!(CacheAdmin::entry_count(&db_path).unwrap(), 3);
+    }
+
+    #[test]
+    fn cache_admin_entry_count_returns_err_for_missing_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("nonexistent.sqlite");
+        // Read-only open of a missing file returns an error, not 0.
+        assert!(CacheAdmin::entry_count(&db_path).is_err());
+    }
+
+    #[test]
+    fn cache_admin_entry_count_does_not_create_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+        assert!(!db_path.exists());
+        let _ = CacheAdmin::entry_count(&db_path);
+        assert!(
+            !db_path.exists(),
+            "read-only open created the database file"
+        );
+    }
+
+    #[test]
+    fn cache_admin_prune_deletes_existing_db() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("key1", b"value1").unwrap();
+        drop(store);
+        assert!(db_path.exists());
+
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert!(removed > 0);
+        assert!(!db_path.exists());
+    }
+
+    #[test]
+    fn cache_admin_prune_no_file_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("nonexistent.sqlite");
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn cache_admin_prune_clears_entries_before_removing_files() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        drop(store);
+
+        // Prune should clear all entries (DELETE FROM kv) and remove files.
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert!(removed > 0);
+        assert!(!db_path.exists());
+    }
+
+    /// Regression test: after prune, the database should not contain
+    /// any entries. This catches the case where the WAL was not
+    /// checkpointed before file removal, which could resurrect stale
+    /// entries when the DB is reopened.
+    #[test]
+    fn cache_admin_prune_does_not_resurrect_entries() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        // Seed the cache with entries.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        store.put("k3", b"v3").unwrap();
+        drop(store);
+
+        // Prune removes the files entirely, so there's nothing to reopen.
+        // But if prune failed to checkpoint the WAL before unlinking,
+        // the -wal file might still exist with uncommitted pages. After
+        // prune, no files should remain.
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert!(removed > 0);
+        assert!(!db_path.exists());
+        assert!(!append_suffix(&db_path, "-wal").exists());
+        assert!(!append_suffix(&db_path, "-shm").exists());
+
+        // If we recreate the DB at the same path, it should start empty.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        assert!(store.get("k1").unwrap().is_none());
+        assert!(store.get("k2").unwrap().is_none());
+        assert!(store.get("k3").unwrap().is_none());
+        drop(store);
+        // Clean up.
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn cache_admin_on_disk_size_includes_sidecars() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        drop(store);
+
+        let size = CacheAdmin::on_disk_size(&db_path).unwrap();
+        assert!(
+            size > 0,
+            "on_disk_size should be positive for a non-empty DB"
+        );
+    }
+
+    #[test]
+    fn cache_admin_on_disk_size_err_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("nonexistent.sqlite");
+        assert!(CacheAdmin::on_disk_size(&db_path).is_err());
     }
 }

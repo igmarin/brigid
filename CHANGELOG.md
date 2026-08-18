@@ -12,6 +12,40 @@ tracks the latest.
 
 ## [Unreleased]
 
+### Cache management (issue #300)
+
+- **Added `brigid cache prune` subcommand**: clears all cache entries and
+  removes the SQLite database file and its WAL/SHM sidecars. Uses a
+  two-phase approach for safety under concurrency: (1) `DELETE FROM kv`
+  inside a `BEGIN IMMEDIATE` transaction, then `COMMIT`; (2)
+  `PRAGMA wal_checkpoint(TRUNCATE)` after commit to flush the WAL into
+  the main DB; (3) file removal after checkpoint. If a concurrent
+  process reopens the database between phases, it finds an empty cache
+  (0 entries) — not a corrupted one. Replaces the previous manual
+  `rm -rf` workaround.
+- **Added `brigid cache stats` subcommand**: prints the cache file path, entry
+  count, and on-disk size (including WAL/SHM sidecars). Opens the database
+  read-only so it never creates or modifies cache files.
+- **Added `brigid_pipeline::CountingKvStore`**: a `KvStore` wrapper that
+  counts cache hit/miss statistics at the store level. When `CacheClient`
+  calls `store.get(key)`, the `CountingKvStore` counts `Some` as a hit and
+  `None` as a miss. This is the correct layer for cache statistics — no
+  duplicated cache-key derivation, no race conditions, no extra KV lookups.
+  Exports `CacheStats`, `CacheStatsHandle`, and `CountingKvStore` from
+  `brigid_pipeline`. Wired into `build_live_client` so the CLI's `generate`
+  and `generate --each-app` verbose output reports cache hit/miss counts
+  and hit rate.
+- **Added `brigid_pipeline::CacheAdmin`**: admin operations on a
+  `SqliteKvStore` cache database (`entry_count`, `on_disk_size`, `prune`).
+  Encapsulates SQLite-specific details (table name, WAL/SHM sidecars,
+  locking) so the CLI layer doesn't need a direct `rusqlite` dependency.
+  The `brigid cache prune` and `brigid cache stats` subcommands delegate to
+  these methods.
+- **Moved `rusqlite` dependency** from `brigid-cli` to `brigid-pipeline`.
+  The CLI is now a thin wiring layer that calls `CacheAdmin` methods.
+- Updated `BRIGID_NO_CACHE` help text to mention `brigid cache prune` and
+  `brigid cache stats`.
+
 ### Phase 4: brigid-llm removal (issue #297)
 
 - **Removed `brigid-llm` crate** from the workspace. The CLI now uses
@@ -32,14 +66,16 @@ tracks the latest.
 - **Cache backend changed** from `brigid_llm::DiskCache` (file-based with LRU
   eviction and size limits) to `llm_kernel::store::SqliteKvStore` (SQLite-backed
   KV store). Trade-offs:
-  - The SQLite cache does **not** enforce a size limit. Clear it manually with
-    `rm -rf <cache-dir>/cache.sqlite` or set `BRIGID_NO_CACHE=1` to disable
-    caching entirely. A `brigid cache prune` subcommand is planned.
+  - The SQLite cache does **not** enforce a size limit. Use `brigid cache prune`
+    to delete all cached responses, or set `BRIGID_NO_CACHE=1` to disable
+    caching entirely.
   - Cache keys include the model name and full request JSON (via
     `llm_kernel::CacheClient`), so switching models or providers does not
     produce incorrect cache hits.
-  - Cache hit/miss stats are no longer reported in verbose output. The
-    `llm_kernel::CacheClient` API does not expose stats counters.
+  - Cache hit/miss stats are available via
+    `brigid_pipeline::CountingKvStore`, which counts `KvStore` lookups.
+    The CLI's verbose output reports cache status; use `brigid cache stats`
+    for entry count and on-disk size.
   - The cache stores full prompt and response bodies on disk. Crawled
     repositories may contain secrets in source files; these are truncated and
     batched before being sent to the LLM, but the cache persists the full
