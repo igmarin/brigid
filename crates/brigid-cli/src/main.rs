@@ -2858,7 +2858,7 @@ fn cmd_generate_each_app(
     );
 
     let cache = build_llm_cache(&run_config);
-    let (client, _cache_stats): (Box<dyn LlmClient>, brigid_pipeline::CacheStatsHandle) =
+    let (client, cache_stats): (Box<dyn LlmClient>, brigid_pipeline::CacheStatsHandle) =
         if force_mock_client() {
             print_progress(
                 verbosity,
@@ -3045,7 +3045,7 @@ fn cmd_generate_each_app(
         }
     });
     if verbosity.is_verbose() {
-        print_cache_stats(cache.as_ref(), &_cache_stats);
+        print_cache_stats(cache.as_ref(), &cache_stats);
     }
     exit_code
 }
@@ -3764,8 +3764,22 @@ fn cmd_cache_stats(db_path: &Path) -> ExitCode {
     }
 
     let db_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
-    let entry_count = brigid_pipeline::CacheAdmin::entry_count(db_path).unwrap_or(0);
-    let total_size = brigid_pipeline::CacheAdmin::on_disk_size(db_path);
+
+    let entry_count = match brigid_pipeline::CacheAdmin::entry_count(db_path) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("cache: cannot read entry count: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
+
+    let total_size = match brigid_pipeline::CacheAdmin::on_disk_size(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cache: cannot read on-disk size: {e}");
+            return ExitCode::from(EXIT_FAIL);
+        }
+    };
 
     eprintln!("cache: {}", db_path.display());
     eprintln!("  entries: {entry_count}");
@@ -4680,8 +4694,8 @@ mod tests {
         drop(store);
 
         // Stats should report 3 entries.
-        let count = brigid_pipeline::CacheAdmin::entry_count(&db_path);
-        assert_eq!(count, Some(3));
+        let count = brigid_pipeline::CacheAdmin::entry_count(&db_path).unwrap();
+        assert_eq!(count, 3);
 
         let code = cmd_cache_stats(&db_path);
         assert_eq!(code, ExitCode::from(EXIT_OK));

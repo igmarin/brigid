@@ -14,10 +14,14 @@ tracks the latest.
 
 ### Cache management (issue #300)
 
-- **Added `brigid cache prune` subcommand**: deletes the SQLite cache database
-  and its WAL/SHM sidecars. Acquires an exclusive SQLite lock before deleting
-  to prevent corrupting a cache that is actively in use by another `brigid`
-  process. Replaces the previous manual `rm -rf` workaround.
+- **Added `brigid cache prune` subcommand**: clears all cache entries and
+  removes the SQLite database file and its WAL/SHM sidecars. Uses a
+  two-phase approach for safety under concurrency: (1) `DELETE FROM kv`
+  and `PRAGMA wal_checkpoint(TRUNCATE)` inside a `BEGIN IMMEDIATE`
+  transaction, then (2) file removal after commit. If a concurrent
+  process reopens the database between phases, it finds an empty cache
+  (0 entries) — not a corrupted one. Replaces the previous manual
+  `rm -rf` workaround.
 - **Added `brigid cache stats` subcommand**: prints the cache file path, entry
   count, and on-disk size (including WAL/SHM sidecars). Opens the database
   read-only so it never creates or modifies cache files.

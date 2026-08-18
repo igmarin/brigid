@@ -140,12 +140,20 @@ impl CountingKvStore {
 impl KvStore for CountingKvStore {
     fn get(&self, key: &str) -> llm_kernel::error::Result<Option<Vec<u8>>> {
         let result = self.inner.get(key);
+        // Only count hits/misses on successful lookups. An SQLite error is
+        // neither a hit nor a miss — counting it would make the hit rate
+        // misleadingly low and confuse users into thinking an LLM call was
+        // made when the run actually failed.
         use std::sync::atomic::Ordering::Relaxed;
         match &result {
-            Ok(Some(_)) => self.stats.hits.fetch_add(1, Relaxed),
-            Ok(None) => self.stats.misses.fetch_add(1, Relaxed),
-            Err(_) => self.stats.misses.fetch_add(1, Relaxed),
-        };
+            Ok(Some(_)) => {
+                self.stats.hits.fetch_add(1, Relaxed);
+            }
+            Ok(None) => {
+                self.stats.misses.fetch_add(1, Relaxed);
+            }
+            Err(_) => {}
+        }
         result
     }
 
@@ -573,55 +581,77 @@ impl CacheAdmin {
     /// Count rows in the `kv` table of a SQLite cache database.
     ///
     /// Opens the database read-only so a stats query never creates or
-    /// modifies the cache file (or its WAL/SHM sidecars). Returns `None`
-    /// if the database cannot be opened or the `kv` table doesn't exist.
-    #[must_use]
-    pub fn entry_count(db_path: &std::path::Path) -> Option<u64> {
+    /// modifies the cache file (or its WAL/SHM sidecars).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the database cannot be opened (missing,
+    /// corrupt, locked) or the `kv` table doesn't exist. The CLI can
+    /// distinguish "file not found" from "cannot read" by checking
+    /// `db_path.exists()` before calling this method.
+    pub fn entry_count(db_path: &std::path::Path) -> Result<u64, String> {
         use rusqlite::{Connection, OpenFlags};
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(db_path, flags).ok()?;
+        let conn = Connection::open_with_flags(db_path, flags)
+            .map_err(|e| format!("cannot open database read-only: {e}"))?;
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
-            .ok()?;
-        Some(count as u64)
+            .map_err(|e| format!("cannot query kv table: {e}"))?;
+        Ok(count as u64)
     }
 
     /// On-disk size of the cache database in bytes, including WAL/SHM sidecars.
     ///
-    /// Returns `0` if the main database file doesn't exist or its metadata
-    /// cannot be read.
-    #[must_use]
-    pub fn on_disk_size(db_path: &std::path::Path) -> u64 {
-        let mut total = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+    /// # Errors
+    ///
+    /// Returns an error string if the main database file's metadata cannot
+    /// be read. Sidecar files (WAL/SHM) that are missing or unreadable
+    /// contribute 0 to the total — they may not exist if the WAL was
+    /// checkpointed.
+    pub fn on_disk_size(db_path: &std::path::Path) -> Result<u64, String> {
+        let main_size = std::fs::metadata(db_path)
+            .map_err(|e| format!("cannot read metadata for {}: {e}", db_path.display()))?
+            .len();
+        let mut total = main_size;
         for suffix in &["-wal", "-shm"] {
-            let sidecar = std::path::PathBuf::from(format!("{}{suffix}", db_path.display()));
+            let sidecar = append_suffix(db_path, suffix);
             if let Ok(meta) = std::fs::metadata(&sidecar) {
                 total += meta.len();
             }
         }
-        total
+        Ok(total)
     }
 
-    /// Delete the cache database file and its WAL/SHM sidecars.
+    /// Delete all cache entries and remove the database files.
     ///
-    /// Before deleting, acquires an exclusive SQLite lock on the database
-    /// to ensure no other `brigid` process is actively using the cache.
-    /// If the cache is busy, returns `Err` with a descriptive message and
-    /// does not delete anything.
+    /// This is a two-phase operation to be safe under concurrency:
+    ///
+    /// 1. **Inside the transaction** (holding a `RESERVED` write lock):
+    ///    `DELETE FROM kv` clears all entries, then
+    ///    `PRAGMA wal_checkpoint(TRUNCATE)` flushes and truncates the WAL.
+    ///    After this, the data is gone even if file removal races.
+    ///
+    /// 2. **After committing**: the database, WAL, and SHM files are
+    ///    unlinked. If a concurrent process opens the database in the
+    ///    window between commit and unlink, it will find an empty cache
+    ///    (0 entries) — not a corrupted one.
+    ///
+    /// `BEGIN IMMEDIATE` acquires a `RESERVED` lock, which blocks other
+    /// writers but not readers. A concurrent `brigid generate` that is
+    /// actively reading cached responses will continue to work; after
+    /// prune commits, new cache misses will fetch fresh responses.
     ///
     /// # Errors
     ///
     /// Returns an error string if the database cannot be opened, the
-    /// exclusive lock cannot be acquired (cache is in use), or a file
-    /// cannot be removed.
+    /// write lock cannot be acquired (another process is mid-transaction),
+    /// or a file cannot be removed.
     pub fn prune(db_path: &std::path::Path) -> Result<u64, String> {
         if !db_path.exists() {
             return Ok(0);
         }
 
-        // Acquire an exclusive lock by opening the DB and starting an
-        // immediate transaction. If another process holds the DB open with
-        // an active connection, this fails with SQLITE_BUSY.
+        // Phase 1: clear all data inside a transaction.
         {
             use rusqlite::{Connection, OpenFlags};
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -631,22 +661,29 @@ impl CacheAdmin {
                 .map_err(|e| format!("could not set busy timeout: {e}"))?;
             conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| {
                 format!(
-                    "cannot acquire exclusive lock: {e} \
-                         — the cache is in use by another brigid process"
+                    "cannot acquire write lock: {e} \
+                     — the cache is in use by another brigid process"
                 )
             })?;
+            // Delete all rows inside the transaction.
+            conn.execute_batch("DELETE FROM kv")
+                .map_err(|e| format!("failed to clear kv table: {e}"))?;
+            // Checkpoint and truncate the WAL so the WAL file can be
+            // safely removed after commit.
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("failed to commit prune transaction: {e}"))?;
             // Drop the connection to release the lock before unlinking.
-            // The transaction is rolled back automatically on drop.
             drop(conn);
         }
 
+        // Phase 2: remove the files. The data is already gone (DELETE FROM
+        // kv committed), so even if a concurrent process reopens the
+        // database in this window, it will find an empty cache — not a
+        // corrupted one.
         let mut removed = 0u64;
         for suffix in &["", "-wal", "-shm"] {
-            let path = if suffix.is_empty() {
-                db_path.to_path_buf()
-            } else {
-                std::path::PathBuf::from(format!("{}{suffix}", db_path.display()))
-            };
+            let path = append_suffix(db_path, suffix);
             if path.exists() {
                 std::fs::remove_file(&path)
                     .map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
@@ -655,6 +692,13 @@ impl CacheAdmin {
         }
         Ok(removed)
     }
+}
+
+/// Append a suffix to a path's file name, preserving the parent directory.
+fn append_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut buf = path.as_os_str().to_owned();
+    buf.push(suffix);
+    std::path::PathBuf::from(buf)
 }
 
 /// Prompt-shaped errors matching the historical `brigid-llm` surface so
@@ -1612,15 +1656,15 @@ mod resolve_tests {
         store.put("k3", b"v3").unwrap();
         drop(store);
 
-        assert_eq!(CacheAdmin::entry_count(&db_path), Some(3));
+        assert_eq!(CacheAdmin::entry_count(&db_path).unwrap(), 3);
     }
 
     #[test]
-    fn cache_admin_entry_count_returns_none_for_missing_db() {
+    fn cache_admin_entry_count_returns_err_for_missing_db() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("nonexistent.sqlite");
-        // Read-only open of a missing file returns None, not 0.
-        assert_eq!(CacheAdmin::entry_count(&db_path), None);
+        // Read-only open of a missing file returns an error, not 0.
+        assert!(CacheAdmin::entry_count(&db_path).is_err());
     }
 
     #[test]
@@ -1660,6 +1704,23 @@ mod resolve_tests {
     }
 
     #[test]
+    fn cache_admin_prune_clears_entries_before_removing_files() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        drop(store);
+
+        // Prune should clear all entries (DELETE FROM kv) and remove files.
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert!(removed > 0);
+        assert!(!db_path.exists());
+    }
+
+    #[test]
     fn cache_admin_on_disk_size_includes_sidecars() {
         use llm_kernel::store::kv::SqliteKvStore;
         let dir = tempfile::tempdir().unwrap();
@@ -1669,7 +1730,7 @@ mod resolve_tests {
         store.put("k1", b"v1").unwrap();
         drop(store);
 
-        let size = CacheAdmin::on_disk_size(&db_path);
+        let size = CacheAdmin::on_disk_size(&db_path).unwrap();
         assert!(
             size > 0,
             "on_disk_size should be positive for a non-empty DB"
@@ -1677,9 +1738,9 @@ mod resolve_tests {
     }
 
     #[test]
-    fn cache_admin_on_disk_size_zero_for_missing_file() {
+    fn cache_admin_on_disk_size_err_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("nonexistent.sqlite");
-        assert_eq!(CacheAdmin::on_disk_size(&db_path), 0);
+        assert!(CacheAdmin::on_disk_size(&db_path).is_err());
     }
 }
