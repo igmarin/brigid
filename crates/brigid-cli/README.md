@@ -73,9 +73,11 @@ See `brigid --help` and `brigid <command> --help` for all options.
 
 - `brigid-core` — pure domain types and logic
 - `brigid-crawl` — filesystem and GitHub repository crawling
-- `brigid-llm` — deprecated; pipeline uses `llm-kernel`
 - `brigid-pipeline` — stage orchestration, checkpoint/resume, dry-run planning
 - `brigid-cli` — this crate: the `brigid` binary
+
+LLM provider calls go through [`llm-kernel`](https://crates.io/crates/llm-kernel)
+(`OpenAIClient`, `CacheClient`), an external workspace dependency.
 
 All crates are developed together in a single repository: <https://github.com/igmarin/brigid>.
 

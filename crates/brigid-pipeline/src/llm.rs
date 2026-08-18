@@ -81,6 +81,194 @@ pub fn validate_llm_base_url(base_url: &str) -> Result<(), LlmError> {
     }
 }
 
+/// Resolved LLM client configuration: the env var name holding the API key,
+/// the model, and the base URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLlmConfig {
+    /// Provider name for diagnostics (e.g. `"deepseek"`, `"openai"`, `"openrouter"`).
+    pub provider: String,
+    /// Model identifier (e.g. `"deepseek-chat"`, `"gpt-4o"`, `"openai/gpt-4o"`).
+    pub model: String,
+    /// Environment variable name holding the API key.
+    pub api_key_env: String,
+    /// Base URL for the provider API.
+    pub base_url: String,
+}
+
+/// Provider preset metadata used during resolution.
+struct ProviderPreset {
+    base_url: &'static str,
+    default_model: Option<&'static str>,
+    api_key_env: &'static str,
+}
+
+impl ProviderPreset {
+    fn for_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "deepseek" => Some(Self {
+                base_url: "https://api.deepseek.com/v1",
+                default_model: Some("deepseek-chat"),
+                api_key_env: "DEEPSEEK_API_KEY",
+            }),
+            "openai" => Some(Self {
+                base_url: "https://api.openai.com/v1",
+                default_model: None,
+                api_key_env: "OPENAI_API_KEY",
+            }),
+            "openrouter" => Some(Self {
+                base_url: "https://openrouter.ai/api/v1",
+                default_model: None,
+                api_key_env: "OPENROUTER_API_KEY",
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Infer a provider name from a base URL (case-insensitive substring match).
+fn infer_provider_from_base_url(base_url: &str) -> &'static str {
+    let lower = base_url.to_ascii_lowercase();
+    if lower.contains("openrouter") {
+        "openrouter"
+    } else if lower.contains("openai") {
+        "openai"
+    } else {
+        "deepseek"
+    }
+}
+
+/// Resolve LLM client configuration from the environment and optional overrides.
+///
+/// Provider resolution (ADR 0017):
+/// 1. Explicit provider override (or `BRIGID_PROVIDER`) → preset defaults
+/// 2. Else infer provider from `BRIGID_LLM_BASE_URL`
+/// 3. DeepSeek is the default when nothing is specified
+///
+/// API key chain: `BRIGID_LLM_API_KEY` → provider-specific key
+/// (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY`).
+/// A DeepSeek-scoped key is never sent to OpenRouter/OpenAI.
+///
+/// Blank or whitespace-only env values are treated as unset.
+///
+/// # Errors
+///
+/// Returns a human-readable error string when:
+/// - The base URL host is not on the allowed hosts list
+/// - No model is configured for a provider that requires one
+pub fn resolve_llm_config(
+    provider_override: Option<&str>,
+    model_override: Option<&str>,
+) -> Result<ResolvedLlmConfig, String> {
+    let provider_hint = provider_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| nonempty_env("BRIGID_PROVIDER"));
+
+    let preset = provider_hint.as_deref().and_then(ProviderPreset::for_name);
+
+    let (provider_name, default_base_url, default_model, api_key_env) = match &preset {
+        Some(p) => (
+            provider_hint.clone().unwrap_or_default(),
+            p.base_url,
+            p.default_model,
+            p.api_key_env,
+        ),
+        None => {
+            // Unset or custom — infer from base URL.
+            let base_url_env = nonempty_env("BRIGID_LLM_BASE_URL");
+            let inferred = base_url_env
+                .as_deref()
+                .map(infer_provider_from_base_url)
+                .unwrap_or("deepseek");
+            let p = ProviderPreset::for_name(inferred).unwrap_or(ProviderPreset {
+                base_url: "https://api.deepseek.com/v1",
+                default_model: Some("deepseek-chat"),
+                api_key_env: "DEEPSEEK_API_KEY",
+            });
+            (
+                inferred.to_string(),
+                p.base_url,
+                p.default_model,
+                p.api_key_env,
+            )
+        }
+    };
+
+    let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", default_base_url);
+
+    // Validate the base URL host before returning.
+    validate_llm_base_url(&base_url).map_err(|e| e.to_string())?;
+
+    // Model resolution: override → BRIGID_LLM_MODEL → preset default.
+    let model = model_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| nonempty_env("BRIGID_LLM_MODEL"))
+        .or_else(|| default_model.map(|s| s.to_string()))
+        .ok_or_else(|| {
+            "provider requires an explicit model (set model in brigid.toml, \
+             BRIGID_MODEL, or BRIGID_LLM_MODEL)"
+                .to_string()
+        })?;
+
+    // API key resolution: BRIGID_LLM_API_KEY takes precedence over
+    // provider-specific key. This prevents a DeepSeek-scoped key from
+    // being sent to OpenRouter/OpenAI.
+    let api_key_env = if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
+        "BRIGID_LLM_API_KEY"
+    } else {
+        api_key_env
+    };
+
+    Ok(ResolvedLlmConfig {
+        provider: provider_name,
+        model,
+        api_key_env: api_key_env.to_string(),
+        base_url,
+    })
+}
+
+/// Build a live [`LLMClient`] from the environment, wrapped in
+/// `llm_kernel::llm::RetryClient` for bounded exponential backoff on 429/5xx
+/// errors, optionally wrapped in `llm_kernel::llm::CacheClient` for response
+/// caching.
+///
+/// Uses [`resolve_llm_config`] for provider/model/key resolution.
+///
+/// # Errors
+///
+/// Returns a human-readable error string on configuration or client
+/// construction failure.
+pub fn build_live_client(
+    cache: Option<Arc<llm_kernel::store::kv::SqliteKvStore>>,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<Box<dyn LLMClient>, String> {
+    use llm_kernel::llm::{CacheClient, ModelConfig, OpenAIClient, RetryClient, RetryConfig};
+
+    let resolved = resolve_llm_config(provider, model)?;
+
+    let config = ModelConfig {
+        provider: resolved.provider.clone(),
+        model: resolved.model,
+        api_key_env: resolved.api_key_env,
+        base_url: Some(resolved.base_url),
+        temperature: 0.7,
+        max_tokens: Some(4096),
+    };
+
+    let client = OpenAIClient::new(&config).map_err(|e| e.to_string())?;
+    let client = RetryClient::new(client, RetryConfig::default());
+
+    if let Some(store) = cache {
+        Ok(Box::new(CacheClient::new(client, store)))
+    } else {
+        Ok(Box::new(client))
+    }
+}
+
 /// Prompt-shaped errors matching the historical `brigid-llm` surface so
 /// existing match arms and `#[from]` conversions stay readable.
 #[derive(Clone, Debug, Error)]
@@ -423,5 +611,262 @@ mod helper_tests {
     fn validate_llm_base_url_rejects_empty() {
         assert!(validate_llm_base_url("").is_err());
         assert!(validate_llm_base_url("not-a-url").is_err());
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// Helper: run a closure with a set of env vars, restoring the previous
+    /// state afterwards. Uses `unsafe` because `std::env::set_var` is unsafe
+    /// in Rust 2024. Test-only; no concurrent access to these keys.
+    fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
+        let mut saved = Vec::new();
+        for (key, _) in vars {
+            saved.push((*key, std::env::var(key).ok()));
+        }
+        unsafe {
+            for (key, val) in vars {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        f();
+        unsafe {
+            for (key, val) in &saved {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    // Env keys touched by resolve_llm_config. Listed here so tests can
+    // clean up reliably.
+    const ENV_KEYS: &[&str] = &[
+        "BRIGID_PROVIDER",
+        "BRIGID_LLM_BASE_URL",
+        "BRIGID_LLM_MODEL",
+        "BRIGID_LLM_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+    ];
+
+    fn clear_env() -> Vec<(&'static str, Option<&'static str>)> {
+        ENV_KEYS.iter().map(|&k| (k, None)).collect::<Vec<_>>()
+    }
+
+    #[test]
+    #[serial]
+    fn deepseek_default_uses_deepseek_key() {
+        let vars = clear_env();
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.provider, "deepseek");
+            assert_eq!(cfg.model, "deepseek-chat");
+            assert_eq!(cfg.api_key_env, "DEEPSEEK_API_KEY");
+            assert_eq!(cfg.base_url, "https://api.deepseek.com/v1");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn openai_provider_uses_openai_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.provider, "openai");
+            assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
+            assert_eq!(cfg.base_url, "https://api.openai.com/v1");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn openrouter_provider_uses_openrouter_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openrouter")));
+        vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.provider, "openrouter");
+            assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
+            assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        });
+    }
+
+    /// Security: a DeepSeek-scoped key must never be sent to OpenRouter/OpenAI.
+    /// When BRIGID_LLM_API_KEY is set, it takes precedence over all
+    /// provider-specific keys — but if it's NOT set, the provider-specific
+    /// key is used (never a DeepSeek key for OpenAI/OpenRouter).
+    #[test]
+    #[serial]
+    fn openai_never_uses_deepseek_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek-only")));
+        // No OPENAI_API_KEY, no BRIGID_LLM_API_KEY
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
+            // The resolved env var is OPENAI_API_KEY, NOT DEEPSEEK_API_KEY.
+            // OpenAIClient::new will fail because OPENAI_API_KEY is unset,
+            // but the key isolation is enforced at the config level.
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn openrouter_never_uses_deepseek_key() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openrouter")));
+        vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
+        vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek-only")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
+        });
+    }
+
+    /// Security: BRIGID_LLM_API_KEY takes precedence over provider-specific
+    /// keys, so a user with a single key can use any provider.
+    #[test]
+    #[serial]
+    fn brigid_llm_api_key_takes_precedence() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        vars.push(("BRIGID_LLM_API_KEY", Some("sk-universal")));
+        vars.push(("OPENAI_API_KEY", Some("sk-openai-specific")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.api_key_env, "BRIGID_LLM_API_KEY");
+        });
+    }
+
+    /// Security: blank env vars are treated as unset.
+    #[test]
+    #[serial]
+    fn blank_env_treated_as_unset() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("  ")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            // Blank provider → inferred as deepseek from default base URL.
+            assert_eq!(cfg.provider, "deepseek");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn blank_api_key_treated_as_unset() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_API_KEY", Some("  ")));
+        vars.push(("DEEPSEEK_API_KEY", Some("sk-deepseek")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            // Blank BRIGID_LLM_API_KEY → falls back to DEEPSEEK_API_KEY.
+            assert_eq!(cfg.api_key_env, "DEEPSEEK_API_KEY");
+        });
+    }
+
+    /// Security: custom base URL host must be on the allowlist.
+    #[test]
+    #[serial]
+    fn custom_base_url_rejected_if_host_not_allowed() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://evil.example/v1")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(err.contains("not in the allowed"), "got: {err}");
+        });
+    }
+
+    /// Provider inference from base URL: pointing BRIGID_LLM_BASE_URL at
+    /// OpenRouter without an explicit provider correctly labels the provider.
+    #[test]
+    #[serial]
+    fn infers_openrouter_from_base_url() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://openrouter.ai/api/v1")));
+        vars.push(("BRIGID_LLM_MODEL", Some("openai/gpt-4o")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.provider, "openrouter");
+            assert_eq!(cfg.api_key_env, "OPENROUTER_API_KEY");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn infers_openai_from_base_url() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("https://api.openai.com/v1")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.provider, "openai");
+            assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
+        });
+    }
+
+    /// OpenAI/OpenRouter require an explicit model — no safe default.
+    #[test]
+    #[serial]
+    fn openai_requires_explicit_model() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("openai")));
+        with_env(&vars, || {
+            let err = resolve_llm_config(None, None).unwrap_err();
+            assert!(err.contains("requires an explicit model"), "got: {err}");
+        });
+    }
+
+    /// Model override takes precedence over env and preset defaults.
+    #[test]
+    #[serial]
+    fn model_override_takes_precedence() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_MODEL", Some("env-model")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, Some("override-model")).unwrap();
+            assert_eq!(cfg.model, "override-model");
+        });
+    }
+
+    /// Provider override takes precedence over env.
+    #[test]
+    #[serial]
+    fn provider_override_takes_precedence() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_PROVIDER", Some("deepseek")));
+        vars.push(("BRIGID_LLM_MODEL", Some("gpt-4o")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(Some("openai"), None).unwrap();
+            assert_eq!(cfg.provider, "openai");
+            assert_eq!(cfg.api_key_env, "OPENAI_API_KEY");
+        });
+    }
+
+    /// localhost is allowed for local LLM servers (e.g. Ollama).
+    #[test]
+    #[serial]
+    fn localhost_base_url_allowed() {
+        let mut vars = clear_env();
+        vars.push(("BRIGID_LLM_BASE_URL", Some("http://localhost:11434/v1")));
+        vars.push(("BRIGID_LLM_MODEL", Some("llama3")));
+        with_env(&vars, || {
+            let cfg = resolve_llm_config(None, None).unwrap();
+            assert_eq!(cfg.base_url, "http://localhost:11434/v1");
+        });
     }
 }

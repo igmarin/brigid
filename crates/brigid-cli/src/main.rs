@@ -25,7 +25,6 @@ use brigid_pipeline::{
     dry_run_with_options, is_checkpoint_stale, next_stage, pending_stages,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use llm_kernel::llm::{CacheClient, ModelConfig, OpenAIClient};
 use llm_kernel::store::kv::SqliteKvStore;
 use std::sync::Arc;
 
@@ -137,11 +136,11 @@ fn force_mock_client() -> bool {
 }
 
 /// Build a live [`LlmClient`] from the environment and optional `RunConfig`
-/// provider/model overrides, optionally with a disk cache.
+/// provider/model overrides, optionally with a SQLite response cache.
 ///
-/// `provider` and `model` come from the resolved [`brigid_core::RunConfig`]
-/// (CLI / `brigid.toml` / `BRIGID_PROVIDER` / `BRIGID_MODEL`). When set they
-/// drive provider presets (ADR 0017), including OpenRouter defaults.
+/// Delegates to [`brigid_pipeline::build_live_client`] which lives in the
+/// library crate so the provider resolution, key-chain, and host-allowlist
+/// logic is unit-tested independently of the CLI.
 ///
 /// Callers must only select a mock client when [`force_mock_client`] returns
 /// `true`. Missing credentials or invalid client configuration are surfaced as
@@ -152,96 +151,10 @@ fn build_real_llm_client(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<Box<dyn LlmClient>, String> {
-    use brigid_pipeline::llm::{nonempty_env, nonempty_env_or, validate_llm_base_url};
-
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-
-    // --- Provider resolution (ADR 0017) ---
-    let provider_hint = provider
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| nonempty_env("BRIGID_PROVIDER"));
-
-    let (default_base_url, default_model, api_key_env) = match provider_hint
-        .as_deref()
-        .map(|s| s.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("deepseek") => (
-            "https://api.deepseek.com/v1",
-            Some("deepseek-chat"),
-            "DEEPSEEK_API_KEY",
-        ),
-        Some("openai") => ("https://api.openai.com/v1", None, "OPENAI_API_KEY"),
-        Some("openrouter") => ("https://openrouter.ai/api/v1", None, "OPENROUTER_API_KEY"),
-        _ => {
-            // Unset or custom — infer from base URL later.
-            ("https://api.deepseek.com/v1", None, "")
-        }
-    };
-
-    let base_url = nonempty_env_or("BRIGID_LLM_BASE_URL", default_base_url);
-
-    // Validate the base URL host before constructing the client.
-    validate_llm_base_url(&base_url).map_err(|e| e.to_string())?;
-
-    // Re-infer provider from base URL when no explicit provider was given.
-    let (api_key_env, default_model) = if provider_hint.is_none()
-        || provider_hint
-            .as_deref()
-            .map(|s| s.is_empty())
-            .unwrap_or(true)
-    {
-        let lower = base_url.to_ascii_lowercase();
-        if lower.contains("openrouter") {
-            ("OPENROUTER_API_KEY", None)
-        } else if lower.contains("openai") {
-            ("OPENAI_API_KEY", None)
-        } else {
-            ("DEEPSEEK_API_KEY", Some("deepseek-chat"))
-        }
-    } else {
-        (api_key_env, default_model)
-    };
-
-    // --- Model resolution ---
-    let model = model
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| nonempty_env("BRIGID_LLM_MODEL"))
-        .or_else(|| default_model.map(|s| s.to_string()))
-        .ok_or_else(|| {
-            "provider requires an explicit model (set model in brigid.toml, BRIGID_MODEL, or BRIGID_LLM_MODEL)"
-                .to_string()
-        })?;
-
-    // --- API key resolution: BRIGID_LLM_API_KEY → provider-specific key ---
-    let api_key_env = if nonempty_env("BRIGID_LLM_API_KEY").is_some() {
-        "BRIGID_LLM_API_KEY"
-    } else {
-        api_key_env
-    };
-
-    let config = ModelConfig {
-        provider: provider_hint.clone().unwrap_or_else(|| "deepseek".into()),
-        model,
-        api_key_env: api_key_env.to_string(),
-        base_url: Some(base_url),
-        temperature: 0.7,
-        max_tokens: Some(4096),
-    };
-
-    let client = OpenAIClient::new(&config).map_err(|e| e.to_string())?;
-
-    if let Some(store) = cache {
-        Ok(Box::new(CacheClient::new(client, store)))
-    } else {
-        Ok(Box::new(client))
-    }
+    brigid_pipeline::build_live_client(cache, provider, model)
 }
 
 // ---------------------------------------------------------------------------
