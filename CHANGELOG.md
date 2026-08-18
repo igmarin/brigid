@@ -12,6 +12,20 @@ tracks the latest.
 
 ## [Unreleased]
 
+### Cache management (issue #300)
+
+- **Added `brigid cache prune` subcommand**: deletes the SQLite cache database
+  and its WAL/SHM sidecars. Replaces the previous manual `rm -rf` workaround.
+- **Added `brigid cache stats` subcommand**: prints the cache file path, entry
+  count, and on-disk size (including WAL/SHM sidecars).
+- **Added `brigid_pipeline::StatsClient`**: an `LLMClient` wrapper that tracks
+  cache hit/miss statistics by probing the `KvStore` before each call. Exports
+  `CacheStats` (hits, misses, hit_rate_percent) and `StatsClient` from
+  `brigid_pipeline`. This restores the hit/miss reporting that was lost when
+  `brigid_llm::DiskCache` was removed.
+- Updated `BRIGID_NO_CACHE` help text to mention `brigid cache prune` and
+  `brigid cache stats`.
+
 ### Phase 4: brigid-llm removal (issue #297)
 
 - **Removed `brigid-llm` crate** from the workspace. The CLI now uses
@@ -32,14 +46,16 @@ tracks the latest.
 - **Cache backend changed** from `brigid_llm::DiskCache` (file-based with LRU
   eviction and size limits) to `llm_kernel::store::SqliteKvStore` (SQLite-backed
   KV store). Trade-offs:
-  - The SQLite cache does **not** enforce a size limit. Clear it manually with
-    `rm -rf <cache-dir>/cache.sqlite` or set `BRIGID_NO_CACHE=1` to disable
-    caching entirely. A `brigid cache prune` subcommand is planned.
+  - The SQLite cache does **not** enforce a size limit. Use `brigid cache prune`
+    to delete all cached responses, or set `BRIGID_NO_CACHE=1` to disable
+    caching entirely.
   - Cache keys include the model name and full request JSON (via
     `llm_kernel::CacheClient`), so switching models or providers does not
     produce incorrect cache hits.
-  - Cache hit/miss stats are no longer reported in verbose output. The
-    `llm_kernel::CacheClient` API does not expose stats counters.
+  - Cache hit/miss stats are available via `brigid_pipeline::StatsClient`,
+    which probes the `KvStore` to track hits and misses. The CLI's verbose
+    output reports cache status; use `brigid cache stats` for entry count
+    and on-disk size.
   - The cache stores full prompt and response bodies on disk. Crawled
     repositories may contain secrets in source files; these are truncated and
     batched before being sent to the LLM, but the cache persists the full

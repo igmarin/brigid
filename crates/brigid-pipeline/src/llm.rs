@@ -14,6 +14,7 @@ use brigid_core::progress::BudgetExceeded;
 use futures::future::join_all;
 use llm_kernel::error::KernelError;
 use llm_kernel::llm::{ChatMessage, LLMClient, LLMRequest, LLMResponse, LLMStream};
+use llm_kernel::store::KvStore;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Semaphore;
@@ -409,6 +410,130 @@ pub fn build_live_client(
     } else {
         Ok(Box::new(client))
     }
+}
+
+/// Cache hit/miss statistics, queryable after a run.
+#[derive(Debug, Default, Clone)]
+pub struct CacheStats {
+    /// Number of cache hits (responses served from cache).
+    pub hits: u64,
+    /// Number of cache misses (responses fetched from the upstream client).
+    pub misses: u64,
+}
+
+impl CacheStats {
+    /// Total number of cache lookups (hits + misses).
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.hits + self.misses
+    }
+
+    /// Hit rate as a percentage (0–100). Returns 0 when there are no lookups.
+    #[must_use]
+    pub fn hit_rate_percent(&self) -> f64 {
+        if self.total() == 0 {
+            0.0
+        } else {
+            (self.hits as f64 / self.total() as f64) * 100.0
+        }
+    }
+}
+
+/// An [`LLMClient`] wrapper that tracks cache hit/miss statistics.
+///
+/// Unlike `llm_kernel::llm::CacheClient`, this wrapper does **not** cache — it observes
+/// whether the inner client (which may be a `CacheClient`) served a response
+/// from cache or called upstream. It does this by wrapping the inner client
+/// and counting calls. When the inner client is a `CacheClient`, a cache hit
+/// is indistinguishable from a cache miss at this layer because `CacheClient`
+/// short-circuits transparently.
+///
+/// To track hits/misses, this wrapper instead probes the `KvStore` directly
+/// before delegating to the inner client, using the same cache key derivation
+/// as `CacheClient`. This allows accurate hit/miss counting without modifying
+/// llm-kernel.
+pub struct StatsClient<C> {
+    inner: C,
+    store: Option<Arc<llm_kernel::store::kv::SqliteKvStore>>,
+    stats: Arc<Mutex<CacheStats>>,
+}
+
+impl<C> StatsClient<C> {
+    /// Wrap `inner` with stats tracking. When `store` is `Some`, cache
+    /// hit/miss is tracked by probing the store before each call.
+    pub fn new(inner: C, store: Option<Arc<llm_kernel::store::kv::SqliteKvStore>>) -> Self {
+        Self {
+            inner,
+            store,
+            stats: Arc::new(Mutex::new(CacheStats::default())),
+        }
+    }
+
+    /// Access the current hit/miss statistics.
+    #[must_use]
+    pub fn stats(&self) -> CacheStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    /// Get a clone of the shared stats handle, useful for collecting stats
+    /// after a run when the client has been moved.
+    #[must_use]
+    pub fn stats_handle(&self) -> Arc<Mutex<CacheStats>> {
+        Arc::clone(&self.stats)
+    }
+}
+
+#[async_trait]
+impl<C: LLMClient> LLMClient for StatsClient<C> {
+    async fn complete(&self, request: LLMRequest) -> Result<LLMResponse, KernelError> {
+        // When a store is present, probe it to determine hit vs miss.
+        // This mirrors CacheClient's key derivation but is best-effort:
+        // if the probe fails, we count it as a miss.
+        if let Some(store) = &self.store {
+            let key = cache_key_for_stats(self.inner.model_name(), &request);
+            let store = Arc::clone(store);
+            let hit = tokio::task::spawn_blocking(move || {
+                store.get(&key).map(|v| v.is_some()).unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
+            let mut stats = self.stats.lock().unwrap();
+            if hit {
+                stats.hits += 1;
+            } else {
+                stats.misses += 1;
+            }
+        }
+        self.inner.complete(request).await
+    }
+
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    async fn stream_complete(&self, request: LLMRequest) -> Result<LLMStream, KernelError> {
+        self.inner.stream_complete(request).await
+    }
+}
+
+/// Derive a cache key matching `llm_kernel::llm::CacheClient`'s key scheme.
+///
+/// This replicates the key derivation from `llm_kernel::llm::cache::cache_key`
+/// so `StatsClient` can probe the store for hit/miss tracking. If the scheme
+/// changes upstream, stats will simply report all misses (non-fatal).
+fn cache_key_for_stats(model_name: &str, request: &LLMRequest) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    const KEY_VERSION: u8 = 2;
+    const KEY_PREFIX: &str = "llm-resp";
+
+    let mut hasher = DefaultHasher::new();
+    model_name.hash(&mut hasher);
+    serde_json::to_vec(request)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    format!("{KEY_PREFIX}:v{KEY_VERSION}:{:016x}", hasher.finish())
 }
 
 /// Prompt-shaped errors matching the historical `brigid-llm` surface so
@@ -1241,5 +1366,80 @@ mod resolve_tests {
         let extra = vec!["my-proxy.internal".to_string()];
         let err = validate_llm_base_url_with("http://my-proxy.internal/v1", &extra).unwrap_err();
         assert!(err.to_string().contains("requires https"), "got: {err}");
+    }
+
+    // --- CacheStats ---
+
+    #[test]
+    fn cache_stats_default_is_zero() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.total(), 0);
+        assert_eq!(stats.hit_rate_percent(), 0.0);
+    }
+
+    #[test]
+    fn cache_stats_hit_rate() {
+        let stats = CacheStats { hits: 3, misses: 1 };
+        assert_eq!(stats.total(), 4);
+        assert_eq!(stats.hit_rate_percent(), 75.0);
+    }
+
+    #[test]
+    fn cache_stats_all_misses() {
+        let stats = CacheStats { hits: 0, misses: 5 };
+        assert_eq!(stats.total(), 5);
+        assert_eq!(stats.hit_rate_percent(), 0.0);
+    }
+
+    #[test]
+    fn cache_stats_all_hits() {
+        let stats = CacheStats { hits: 5, misses: 0 };
+        assert_eq!(stats.total(), 5);
+        assert_eq!(stats.hit_rate_percent(), 100.0);
+    }
+
+    // --- StatsClient ---
+
+    #[tokio::test]
+    async fn stats_client_tracks_miss_then_hit() {
+        use llm_kernel::llm::CacheClient;
+        use llm_kernel::store::kv::SqliteKvStore;
+
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let store_for_client = Arc::clone(&store);
+
+        // Build a CacheClient<MockClient> so the first call stores a response
+        // and the second call serves it from cache.
+        let mock = MockClient::new("cached response");
+        let cached = CacheClient::new(mock, store_for_client as Arc<dyn KvStore>);
+
+        // Wrap in StatsClient with the same store for hit/miss probing.
+        let stats_client = StatsClient::new(cached, Some(store));
+        let req = LLMRequest::builder().user_message("hello").build();
+
+        // First call: miss (entry not in store yet, CacheClient fetches and stores).
+        let _r1 = stats_client.complete(req.clone()).await.unwrap();
+        let stats_after_first = stats_client.stats();
+        assert_eq!(stats_after_first.misses, 1);
+        assert_eq!(stats_after_first.hits, 0);
+
+        // Second call: hit (entry now in store, CacheClient serves from cache).
+        let _r2 = stats_client.complete(req).await.unwrap();
+        let stats_after_second = stats_client.stats();
+        assert_eq!(stats_after_second.misses, 1);
+        assert_eq!(stats_after_second.hits, 1);
+        assert_eq!(stats_after_second.hit_rate_percent(), 50.0);
+    }
+
+    #[tokio::test]
+    async fn stats_client_without_store_tracks_nothing() {
+        let mock = MockClient::new("response");
+        let stats_client = StatsClient::new(mock, None);
+        let req = LLMRequest::builder().user_message("hi").build();
+        let _ = stats_client.complete(req).await.unwrap();
+        let stats = stats_client.stats();
+        assert_eq!(stats.total(), 0);
     }
 }
