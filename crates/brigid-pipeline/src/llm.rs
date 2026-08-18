@@ -627,14 +627,18 @@ impl CacheAdmin {
     /// This is a two-phase operation to be safe under concurrency:
     ///
     /// 1. **Inside the transaction** (holding a `RESERVED` write lock):
-    ///    `DELETE FROM kv` clears all entries, then
-    ///    `PRAGMA wal_checkpoint(TRUNCATE)` flushes and truncates the WAL.
-    ///    After this, the data is gone even if file removal races.
+    ///    `DELETE FROM kv` clears all entries, then `COMMIT` finalizes
+    ///    the deletion. After committing, `PRAGMA wal_checkpoint(TRUNCATE)`
+    ///    flushes the WAL into the main DB file and truncates the WAL.
+    ///    The checkpoint runs *after* the commit because SQLite will not
+    ///    checkpoint while a transaction is active. If the checkpoint is
+    ///    busy (another process is reading), the method returns an error
+    ///    instructing the user to re-run prune.
     ///
-    /// 2. **After committing**: the database, WAL, and SHM files are
-    ///    unlinked. If a concurrent process opens the database in the
-    ///    window between commit and unlink, it will find an empty cache
-    ///    (0 entries) — not a corrupted one.
+    /// 2. **After checkpointing**: the database, WAL, and SHM files are
+    ///    unlinked. The data is already gone and checkpointed, so even if
+    ///    a concurrent process reopens the database in this window, it
+    ///    will find an empty cache (0 entries) — not a corrupted one.
     ///
     /// `BEGIN IMMEDIATE` acquires a `RESERVED` lock, which blocks other
     /// writers but not readers. A concurrent `brigid generate` that is
@@ -651,7 +655,10 @@ impl CacheAdmin {
             return Ok(0);
         }
 
-        // Phase 1: clear all data inside a transaction.
+        // Phase 1: clear all data inside a transaction, then checkpoint
+        // the WAL *after* committing. SQLite will not perform a WAL
+        // checkpoint while a transaction is active, so the checkpoint
+        // must run outside the transaction.
         {
             use rusqlite::{Connection, OpenFlags};
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -668,19 +675,34 @@ impl CacheAdmin {
             // Delete all rows inside the transaction.
             conn.execute_batch("DELETE FROM kv")
                 .map_err(|e| format!("failed to clear kv table: {e}"))?;
-            // Checkpoint and truncate the WAL so the WAL file can be
-            // safely removed after commit.
-            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             conn.execute_batch("COMMIT")
                 .map_err(|e| format!("failed to commit prune transaction: {e}"))?;
+            // Checkpoint and truncate the WAL *after* committing so the
+            // main DB file reflects the deletion and the WAL file is
+            // safe to remove. PRAGMA wal_checkpoint(TRUNCATE) returns a
+            // row: (busy, log_frames, checkpointed_frames). We check
+            // that it's not busy (0 = success).
+            let checkpoint_result: (i64, i64, i64) = conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(|e| format!("WAL checkpoint failed: {e}"))?;
+            if checkpoint_result.0 != 0 {
+                return Err(
+                    "WAL checkpoint was busy — another process is using the cache; \
+                     the data has been deleted but the WAL may still contain stale pages. \
+                     Re-run `brigid cache prune` to remove the files."
+                        .to_string(),
+                );
+            }
             // Drop the connection to release the lock before unlinking.
             drop(conn);
         }
 
         // Phase 2: remove the files. The data is already gone (DELETE FROM
-        // kv committed), so even if a concurrent process reopens the
-        // database in this window, it will find an empty cache — not a
-        // corrupted one.
+        // kv committed and checkpointed), so even if a concurrent process
+        // reopens the database in this window, it will find an empty cache
+        // — not a corrupted one.
         let mut removed = 0u64;
         for suffix in &["", "-wal", "-shm"] {
             let path = append_suffix(db_path, suffix);
@@ -1718,6 +1740,43 @@ mod resolve_tests {
         let removed = CacheAdmin::prune(&db_path).unwrap();
         assert!(removed > 0);
         assert!(!db_path.exists());
+    }
+
+    /// Regression test: after prune, the database should not contain
+    /// any entries. This catches the case where the WAL was not
+    /// checkpointed before file removal, which could resurrect stale
+    /// entries when the DB is reopened.
+    #[test]
+    fn cache_admin_prune_does_not_resurrect_entries() {
+        use llm_kernel::store::kv::SqliteKvStore;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+
+        // Seed the cache with entries.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        store.put("k1", b"v1").unwrap();
+        store.put("k2", b"v2").unwrap();
+        store.put("k3", b"v3").unwrap();
+        drop(store);
+
+        // Prune removes the files entirely, so there's nothing to reopen.
+        // But if prune failed to checkpoint the WAL before unlinking,
+        // the -wal file might still exist with uncommitted pages. After
+        // prune, no files should remain.
+        let removed = CacheAdmin::prune(&db_path).unwrap();
+        assert!(removed > 0);
+        assert!(!db_path.exists());
+        assert!(!append_suffix(&db_path, "-wal").exists());
+        assert!(!append_suffix(&db_path, "-shm").exists());
+
+        // If we recreate the DB at the same path, it should start empty.
+        let store = SqliteKvStore::open(&db_path).unwrap();
+        assert!(store.get("k1").unwrap().is_none());
+        assert!(store.get("k2").unwrap().is_none());
+        assert!(store.get("k3").unwrap().is_none());
+        drop(store);
+        // Clean up.
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[test]
