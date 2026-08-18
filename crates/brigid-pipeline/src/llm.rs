@@ -22,6 +22,33 @@ use tokio::sync::Semaphore;
 /// Alias for the kernel client trait used throughout the pipeline.
 pub use llm_kernel::llm::LLMClient as LlmClient;
 
+/// Newtype wrapper around `Box<dyn LLMClient>` so it can implement `LLMClient`
+/// (needed to wrap a boxed trait object in [`StatsClient`]).
+pub struct BoxedLlmClient(pub Box<dyn LLMClient>);
+
+impl BoxedLlmClient {
+    /// Wrap a boxed client.
+    #[must_use]
+    pub fn new(inner: Box<dyn LLMClient>) -> Self {
+        Self(inner)
+    }
+}
+
+#[async_trait]
+impl LLMClient for BoxedLlmClient {
+    async fn complete(&self, request: LLMRequest) -> Result<LLMResponse, KernelError> {
+        self.0.complete(request).await
+    }
+
+    fn model_name(&self) -> &str {
+        self.0.model_name()
+    }
+
+    async fn stream_complete(&self, request: LLMRequest) -> Result<LLMStream, KernelError> {
+        self.0.stream_complete(request).await
+    }
+}
+
 /// Hosts allowed to receive an `Authorization` header.
 ///
 /// Mirrors the `brigid-llm` default allowlist so kernel-constructed clients
@@ -439,23 +466,81 @@ impl CacheStats {
     }
 }
 
+/// Shared atomic counters for cache hit/miss tracking.
+///
+/// Uses `AtomicU64` so increments are lock-free and never panic (unlike
+/// `Mutex::lock().unwrap()` which would violate the library-code
+/// no-panic rule).
+#[derive(Debug, Default)]
+struct AtomicCacheStats {
+    hits: std::sync::atomic::AtomicU64,
+    misses: std::sync::atomic::AtomicU64,
+}
+
+impl AtomicCacheStats {
+    fn snapshot(&self) -> CacheStats {
+        use std::sync::atomic::Ordering::Relaxed;
+        CacheStats {
+            hits: self.hits.load(Relaxed),
+            misses: self.misses.load(Relaxed),
+        }
+    }
+}
+
+/// A shared handle to cache statistics that can be queried after the client
+/// has been moved or consumed.
+///
+/// Cloning the handle is cheap (it shares the underlying atomics). Call
+/// [`CacheStatsHandle::snapshot`] to read the current hit/miss counts.
+#[derive(Debug, Clone)]
+pub struct CacheStatsHandle {
+    inner: Arc<AtomicCacheStats>,
+}
+
+impl CacheStatsHandle {
+    /// Create a handle with zero stats — useful as a placeholder when
+    /// the client is a mock (no cache to track).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(AtomicCacheStats::default()),
+        }
+    }
+
+    /// Read the current hit/miss statistics.
+    #[must_use]
+    pub fn snapshot(&self) -> CacheStats {
+        self.inner.snapshot()
+    }
+}
+
 /// An [`LLMClient`] wrapper that tracks cache hit/miss statistics.
 ///
-/// Unlike `llm_kernel::llm::CacheClient`, this wrapper does **not** cache — it observes
-/// whether the inner client (which may be a `CacheClient`) served a response
-/// from cache or called upstream. It does this by wrapping the inner client
-/// and counting calls. When the inner client is a `CacheClient`, a cache hit
-/// is indistinguishable from a cache miss at this layer because `CacheClient`
-/// short-circuits transparently.
+/// `StatsClient` probes the `KvStore` **before** delegating to the inner
+/// client to determine whether a response will be served from cache. This
+/// uses the same cache key derivation as `llm_kernel::llm::CacheClient`, so
+/// the probe accurately predicts whether `CacheClient` will find a hit.
 ///
-/// To track hits/misses, this wrapper instead probes the `KvStore` directly
-/// before delegating to the inner client, using the same cache key derivation
-/// as `CacheClient`. This allows accurate hit/miss counting without modifying
-/// llm-kernel.
+/// # Concurrency
+///
+/// The probe-then-delegate approach is **best-effort** under concurrency.
+/// When multiple calls are in flight simultaneously (as happens with
+/// `bounded_complete`), a concurrent call may store a cache entry between
+/// this wrapper's probe and the inner client's lookup, causing a minor
+/// undercount of hits and overcount of misses. The counts are approximate
+/// but useful for reporting overall cache effectiveness.
+///
+/// # Key derivation drift
+///
+/// The cache key derivation is duplicated from `llm_kernel::llm::cache`.
+/// If llm-kernel changes the key format, hasher, or key version, stats
+/// will silently report all misses (non-fatal — the cache itself still
+/// works correctly). The `stats_client_tracks_miss_then_hit` integration
+/// test guards against drift today.
 pub struct StatsClient<C> {
     inner: C,
     store: Option<Arc<llm_kernel::store::kv::SqliteKvStore>>,
-    stats: Arc<Mutex<CacheStats>>,
+    stats: Arc<AtomicCacheStats>,
 }
 
 impl<C> StatsClient<C> {
@@ -465,21 +550,23 @@ impl<C> StatsClient<C> {
         Self {
             inner,
             store,
-            stats: Arc::new(Mutex::new(CacheStats::default())),
+            stats: Arc::new(AtomicCacheStats::default()),
         }
     }
 
-    /// Access the current hit/miss statistics.
+    /// Read the current hit/miss statistics.
     #[must_use]
     pub fn stats(&self) -> CacheStats {
-        self.stats.lock().unwrap().clone()
+        self.stats.snapshot()
     }
 
     /// Get a clone of the shared stats handle, useful for collecting stats
-    /// after a run when the client has been moved.
+    /// after a run when the client has been moved or consumed.
     #[must_use]
-    pub fn stats_handle(&self) -> Arc<Mutex<CacheStats>> {
-        Arc::clone(&self.stats)
+    pub fn stats_handle(&self) -> CacheStatsHandle {
+        CacheStatsHandle {
+            inner: Arc::clone(&self.stats),
+        }
     }
 }
 
@@ -497,11 +584,11 @@ impl<C: LLMClient> LLMClient for StatsClient<C> {
             })
             .await
             .unwrap_or(false);
-            let mut stats = self.stats.lock().unwrap();
+            use std::sync::atomic::Ordering::Relaxed;
             if hit {
-                stats.hits += 1;
+                self.stats.hits.fetch_add(1, Relaxed);
             } else {
-                stats.misses += 1;
+                self.stats.misses.fetch_add(1, Relaxed);
             }
         }
         self.inner.complete(request).await
@@ -1441,5 +1528,71 @@ mod resolve_tests {
         let _ = stats_client.complete(req).await.unwrap();
         let stats = stats_client.stats();
         assert_eq!(stats.total(), 0);
+    }
+
+    #[tokio::test]
+    async fn stats_handle_survives_after_client_moved() {
+        use llm_kernel::llm::CacheClient;
+        use llm_kernel::store::kv::SqliteKvStore;
+
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let store_for_client = Arc::clone(&store);
+        let mock = MockClient::new("cached response");
+        let cached = CacheClient::new(mock, store_for_client as Arc<dyn KvStore>);
+        let stats_client = StatsClient::new(cached, Some(store));
+
+        // Get the handle before the client is consumed.
+        let handle = stats_client.stats_handle();
+        let req = LLMRequest::builder().user_message("hello").build();
+
+        // Consume the client by completing a call.
+        let _ = stats_client.complete(req.clone()).await.unwrap();
+        let _ = stats_client.complete(req).await.unwrap();
+
+        // The handle should still report the correct stats.
+        let stats = handle.snapshot();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.hit_rate_percent(), 50.0);
+    }
+
+    #[test]
+    fn cache_stats_handle_empty_is_zero() {
+        let handle = CacheStatsHandle::empty();
+        let stats = handle.snapshot();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.total(), 0);
+    }
+
+    #[tokio::test]
+    async fn boxed_llm_client_delegates() {
+        let mock = MockClient::new("boxed response");
+        let boxed: Box<dyn LLMClient> = Box::new(mock);
+        let wrapper = BoxedLlmClient::new(boxed);
+        assert_eq!(wrapper.model_name(), "mock");
+        let req = LLMRequest::builder().user_message("hi").build();
+        let resp = wrapper.complete(req).await.unwrap();
+        assert_eq!(resp.content, "boxed response");
+    }
+
+    #[tokio::test]
+    async fn stats_client_with_boxed_client() {
+        use llm_kernel::llm::CacheClient;
+        use llm_kernel::store::kv::SqliteKvStore;
+
+        let store: Arc<SqliteKvStore> = Arc::new(SqliteKvStore::open_in_memory().unwrap());
+        let store_for_client = Arc::clone(&store);
+        let mock = MockClient::new("boxed cached");
+        let cached = CacheClient::new(mock, store_for_client as Arc<dyn KvStore>);
+        let boxed: Box<dyn LLMClient> = Box::new(cached);
+        let stats_client = StatsClient::new(BoxedLlmClient::new(boxed), Some(store));
+        let req = LLMRequest::builder().user_message("hello").build();
+
+        let _ = stats_client.complete(req.clone()).await.unwrap();
+        let _ = stats_client.complete(req).await.unwrap();
+        let stats = stats_client.stats();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 1);
     }
 }

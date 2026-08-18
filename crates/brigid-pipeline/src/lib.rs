@@ -62,8 +62,9 @@ pub use identify_runner::{
     IdentifyRunConfig, IdentifyRunOutcome, IdentifyStrategy, identify_with_cancellation,
 };
 pub use llm::{
-    CacheStats, LlmClient, LlmError, MockClient, ResolvedLlmConfig, StatsClient, bounded_complete,
-    bounded_complete_with_budget, build_live_client, complete_text, resolve_llm_config,
+    BoxedLlmClient, CacheStats, CacheStatsHandle, LlmClient, LlmError, MockClient,
+    ResolvedLlmConfig, StatsClient, bounded_complete, bounded_complete_with_budget,
+    build_live_client, complete_text, resolve_llm_config,
 };
 pub use prompts::{PromptError, PromptId, PromptRenderer, sanitize_template_input};
 pub use resume::{

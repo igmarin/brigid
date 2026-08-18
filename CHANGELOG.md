@@ -15,14 +15,23 @@ tracks the latest.
 ### Cache management (issue #300)
 
 - **Added `brigid cache prune` subcommand**: deletes the SQLite cache database
-  and its WAL/SHM sidecars. Replaces the previous manual `rm -rf` workaround.
+  and its WAL/SHM sidecars. Acquires an exclusive SQLite lock before deleting
+  to prevent corrupting a cache that is actively in use by another `brigid`
+  process. Replaces the previous manual `rm -rf` workaround.
 - **Added `brigid cache stats` subcommand**: prints the cache file path, entry
-  count, and on-disk size (including WAL/SHM sidecars).
+  count, and on-disk size (including WAL/SHM sidecars). Opens the database
+  read-only so it never creates or modifies cache files.
 - **Added `brigid_pipeline::StatsClient`**: an `LLMClient` wrapper that tracks
-  cache hit/miss statistics by probing the `KvStore` before each call. Exports
-  `CacheStats` (hits, misses, hit_rate_percent) and `StatsClient` from
-  `brigid_pipeline`. This restores the hit/miss reporting that was lost when
+  cache hit/miss statistics by probing the `KvStore` before each call. Uses
+  lock-free `AtomicU64` counters (no `Mutex`, no panics). Exports `CacheStats`
+  (hits, misses, hit_rate_percent), `CacheStatsHandle`, `StatsClient`, and
+  `BoxedLlmClient` from `brigid_pipeline`. Wired into the CLI's `generate` and
+  `generate --each-app` paths so verbose output reports cache hit/miss counts
+  and hit rate. This restores the hit/miss reporting that was lost when
   `brigid_llm::DiskCache` was removed.
+- **Cache stats are best-effort under concurrency**: the probe-then-delegate
+  approach may slightly undercount hits when multiple LLM calls are in flight
+  simultaneously. See `StatsClient` docs for details.
 - Updated `BRIGID_NO_CACHE` help text to mention `brigid cache prune` and
   `brigid cache stats`.
 

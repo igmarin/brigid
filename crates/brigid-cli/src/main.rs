@@ -112,10 +112,23 @@ fn build_llm_cache(cfg: &RunConfig) -> Option<Arc<SqliteKvStore>> {
     Some(Arc::new(store))
 }
 
-/// Print cache status to stderr.
-fn print_cache_stats(cache: Option<&Arc<SqliteKvStore>>) {
+/// Print cache status to stderr, including hit/miss stats when available.
+fn print_cache_stats(
+    cache: Option<&Arc<SqliteKvStore>>,
+    stats: &brigid_pipeline::CacheStatsHandle,
+) {
     if cache.is_some() {
-        eprintln!("cache: enabled (sqlite kv-store)");
+        let s = stats.snapshot();
+        if s.total() > 0 {
+            eprintln!(
+                "cache: enabled (sqlite kv-store, {} hits, {} misses, {:.0}% hit rate)",
+                s.hits,
+                s.misses,
+                s.hit_rate_percent(),
+            );
+        } else {
+            eprintln!("cache: enabled (sqlite kv-store)");
+        }
     }
 }
 
@@ -142,6 +155,11 @@ fn force_mock_client() -> bool {
 /// library crate so the provider resolution, key-chain, and host-allowlist
 /// logic is unit-tested independently of the CLI.
 ///
+/// The returned client is wrapped in [`brigid_pipeline::StatsClient`] so
+/// cache hit/miss statistics can be reported in verbose output. The
+/// [`brigid_pipeline::CacheStatsHandle`] is returned alongside the client
+/// for later reporting.
+///
 /// Callers must only select a mock client when [`force_mock_client`] returns
 /// `true`. Missing credentials or invalid client configuration are surfaced as
 /// errors so a successful command never emits placeholder output by accident.
@@ -150,11 +168,15 @@ fn build_real_llm_client(
     custom_hosts: &[String],
     provider: Option<&str>,
     model: Option<&str>,
-) -> Result<Box<dyn LlmClient>, String> {
+) -> Result<(Box<dyn LlmClient>, brigid_pipeline::CacheStatsHandle), String> {
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    brigid_pipeline::build_live_client(cache, provider, model, custom_hosts)
+    let client = brigid_pipeline::build_live_client(cache.clone(), provider, model, custom_hosts)?;
+    let stats_client =
+        brigid_pipeline::StatsClient::new(brigid_pipeline::BoxedLlmClient::new(client), cache);
+    let handle = stats_client.stats_handle();
+    Ok((Box::new(stats_client), handle))
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +706,7 @@ fn fmt_duration(d: std::time::Duration) -> String {
 fn print_verbose_summary(
     progress: &brigid_core::ProgressTracker,
     cache: Option<&Arc<SqliteKvStore>>,
+    cache_stats: &brigid_pipeline::CacheStatsHandle,
     checkpoint_dir: &Path,
 ) {
     let snap = progress.snapshot();
@@ -698,7 +721,20 @@ fn print_verbose_summary(
         );
     }
     if cache.is_some() {
-        verbose_msg(Verbosity::Verbose, "cache: enabled (sqlite kv-store)");
+        let stats = cache_stats.snapshot();
+        if stats.total() > 0 {
+            verbose_msg(
+                Verbosity::Verbose,
+                &format!(
+                    "cache: enabled (sqlite kv-store, {} hits, {} misses, {:.0}% hit rate)",
+                    stats.hits,
+                    stats.misses,
+                    stats.hit_rate_percent(),
+                ),
+            );
+        } else {
+            verbose_msg(Verbosity::Verbose, "cache: enabled (sqlite kv-store)");
+        }
     }
     verbose_msg(
         Verbosity::Verbose,
@@ -2122,12 +2158,15 @@ fn cmd_identify(
         files: records,
     };
 
-    let client: Box<dyn LlmClient> = if force_mock_client() {
+    let (client, _identify_stats): (Box<dyn LlmClient>, _) = if force_mock_client() {
         eprintln!(
             "warning: identify: BRIGID_FORCE_MOCK is set — using a mock client. \
              The output will be a placeholder, not a real LLM analysis."
         );
-        mock_client(vec![PLACEHOLDER_IDENTIFY_YAML.to_string()])
+        (
+            mock_client(vec![PLACEHOLDER_IDENTIFY_YAML.to_string()]),
+            brigid_pipeline::CacheStatsHandle::empty(),
+        )
     } else {
         match build_real_llm_client(
             build_llm_cache(cfg),
@@ -2135,9 +2174,9 @@ fn cmd_identify(
             cfg.provider.as_deref(),
             cfg.model.as_deref(),
         ) {
-            Ok(client) => {
+            Ok((client, stats)) => {
                 eprintln!("identify: using live LLM provider");
-                client
+                (client, stats)
             }
             Err(error) => {
                 eprintln!("error: identify: failed to configure LLM client: {error}");
@@ -2446,59 +2485,64 @@ fn cmd_generate(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn LlmClient> = if force_mock_client() {
-        print_progress(
-            verbosity,
-            "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
-             The output will be a placeholder, not a real LLM analysis.",
-        );
+    let (client, cache_stats): (Box<dyn LlmClient>, brigid_pipeline::CacheStatsHandle) =
+        if force_mock_client() {
+            print_progress(
+                verbosity,
+                "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
+                 The output will be a placeholder, not a real LLM analysis.",
+            );
 
-        let mut responses: Vec<String> = Vec::new();
-        if single_shot {
-            responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-        } else {
-            responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-            responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-        }
-        responses.push(PLACEHOLDER_RELATIONSHIPS_YAML.to_string());
-        responses.push(PLACEHOLDER_ORDER_YAML.to_string());
-        for _ in 0..max_abstractions {
-            responses.push(PLACEHOLDER_CHAPTER.to_string());
-        }
-        if review_chapters {
+            let mut responses: Vec<String> = Vec::new();
+            if single_shot {
+                responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+            } else {
+                responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+                responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+            }
+            responses.push(PLACEHOLDER_RELATIONSHIPS_YAML.to_string());
+            responses.push(PLACEHOLDER_ORDER_YAML.to_string());
             for _ in 0..max_abstractions {
                 responses.push(PLACEHOLDER_CHAPTER.to_string());
             }
-        }
-        if !no_setup {
-            let do_setup =
-                force_setup || dry_run_plan.setup.score < 50 || dry_run_plan.setup.gaps.len() >= 3;
-            if do_setup {
-                responses.push(PLACEHOLDER_SETUP.to_string());
+            if review_chapters {
+                for _ in 0..max_abstractions {
+                    responses.push(PLACEHOLDER_CHAPTER.to_string());
+                }
             }
-        }
-        if !no_overview && modules.len() > 1 {
-            responses.push(PLACEHOLDER_OVERVIEW.to_string());
-        }
+            if !no_setup {
+                let do_setup = force_setup
+                    || dry_run_plan.setup.score < 50
+                    || dry_run_plan.setup.gaps.len() >= 3;
+                if do_setup {
+                    responses.push(PLACEHOLDER_SETUP.to_string());
+                }
+            }
+            if !no_overview && modules.len() > 1 {
+                responses.push(PLACEHOLDER_OVERVIEW.to_string());
+            }
 
-        mock_client(responses)
-    } else {
-        match build_real_llm_client(
-            cache.clone(),
-            run_config.allowed_hosts.as_deref().unwrap_or(&[]),
-            run_config.provider.as_deref(),
-            run_config.model.as_deref(),
-        ) {
-            Ok(client) => {
-                print_progress(verbosity, "generate: using live LLM provider");
-                client
+            (
+                mock_client(responses),
+                brigid_pipeline::CacheStatsHandle::empty(),
+            )
+        } else {
+            match build_real_llm_client(
+                cache.clone(),
+                run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+                run_config.provider.as_deref(),
+                run_config.model.as_deref(),
+            ) {
+                Ok((client, stats)) => {
+                    print_progress(verbosity, "generate: using live LLM provider");
+                    (client, stats)
+                }
+                Err(error) => {
+                    eprintln!("error: generate: failed to configure LLM client: {error}");
+                    return ExitCode::from(EXIT_LLM);
+                }
             }
-            Err(error) => {
-                eprintln!("error: generate: failed to configure LLM client: {error}");
-                return ExitCode::from(EXIT_LLM);
-            }
-        }
-    };
+        };
 
     let renderer = match brigid_pipeline::PromptRenderer::new() {
         Ok(r) => r,
@@ -2677,7 +2721,7 @@ fn cmd_generate(
                     &format!("checkpoint: {}", checkpoint_dir.display()),
                 );
                 if verbosity.is_verbose() {
-                    print_verbose_summary(&progress, cache.as_ref(), checkpoint_dir);
+                    print_verbose_summary(&progress, cache.as_ref(), &cache_stats, checkpoint_dir);
                 }
 
                 if format == OutputFormat::Json {
@@ -2743,7 +2787,7 @@ fn cmd_generate(
         }
     });
     if verbosity.is_verbose() {
-        print_cache_stats(cache.as_ref());
+        print_cache_stats(cache.as_ref(), &cache_stats);
     }
     exit_code
 }
@@ -2817,60 +2861,64 @@ fn cmd_generate_each_app(
     );
 
     let cache = build_llm_cache(&run_config);
-    let client: Box<dyn LlmClient> = if force_mock_client() {
-        print_progress(
-            verbosity,
-            "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
+    let (client, _cache_stats): (Box<dyn LlmClient>, brigid_pipeline::CacheStatsHandle) =
+        if force_mock_client() {
+            print_progress(
+                verbosity,
+                "warning: generate: BRIGID_FORCE_MOCK is set -- using a mock client. \
              The output will be a placeholder, not a real LLM analysis.",
-        );
+            );
 
-        let mut single_app_responses: Vec<String> = Vec::new();
-        if single_shot {
-            single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-        } else {
-            single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-            single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
-        }
-        single_app_responses.push(PLACEHOLDER_RELATIONSHIPS_YAML.to_string());
-        single_app_responses.push(PLACEHOLDER_ORDER_YAML.to_string());
-        single_app_responses.push(PLACEHOLDER_CHAPTER.to_string());
-        if review_chapters {
+            let mut single_app_responses: Vec<String> = Vec::new();
+            if single_shot {
+                single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+            } else {
+                single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+                single_app_responses.push(PLACEHOLDER_IDENTIFY_YAML.to_string());
+            }
+            single_app_responses.push(PLACEHOLDER_RELATIONSHIPS_YAML.to_string());
+            single_app_responses.push(PLACEHOLDER_ORDER_YAML.to_string());
             single_app_responses.push(PLACEHOLDER_CHAPTER.to_string());
-        }
-        if !no_setup {
-            single_app_responses.push(PLACEHOLDER_SETUP.to_string());
-        }
-        if !no_overview {
-            single_app_responses.push(PLACEHOLDER_OVERVIEW.to_string());
-        }
-
-        // Repeat the per-app sequence enough times for typical monorepos.
-        // The cap of 20 apps covers the vast majority of real-world repos;
-        // repos with more apps will exhaust the mock sequence and surface a
-        // pipeline error, which is acceptable for a developer-only mock mode.
-        let mut responses: Vec<String> = Vec::new();
-        for _ in 0..20 {
-            responses.extend(single_app_responses.clone());
-        }
-
-        mock_client(responses)
-    } else {
-        match build_real_llm_client(
-            cache.clone(),
-            run_config.allowed_hosts.as_deref().unwrap_or(&[]),
-            run_config.provider.as_deref(),
-            run_config.model.as_deref(),
-        ) {
-            Ok(client) => {
-                print_progress(verbosity, "generate: using live LLM provider");
-                client
+            if review_chapters {
+                single_app_responses.push(PLACEHOLDER_CHAPTER.to_string());
             }
-            Err(error) => {
-                eprintln!("error: generate: failed to configure LLM client: {error}");
-                return ExitCode::from(EXIT_LLM);
+            if !no_setup {
+                single_app_responses.push(PLACEHOLDER_SETUP.to_string());
             }
-        }
-    };
+            if !no_overview {
+                single_app_responses.push(PLACEHOLDER_OVERVIEW.to_string());
+            }
+
+            // Repeat the per-app sequence enough times for typical monorepos.
+            // The cap of 20 apps covers the vast majority of real-world repos;
+            // repos with more apps will exhaust the mock sequence and surface a
+            // pipeline error, which is acceptable for a developer-only mock mode.
+            let mut responses: Vec<String> = Vec::new();
+            for _ in 0..20 {
+                responses.extend(single_app_responses.clone());
+            }
+
+            (
+                mock_client(responses),
+                brigid_pipeline::CacheStatsHandle::empty(),
+            )
+        } else {
+            match build_real_llm_client(
+                cache.clone(),
+                run_config.allowed_hosts.as_deref().unwrap_or(&[]),
+                run_config.provider.as_deref(),
+                run_config.model.as_deref(),
+            ) {
+                Ok((client, stats)) => {
+                    print_progress(verbosity, "generate: using live LLM provider");
+                    (client, stats)
+                }
+                Err(error) => {
+                    eprintln!("error: generate: failed to configure LLM client: {error}");
+                    return ExitCode::from(EXIT_LLM);
+                }
+            }
+        };
 
     let renderer = match brigid_pipeline::PromptRenderer::new() {
         Ok(r) => r,
@@ -3000,7 +3048,7 @@ fn cmd_generate_each_app(
         }
     });
     if verbosity.is_verbose() {
-        print_cache_stats(cache.as_ref());
+        print_cache_stats(cache.as_ref(), &_cache_stats);
     }
     exit_code
 }
@@ -3676,7 +3724,7 @@ fn cmd_cache(action: CacheAction, cfg: &RunConfig) -> ExitCode {
     let env_map: BTreeMap<String, String> = env::vars().collect();
     let Some(root) = resolve_cache_root(&env_map, cfg.cache_dir.as_deref()) else {
         eprintln!("cache: no cache directory configured");
-        return ExitCode::from(EXIT_FAIL);
+        return ExitCode::from(EXIT_CONFIG);
     };
     let db_path = root.join("cache.sqlite");
 
@@ -3687,7 +3735,47 @@ fn cmd_cache(action: CacheAction, cfg: &RunConfig) -> ExitCode {
 }
 
 /// Delete the cache database file and its WAL/SHM sidecars.
+///
+/// Before deleting, acquires an exclusive SQLite lock on the database to
+/// ensure no other `brigid` process is actively using the cache. If the
+/// cache is busy, returns `EXIT_FAIL` without deleting anything.
 fn cmd_cache_prune(db_path: &Path) -> ExitCode {
+    // If the DB doesn't exist, nothing to prune.
+    if !db_path.exists() {
+        eprintln!("cache: no cache file found at {}", db_path.display());
+        return ExitCode::from(EXIT_OK);
+    }
+
+    // Acquire an exclusive lock by opening the DB and starting an
+    // immediate transaction. If another process holds the DB open with
+    // an active connection, this will fail with SQLITE_BUSY.
+    {
+        use rusqlite::{Connection, OpenFlags};
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match Connection::open_with_flags(db_path, flags) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("cache: cannot open database for pruning: {e}");
+                eprintln!("cache: the cache may be in use by another brigid process");
+                return ExitCode::from(EXIT_FAIL);
+            }
+        };
+        // Set a short busy timeout so we don't hang indefinitely.
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_millis(500)) {
+            eprintln!("cache: warning: could not set busy timeout: {e}");
+        }
+        // BEGIN IMMEDIATE acquires a RESERVED lock, which blocks other writers.
+        // If another process is mid-transaction, this fails with SQLITE_BUSY.
+        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+            eprintln!("cache: cannot acquire exclusive lock: {e}");
+            eprintln!("cache: the cache is in use by another brigid process");
+            return ExitCode::from(EXIT_FAIL);
+        }
+        // Drop the connection to release the lock before unlinking.
+        // The transaction is rolled back automatically on drop.
+        drop(conn);
+    }
+
     let mut removed = 0u64;
     for suffix in &["", "-wal", "-shm"] {
         let path = if suffix.is_empty() {
@@ -3707,11 +3795,7 @@ fn cmd_cache_prune(db_path: &Path) -> ExitCode {
             }
         }
     }
-    if removed > 0 {
-        eprintln!("cache: pruned ({removed} file(s) removed)");
-    } else {
-        eprintln!("cache: no cache file found at {}", db_path.display());
-    }
+    eprintln!("cache: pruned ({removed} file(s) removed)");
     ExitCode::from(EXIT_OK)
 }
 
@@ -3746,9 +3830,15 @@ fn cmd_cache_stats(db_path: &Path) -> ExitCode {
 }
 
 /// Count rows in the `kv` table of a SQLite database.
+///
+/// Opens the database read-only so a stats query never creates or modifies
+/// the cache file (or its WAL/SHM sidecars).
 fn count_cache_entries(db_path: &Path) -> Option<u64> {
-    use rusqlite::Connection;
-    let conn = Connection::open(db_path).ok()?;
+    use rusqlite::{Connection, OpenFlags};
+    // SQLITE_OPEN_READ_ONLY prevents file creation; the DB must already exist
+    // (checked by the caller before invoking this function).
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(db_path, flags).ok()?;
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
         .ok()?;
@@ -4620,15 +4710,8 @@ mod tests {
 
     #[test]
     fn cache_prune_deletes_existing_db() {
-        let dir = std::env::temp_dir().join(format!(
-            "brigid-test-prune-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("cache.sqlite");
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
 
         // Create a valid SQLite kv store and add an entry.
         let store = SqliteKvStore::open(&db_path).unwrap();
@@ -4641,13 +4724,12 @@ mod tests {
         let code = cmd_cache_prune(&db_path);
         assert_eq!(code, ExitCode::from(EXIT_OK));
         assert!(!db_path.exists());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn cache_prune_no_file_is_ok() {
-        let dir = std::env::temp_dir().join("brigid-test-prune-nonexistent");
-        let db_path = dir.join("cache.sqlite");
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
         assert!(!db_path.exists());
         let code = cmd_cache_prune(&db_path);
         assert_eq!(code, ExitCode::from(EXIT_OK));
@@ -4655,15 +4737,8 @@ mod tests {
 
     #[test]
     fn cache_stats_reports_entry_count() {
-        let dir = std::env::temp_dir().join(format!(
-            "brigid-test-stats-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("cache.sqlite");
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
 
         // Create a store with 3 entries.
         let store = SqliteKvStore::open(&db_path).unwrap();
@@ -4679,15 +4754,28 @@ mod tests {
 
         let code = cmd_cache_stats(&db_path);
         assert_eq!(code, ExitCode::from(EXIT_OK));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn cache_stats_no_file_is_ok() {
-        let dir = std::env::temp_dir().join("brigid-test-stats-nonexistent");
-        let db_path = dir.join("cache.sqlite");
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
         let code = cmd_cache_stats(&db_path);
         assert_eq!(code, ExitCode::from(EXIT_OK));
+    }
+
+    #[test]
+    fn cache_stats_does_not_create_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cache.sqlite");
+        assert!(!db_path.exists());
+
+        // count_cache_entries opens read-only, so it must not create the file.
+        let _ = count_cache_entries(&db_path);
+        assert!(
+            !db_path.exists(),
+            "read-only open created the database file"
+        );
     }
 
     #[test]
