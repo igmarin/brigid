@@ -10,34 +10,36 @@ recorded in [`docs/adr/`](docs/adr/) and referenced where relevant below.
 
 ## Crate dependency hierarchy
 
-`brigid` is a Cargo workspace of five crates. Dependencies flow strictly
-downward: the CLI binary depends on the pipeline; the pipeline depends on the
-LLM client, the crawler, and core; core has no workspace dependencies and stays
-pure for easy unit testing.
+`brigid` is a Cargo workspace of four crates. Dependencies flow strictly
+downward: the CLI binary depends on the pipeline; the pipeline depends on
+`llm-kernel`, the crawler, and core; core has no workspace dependencies and
+stays pure for easy unit testing.
 
 ```mermaid
 graph TD
     CLI["brigid-cli<br/>(thin binary: clap args, exit codes)"]
     Pipeline["brigid-pipeline<br/>(stage orchestration, checkpoint/resume, dry-run)"]
-    LLMKernel["llm-kernel<br/>(pipeline LLM interface)"]
-    LegacyLLM["brigid-llm<br/>(DEPRECATED: CLI compat bridge)"]
+    LLMKernel["llm-kernel<br/>(LLM provider interface)"]
     Crawl["brigid-crawl<br/>(local filesystem inventory and git-diff filtering)"]
     Core["brigid-core<br/>(pure domain: models, budget, mermaid, eval, i18n)"]
 
     CLI --> Pipeline
-    CLI --> LegacyLLM
+    CLI --> LLMKernel
     CLI --> Crawl
     CLI --> Core
     Pipeline --> LLMKernel
     Pipeline --> Crawl
     Pipeline --> Core
-    LegacyLLM --> Core
     Crawl --> Core
 ```
 
-The pipeline uses the `llm-kernel` interface directly. The CLI still adapts the
-deprecated `brigid-llm` crate for live provider calls (compatibility bridge)
-until Phase 4 completes the full migration to `llm-kernel`.
+Both the pipeline and the CLI use `llm-kernel` directly for LLM calls. The
+`brigid-llm` crate has been removed (issue #297 Phase 4). Provider resolution
+(DeepSeek/OpenAI/OpenRouter presets, API key chain) lives in
+`brigid_pipeline::llm::resolve_llm_config`. The live client is constructed by
+`brigid_pipeline::llm::build_live_client`, which wraps `OpenAIClient` in
+`RetryClient` (bounded exponential backoff) and optionally `CacheClient`
+(SQLite-backed, no size limit — see CHANGELOG for trade-offs).
 
 The layering rule: **library crates perform no CLI or main-binary logic**.
 `brigid-cli` is a thin wrapper that parses arguments, wires the pipeline, and
@@ -51,7 +53,6 @@ brigid/
 ├── crates/
 │   ├── brigid-core/       # Pure domain models, traits, budgeting, mermaid sanitize
 │   ├── brigid-crawl/      # Local filesystem inventory and git-diff filtering
-│   ├── brigid-llm/        # LlmClient trait, provider clients, disk cache, retries
 │   ├── brigid-pipeline/   # Stage orchestration, checkpoint/resume, dry-run, benchmarks
 │   │   └── prompts/        # 10 versioned Jinja2 templates (identify, relationships, chapters, …)
 │   ├── brigid-cli/        # Thin binary — clap args, completions, man page, exit codes
@@ -76,9 +77,9 @@ boundary:
 ### 1. I/O isolation
 
 All filesystem, network, and subprocess I/O lives at the edges —
-`brigid-crawl` (filesystem walk, `git` shell-out), `brigid-llm` (HTTP provider
-calls, disk cache), and `brigid-cli` (argument parsing, exit codes). The
-pipeline orchestration (`brigid-pipeline`) coordinates stages but delegates
+`brigid-crawl` (filesystem walk, `git` shell-out), `llm-kernel` (HTTP provider
+calls, SQLite response cache), and `brigid-cli` (argument parsing, exit codes).
+The pipeline orchestration (`brigid-pipeline`) coordinates stages but delegates
 I/O to these crates. `brigid-core` is **pure**: no network, no filesystem,
 no `tokio`. This keeps the domain logic fast, deterministic, and easy to
 unit-test without mocks.
@@ -187,11 +188,7 @@ done, enabling resume from any point without re-running expensive LLM calls.
 | `brigid-core` | `plugin` | `KindDetector` trait, `PluginRegistry`, `DefaultKindDetector` (ADR 0014) |
 | `brigid-crawl` | `local` | Local filesystem inventory (hidden-directory skipping and symlink cycle detection; `.gitignore` support is not yet implemented) |
 | `brigid-crawl` | `git_diff` | Git-diff incremental file detection via `git` shell-out; `--since` support (ADR 0013) |
-| `brigid-llm` | `client` | `LlmClient` async trait (ADR 0002) |
-| `brigid-llm` | `mock` | `MockClient` test double |
-| `brigid-llm` | `openai_client` | OpenAI-compatible HTTP client with retry/backoff/timeout |
-| `brigid-llm` | `cache` | Disk response cache keyed by hash(prompt)+model+provider; enabled by default with LRU eviction (ADR 0009) |
-| `brigid-llm` | `concurrency` | Bounded-concurrency map batches via `tokio::sync::Semaphore` (ADR 0003) |
+| `brigid-pipeline` | `llm` | `LLMClient` alias, `complete_text`, `bounded_complete`, `MockClient`, provider resolution, URL validation |
 | `brigid-pipeline` | `dry_run` | Dry-run plan assembly with baseline parity |
 | `brigid-pipeline` | `identify` | Map/reduce + single-shot identify stages |
 | `brigid-pipeline` | `identify_checkpoint` | Checkpoint-after-identify and resume |

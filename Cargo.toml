@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/brigid-core",
     "crates/brigid-crawl",
-    "crates/brigid-llm",
     "crates/brigid-pipeline",
     "crates/brigid-mcp",
     "crates/brigid-cli",

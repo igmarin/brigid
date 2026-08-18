@@ -33,6 +33,9 @@ hex = "0.4"
 # golden/snapshot tests depend on exact render output.
 minijinja = "=2.20.0"
 futures = "0.3"
+# Standards-compliant URL parsing for LLM base URL validation (security:
+# reject userinfo tricks like https://api.openai.com:443@evil.example/v1).
+url = "2"
 # CancellationToken for graceful Ctrl+C / SIGTERM shutdown (issue #68).
 tokio-util = { version = "0.7", features = ["rt"] }
 # Signal handling (ctrl_c) for the cancellation setup helper (issue #68).

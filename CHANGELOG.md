@@ -12,11 +12,47 @@ tracks the latest.
 
 ## [Unreleased]
 
+### Phase 4: brigid-llm removal (issue #297)
+
+- **Removed `brigid-llm` crate** from the workspace. The CLI now uses
+  `llm_kernel::llm::{OpenAIClient, RetryClient, CacheClient}` directly — no
+  adapter layer.
+- The `LegacyLlmClient` adapter, `legacy_llm_error` mapping, and
+  `brigid_llm::DiskCache` have been replaced with `llm_kernel` native types.
+- **Provider resolution logic moved to `brigid_pipeline::llm`** as
+  `resolve_llm_config` and `build_live_client`. This keeps the CLI a thin
+  wrapper (per the ARCHITECTURE.md layering rule) and makes the security-
+  critical provider/key-chain logic unit-testable in the library crate.
+  15 new tests cover key isolation, blank-env handling, host allowlist
+  enforcement, and provider inference from base URL.
+- **Retry/backoff**: `OpenAIClient` is now wrapped in `llm_kernel::RetryClient`
+  with the default `RetryConfig` (max 3 retries, 1s base delay, exponential
+  backoff, Retry-After capped at 5 minutes). This matches the bounded
+  exponential backoff guarantees of the removed `brigid-llm` client.
+- **Cache backend changed** from `brigid_llm::DiskCache` (file-based with LRU
+  eviction and size limits) to `llm_kernel::store::SqliteKvStore` (SQLite-backed
+  KV store). Trade-offs:
+  - The SQLite cache does **not** enforce a size limit. Clear it manually with
+    `rm -rf <cache-dir>/cache.sqlite` or set `BRIGID_NO_CACHE=1` to disable
+    caching entirely. A `brigid cache prune` subcommand is planned.
+  - Cache keys include the model name and full request JSON (via
+    `llm_kernel::CacheClient`), so switching models or providers does not
+    produce incorrect cache hits.
+  - Cache hit/miss stats are no longer reported in verbose output. The
+    `llm_kernel::CacheClient` API does not expose stats counters.
+  - The cache stores full prompt and response bodies on disk. Crawled
+    repositories may contain secrets in source files; these are truncated and
+    batched before being sent to the LLM, but the cache persists the full
+    prompt+response. This is the same exposure profile as the previous
+    `DiskCache`. Users with sensitive repos should disable caching
+    (`BRIGID_NO_CACHE=1`) or point the cache at an encrypted volume.
+- Removed `async-trait` dependency from `brigid-cli` (no longer needed without
+  the adapter).
+
 ## [2.0.0] - 2026-08-17
 
 Breaking release that adopts [`llm-kernel`](https://crates.io/crates/llm-kernel)
-as the LLM provider layer and deprecates `brigid-llm` (issue #297, Phases 1–3).
-The `brigid-llm` crate is not removed yet (Phase 4 is a follow-up).
+as the LLM provider layer and removes `brigid-llm` (issue #297, Phases 1–4).
 
 ### Changed
 
@@ -30,11 +66,10 @@ The `brigid-llm` crate is not removed yet (Phase 4 is a follow-up).
 - The published crate version in the issue text (`0.19`) is superseded by the
   current docs.rs release (`0.25`), which provides `CacheClient` / `KvStore`.
 
-### Deprecated
+### Removed
 
-- **`brigid-llm` is deprecated.** README, crate docs, and public items carry
-  `#[deprecated]` pointing at `llm-kernel`. No new features; bug fixes only
-  until removal.
+- **`brigid-llm` crate removed** (Phase 4, see [Unreleased] above). The 2.0.0
+  release deprecated it; this release removes it entirely.
 
 ### Added
 
