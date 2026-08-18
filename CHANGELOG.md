@@ -21,17 +21,23 @@ tracks the latest.
 - **Added `brigid cache stats` subcommand**: prints the cache file path, entry
   count, and on-disk size (including WAL/SHM sidecars). Opens the database
   read-only so it never creates or modifies cache files.
-- **Added `brigid_pipeline::StatsClient`**: an `LLMClient` wrapper that tracks
-  cache hit/miss statistics by probing the `KvStore` before each call. Uses
-  lock-free `AtomicU64` counters (no `Mutex`, no panics). Exports `CacheStats`
-  (hits, misses, hit_rate_percent), `CacheStatsHandle`, `StatsClient`, and
-  `BoxedLlmClient` from `brigid_pipeline`. Wired into the CLI's `generate` and
-  `generate --each-app` paths so verbose output reports cache hit/miss counts
-  and hit rate. This restores the hit/miss reporting that was lost when
-  `brigid_llm::DiskCache` was removed.
-- **Cache stats are best-effort under concurrency**: the probe-then-delegate
-  approach may slightly undercount hits when multiple LLM calls are in flight
-  simultaneously. See `StatsClient` docs for details.
+- **Added `brigid_pipeline::CountingKvStore`**: a `KvStore` wrapper that
+  counts cache hit/miss statistics at the store level. When `CacheClient`
+  calls `store.get(key)`, the `CountingKvStore` counts `Some` as a hit and
+  `None` as a miss. This is the correct layer for cache statistics — no
+  duplicated cache-key derivation, no race conditions, no extra KV lookups.
+  Exports `CacheStats`, `CacheStatsHandle`, and `CountingKvStore` from
+  `brigid_pipeline`. Wired into `build_live_client` so the CLI's `generate`
+  and `generate --each-app` verbose output reports cache hit/miss counts
+  and hit rate.
+- **Added `brigid_pipeline::CacheAdmin`**: admin operations on a
+  `SqliteKvStore` cache database (`entry_count`, `on_disk_size`, `prune`).
+  Encapsulates SQLite-specific details (table name, WAL/SHM sidecars,
+  locking) so the CLI layer doesn't need a direct `rusqlite` dependency.
+  The `brigid cache prune` and `brigid cache stats` subcommands delegate to
+  these methods.
+- **Moved `rusqlite` dependency** from `brigid-cli` to `brigid-pipeline`.
+  The CLI is now a thin wiring layer that calls `CacheAdmin` methods.
 - Updated `BRIGID_NO_CACHE` help text to mention `brigid cache prune` and
   `brigid cache stats`.
 

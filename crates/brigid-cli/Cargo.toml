@@ -32,9 +32,6 @@ serde = "1.0"
 serde_json = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 dirs = "6"
-# Direct dependency for `brigid cache stats` — counts rows in the kv table.
-# Version matched to llm-kernel's transitive dependency to avoid duplicates.
-rusqlite = "0.32"
 
 # cargo-binstall support: allows `cargo binstall brigid-cli` to download the
 # pre-built Linux binary from GitHub Releases. On macOS/Windows, binstall

@@ -40,6 +40,10 @@ url = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 # Signal handling (ctrl_c) for the cancellation setup helper (issue #68).
 tokio = { version = "1", features = ["macros", "rt", "sync", "signal"] }
+# Direct dependency for CacheAdmin (entry count, prune, on-disk size) — the
+# `brigid cache` CLI subcommands delegate to these methods instead of using
+# rusqlite directly. Version matched to llm-kernel's transitive dependency.
+rusqlite = "0.32"
 
 [dev-dependencies]
 serde_json = "1.0"

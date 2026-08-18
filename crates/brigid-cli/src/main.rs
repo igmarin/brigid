@@ -155,8 +155,9 @@ fn force_mock_client() -> bool {
 /// library crate so the provider resolution, key-chain, and host-allowlist
 /// logic is unit-tested independently of the CLI.
 ///
-/// The returned client is wrapped in [`brigid_pipeline::StatsClient`] so
-/// cache hit/miss statistics can be reported in verbose output. The
+/// When a cache is configured, [`brigid_pipeline::build_live_client`] wraps
+/// the `KvStore` in [`brigid_pipeline::CountingKvStore`] so cache hit/miss
+/// statistics can be reported in verbose output. The
 /// [`brigid_pipeline::CacheStatsHandle`] is returned alongside the client
 /// for later reporting.
 ///
@@ -172,11 +173,7 @@ fn build_real_llm_client(
     if let Some(msg) = custom_host_warning(custom_hosts) {
         eprintln!("{msg}");
     }
-    let client = brigid_pipeline::build_live_client(cache.clone(), provider, model, custom_hosts)?;
-    let stats_client =
-        brigid_pipeline::StatsClient::new(brigid_pipeline::BoxedLlmClient::new(client), cache);
-    let handle = stats_client.stats_handle();
-    Ok((Box::new(stats_client), handle))
+    brigid_pipeline::build_live_client(cache, provider, model, custom_hosts)
 }
 
 // ---------------------------------------------------------------------------
@@ -3736,70 +3733,30 @@ fn cmd_cache(action: CacheAction, cfg: &RunConfig) -> ExitCode {
 
 /// Delete the cache database file and its WAL/SHM sidecars.
 ///
-/// Before deleting, acquires an exclusive SQLite lock on the database to
-/// ensure no other `brigid` process is actively using the cache. If the
-/// cache is busy, returns `EXIT_FAIL` without deleting anything.
+/// Delegates to [`brigid_pipeline::CacheAdmin::prune`] which acquires an
+/// exclusive SQLite lock before deleting to prevent corrupting a cache
+/// that is actively in use by another `brigid` process.
 fn cmd_cache_prune(db_path: &Path) -> ExitCode {
-    // If the DB doesn't exist, nothing to prune.
-    if !db_path.exists() {
-        eprintln!("cache: no cache file found at {}", db_path.display());
-        return ExitCode::from(EXIT_OK);
-    }
-
-    // Acquire an exclusive lock by opening the DB and starting an
-    // immediate transaction. If another process holds the DB open with
-    // an active connection, this will fail with SQLITE_BUSY.
-    {
-        use rusqlite::{Connection, OpenFlags};
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = match Connection::open_with_flags(db_path, flags) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("cache: cannot open database for pruning: {e}");
-                eprintln!("cache: the cache may be in use by another brigid process");
-                return ExitCode::from(EXIT_FAIL);
-            }
-        };
-        // Set a short busy timeout so we don't hang indefinitely.
-        if let Err(e) = conn.busy_timeout(std::time::Duration::from_millis(500)) {
-            eprintln!("cache: warning: could not set busy timeout: {e}");
+    match brigid_pipeline::CacheAdmin::prune(db_path) {
+        Ok(0) => {
+            eprintln!("cache: no cache file found at {}", db_path.display());
+            ExitCode::from(EXIT_OK)
         }
-        // BEGIN IMMEDIATE acquires a RESERVED lock, which blocks other writers.
-        // If another process is mid-transaction, this fails with SQLITE_BUSY.
-        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
-            eprintln!("cache: cannot acquire exclusive lock: {e}");
-            eprintln!("cache: the cache is in use by another brigid process");
-            return ExitCode::from(EXIT_FAIL);
+        Ok(removed) => {
+            eprintln!("cache: pruned ({removed} file(s) removed)");
+            ExitCode::from(EXIT_OK)
         }
-        // Drop the connection to release the lock before unlinking.
-        // The transaction is rolled back automatically on drop.
-        drop(conn);
-    }
-
-    let mut removed = 0u64;
-    for suffix in &["", "-wal", "-shm"] {
-        let path = if suffix.is_empty() {
-            db_path.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}{suffix}", db_path.display()))
-        };
-        if path.exists() {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    removed += 1;
-                }
-                Err(e) => {
-                    eprintln!("cache: failed to remove {}: {e}", path.display());
-                    return ExitCode::from(EXIT_FAIL);
-                }
-            }
+        Err(e) => {
+            eprintln!("cache: {e}");
+            ExitCode::from(EXIT_FAIL)
         }
     }
-    eprintln!("cache: pruned ({removed} file(s) removed)");
-    ExitCode::from(EXIT_OK)
 }
 
 /// Print cache entry count and on-disk size.
+///
+/// Delegates to [`brigid_pipeline::CacheAdmin`] for entry count (read-only
+/// SQLite open) and on-disk size (including WAL/SHM sidecars).
 fn cmd_cache_stats(db_path: &Path) -> ExitCode {
     if !db_path.exists() {
         eprintln!("cache: no cache file found at {}", db_path.display());
@@ -3807,42 +3764,16 @@ fn cmd_cache_stats(db_path: &Path) -> ExitCode {
     }
 
     let db_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
-
-    // Count entries by opening the SQLite DB read-only and querying the kv
-    // table. If the table doesn't exist or the DB is corrupt, report 0.
-    let entry_count = count_cache_entries(db_path).unwrap_or(0);
+    let entry_count = brigid_pipeline::CacheAdmin::entry_count(db_path).unwrap_or(0);
+    let total_size = brigid_pipeline::CacheAdmin::on_disk_size(db_path);
 
     eprintln!("cache: {}", db_path.display());
     eprintln!("  entries: {entry_count}");
     eprintln!("  size:    {}", fmt_file_size(db_size));
-    // Also account for WAL/SHM sidecars.
-    let mut total = db_size;
-    for suffix in &["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{suffix}", db_path.display()));
-        if let Ok(meta) = std::fs::metadata(&sidecar) {
-            total += meta.len();
-        }
-    }
-    if total != db_size {
-        eprintln!("  total:   {} (incl. WAL/SHM)", fmt_file_size(total));
+    if total_size != db_size {
+        eprintln!("  total:   {} (incl. WAL/SHM)", fmt_file_size(total_size));
     }
     ExitCode::from(EXIT_OK)
-}
-
-/// Count rows in the `kv` table of a SQLite database.
-///
-/// Opens the database read-only so a stats query never creates or modifies
-/// the cache file (or its WAL/SHM sidecars).
-fn count_cache_entries(db_path: &Path) -> Option<u64> {
-    use rusqlite::{Connection, OpenFlags};
-    // SQLITE_OPEN_READ_ONLY prevents file creation; the DB must already exist
-    // (checked by the caller before invoking this function).
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(db_path, flags).ok()?;
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
-        .ok()?;
-    Some(count as u64)
 }
 
 /// Format a byte count as a human-readable string (e.g. "1.2 MB").
@@ -4749,7 +4680,7 @@ mod tests {
         drop(store);
 
         // Stats should report 3 entries.
-        let count = count_cache_entries(&db_path);
+        let count = brigid_pipeline::CacheAdmin::entry_count(&db_path);
         assert_eq!(count, Some(3));
 
         let code = cmd_cache_stats(&db_path);
@@ -4770,8 +4701,8 @@ mod tests {
         let db_path = dir.path().join("cache.sqlite");
         assert!(!db_path.exists());
 
-        // count_cache_entries opens read-only, so it must not create the file.
-        let _ = count_cache_entries(&db_path);
+        // CacheAdmin::entry_count opens read-only, so it must not create the file.
+        let _ = brigid_pipeline::CacheAdmin::entry_count(&db_path);
         assert!(
             !db_path.exists(),
             "read-only open created the database file"
