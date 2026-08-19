@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-cli"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "assert_cmd",
  "brigid-core",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "assert-json-diff",
  "criterion",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-crawl"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "criterion",
  "serde_json",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-mcp"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "brigid-core",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "brigid-pipeline"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
