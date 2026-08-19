@@ -12,6 +12,12 @@ tracks the latest.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-18
+
+Minor release adding cache management subcommands and hit/miss tracking,
+following the 2.0.0 breaking release that adopted `llm-kernel` and removed
+`brigid-llm`.
+
 ### Cache management (issue #300)
 
 - **Added `brigid cache prune` subcommand**: clears all cache entries and
@@ -715,7 +721,16 @@ assessment, and the structural eval port. Includes the M0 spec-freeze work
 
 - Mapped path/load errors to exit code 2 (config) in the CLI (#27).
 
-[Unreleased]: https://github.com/igmarin/brigid/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/igmarin/brigid/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/igmarin/brigid/releases/tag/v2.1.0
+[2.0.0]: https://github.com/igmarin/brigid/releases/tag/v2.0.0
+[1.3.0]: https://github.com/igmarin/brigid/releases/tag/v1.3.0
+[1.2.0]: https://github.com/igmarin/brigid/releases/tag/v1.2.0
+[1.1.0]: https://github.com/igmarin/brigid/releases/tag/v1.1.0
+[1.0.2]: https://github.com/igmarin/brigid/releases/tag/v1.0.2
+[1.0.1]: https://github.com/igmarin/brigid/releases/tag/v1.0.1
+[1.0.0]: https://github.com/igmarin/brigid/releases/tag/v1.0.0
+[0.6.0]: https://github.com/igmarin/brigid/releases/tag/v0.6.0
 [0.5.0]: https://github.com/igmarin/brigid/releases/tag/v0.5.0
 [0.4.0]: https://github.com/igmarin/brigid/releases/tag/v0.4.0
 [0.3.0]: https://github.com/igmarin/brigid/releases/tag/v0.3.0
